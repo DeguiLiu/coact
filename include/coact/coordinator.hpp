@@ -71,6 +71,13 @@ private:
     SubmitResult submit_internal(TargetId target, Event* e,
                                  const EventQos& qos, bool from_isr) noexcept
     {
+        /* Monotonic clock is sampled once per submit: the M4 policy and the
+           Low-aging staging paths both need a timestamp, but the clock must not
+           be read twice for the same instant (the #2 host hot spot in the flame
+           profile). Cached here so the two call sites share one sample. */
+        uint64_t now_ns = 0U;
+        bool now_init = false;
+
         /* --- C1: target must be bound ------------------------------------ */
         AoBase* ao = registry_.lookup(target);
         if (nullptr == ao) {
@@ -90,7 +97,10 @@ private:
 
         /* --- M4 policy evaluation --------------------------------------- */
         if (policy_ops_ != nullptr) {
-            const uint64_t now_ns = pal_.monotonic_ns();
+            if (!now_init) {
+                now_ns = pal_.monotonic_ns();
+                now_init = true;
+            }
             PolicyResult pr = policy_ops_->evaluate(
                 policy_ctx_, target, *e, qos, now_ns);
             if (!pr.accept) {
@@ -145,7 +155,10 @@ private:
         }
 
         /* --- staging (queued) ------------------------------------------- */
-        const uint64_t now_ns = pal_.monotonic_ns();
+        if (!now_init) {
+            now_ns = pal_.monotonic_ns();
+            now_init = true;
+        }
         if (!direct_ref_held) {
             event_ref_inc(e);
         }
