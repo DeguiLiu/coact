@@ -20,10 +20,28 @@ Posix::Posix() noexcept
       thread_valid_(false),
       thread_{},
       user_entry_(nullptr),
-      user_ctx_(nullptr)
+      user_ctx_(nullptr),
+      tick_hz_(0U),
+      ns_per_tick_(0U)
 {
     pthread_mutex_init(&mutex_, nullptr);
     pthread_cond_init(&cond_, nullptr);
+}
+
+void Posix::set_tick_hz(uint32_t hz) noexcept
+{
+    if (0U == hz) {
+        tick_hz_ = 0U;
+        ns_per_tick_ = 0U;
+        return;
+    }
+    tick_hz_ = hz;
+    ns_per_tick_ = 1000000000ULL / hz;
+}
+
+void Posix::set_dispatcher_stack_bytes(uint32_t /*bytes*/) noexcept
+{
+    /* pthread default stack (8 MiB) is used; no-op. */
 }
 
 /* Interrupt masking is a no-op on POSIX host. The token carries no state. */
@@ -60,12 +78,19 @@ uint64_t Posix::monotonic_ns() const noexcept
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
-         + static_cast<uint64_t>(ts.tv_nsec);
+    uint64_t raw = static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL
+                 + static_cast<uint64_t>(ts.tv_nsec);
+    if (0U != tick_hz_) {
+        raw = (raw / ns_per_tick_) * ns_per_tick_;
+    }
+    return raw;
 }
 
 uint64_t Posix::clock_resolution_ns() const noexcept
 {
+    if (0U != tick_hz_) {
+        return ns_per_tick_;
+    }
     struct timespec ts;
     clock_getres(CLOCK_MONOTONIC, &ts);
     return static_cast<uint64_t>(ts.tv_sec) * 1000000000ULL

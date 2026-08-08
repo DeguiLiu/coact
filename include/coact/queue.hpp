@@ -29,11 +29,13 @@ struct alignas(alignof(T)) SlotStorage {
     unsigned char bytes[sizeof(T)];
 };
 
-// MPSC cell: a monotonic sequence number guarding a raw slot.
+// MPSC cell: raw payload first, then a monotonic sequence number. Payload
+// first + alignas(32) keeps the hot-path push/pop copies on 32-byte cache
+// boundaries (a 24-byte StagingSlot straddles a cache line when 8-aligned).
 template <typename T>
-struct MpscCell {
-    std::atomic<uint32_t> seq{0U};
+struct alignas(32) MpscCell {
     SlotStorage<T> storage;
+    std::atomic<uint32_t> seq{0U};
 };
 
 // Cache-line-isolated atomic counter for head/tail hot spots.
@@ -256,7 +258,7 @@ private:
     CriticalSection cs_;
     uint16_t write_index_ = 0U;
     uint16_t count_ = 0U;
-    detail::SlotStorage<T> cells_[Capacity];
+    alignas(32) detail::SlotStorage<T> cells_[Capacity];
 };
 
 }  // namespace coact

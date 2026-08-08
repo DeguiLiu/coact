@@ -115,7 +115,14 @@ public:
     // runs the HSM to completion, releases. Kept distinct so Monitor/C5
     // can distinguish a direct dispatch from a dispatcher-driven one via
     // ExecutionLease::state() (RunningDirect vs RunningDispatcher).
-    virtual void dispatch_direct(const Event& event) noexcept = 0;
+    //
+    // Returns true when this thread took the lease and ran the HSM. Returns
+    // false when the AO is already running (e.g. another thread won the direct
+    // race): the caller (coordinator) falls back to staging instead of facing a
+    // hard fault. Any payload mutation done before the failed acquire is not
+    // committed; the event is returned untouched. Same-thread re-entry via
+    // dispatch() (dispatcher path) remains a hard fault.
+    virtual bool dispatch_direct(const Event& event) noexcept = 0;
 
     virtual LogicalPrio logical_prio() const noexcept = 0;
     virtual PriorityClass priority_class() const noexcept = 0;
@@ -245,19 +252,19 @@ public:
         }
     }
 
-    void dispatch_direct(const Event& event) noexcept override
+    bool dispatch_direct(const Event& event) noexcept override
     {
         const AoRunState held = AoRunState::RunningDirect;
         if (lease_.try_acquire(held)) {
             hsm_.dispatch(context_, event);
             lease_.release(held);
+            return true;
         }
-        else {
-            // Direct dispatch while the AO is already running: the caller
-            // (coordinator) checked lease Idle before invoking, so this is a
-            // protocol violation.
-            COACT_ASSERT(0 == 1);
-        }
+        // Lost the direct-path acquisition (another thread owns the lease):
+        // report `false` so the coordinator falls back to staging. The event is
+        // untouched. This is a normal race, not a re-entry fault; same-thread
+        // re-entry via dispatch() keeps its hard-fault contract.
+        return false;
     }
 
     LogicalPrio logical_prio() const noexcept override

@@ -93,6 +93,7 @@ public:
         COACT_ASSERT(initialized_);
         COACT_ASSERT(!started_);
         started_ = true;
+        pal_.set_dispatcher_stack_bytes(Config::kDispatcherStackBytes);
         pal_.start_dispatcher(
             &detail::dispatcher_trampoline<DispatcherType>,
             &dispatcher_);

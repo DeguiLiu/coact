@@ -79,6 +79,11 @@ public:
     void join_dispatcher() noexcept;
     void watchdog_progress(uint32_t marker) noexcept;
 
+    // Override the Dispatcher thread stack size before start(). The Runtime
+    // pushes Config::kDispatcherStackBytes here; default 4096.
+    void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
+    uint32_t dispatcher_stack_bytes() const noexcept;
+
     /* ---- M1 C3: direct-dispatch depth (per-thread, stored in user_data) */
     void enter_direct() noexcept;
     void leave_direct() noexcept;
@@ -105,7 +110,8 @@ private:
     void*       user_ctx_;
 
     bool     thread_started_;
-    uint32_t ns_per_tick_;   /* 1e9 / RT_TICK_PER_SECOND */
+    uint32_t ns_per_tick_;              /* 1e9 / RT_TICK_PER_SECOND */
+    uint32_t dispatcher_stack_bytes_;   /* default 4096; overridable */
 };
 
 }  // namespace pal

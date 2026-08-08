@@ -113,7 +113,10 @@ struct DefaultConfig {
 
     enum : uint32_t {
         kBatchTimeoutMs = 5U,
-        kLowMaxWaitMs = 100U
+        kLowMaxWaitMs = 100U,
+        /* Dispatcher thread stack size. Board Configs override this to match
+           the deepest HSM action chain (measure first, then tune). */
+        kDispatcherStackBytes = 4096U
     };
 
     enum : uint64_t {

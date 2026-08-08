@@ -30,6 +30,7 @@ typedef void (*ThreadEntry)(void* context);
 //   void start_dispatcher(ThreadEntry entry, void* context) noexcept;
 //   void join_dispatcher() noexcept;
 //   void watchdog_progress(uint32_t marker) noexcept;
+//   void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;   // may be no-op
 
 }  // namespace pal
 }  // namespace coact

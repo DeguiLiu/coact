@@ -39,6 +39,15 @@ public:
     uint64_t monotonic_ns() const noexcept;
     uint64_t clock_resolution_ns() const noexcept;
 
+    // Host-test hook: simulate an RT-Thread-style coarse tick. When hz != 0,
+    // monotonic_ns() is quantized to 1/hz s (e.g. 100 Hz -> 10 ms), matching a
+    // tick-based PAL. Default 0 = no quantization (ns resolution).
+    void set_tick_hz(uint32_t hz) noexcept;
+
+    // No-op on POSIX (pthread uses the default 8 MiB stack); kept so the
+    // Runtime can push Config::kDispatcherStackBytes to any PAL uniformly.
+    void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
+
     // Block up to timeout_ms for a dispatcher signal (0 = wait forever).
     void wait_dispatcher(uint32_t timeout_ms) noexcept;
     void signal_dispatcher_from_task() noexcept;
@@ -66,6 +75,8 @@ private:
     pthread_t thread_;
     ThreadEntry user_entry_;
     void* user_ctx_;
+    uint32_t tick_hz_;        /* 0 = ns resolution (host native) */
+    uint64_t ns_per_tick_;    /* 1e9 / tick_hz_, valid when tick_hz_ != 0 */
     static thread_local ExecutionContext tls_ctx_;
 };
 

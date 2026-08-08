@@ -17,6 +17,7 @@
 // partition at the partition's own capacity. No heap allocation.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <type_traits>
@@ -261,6 +262,37 @@ public:
         now_valid_ = true;
     }
 
+    /* ---- Dispatcher-activity flag --------------------------------------
+       Producers signal the Dispatcher only when it is idle; while it is
+       actively draining it picks up newly enqueued events in the same batch.
+       The Dispatcher clears the flag (release) immediately before sleeping,
+       AFTER a final queue re-check, so an enqueue that raced with the clear is
+       observed by the producer (which then signals) or by the re-check (which
+       then continues). Closing the missed-wakeup window this way removes the
+       per-submit condvar/semaphore wakeup (flame #1 on single-core). */
+    void mark_dispatcher_active() noexcept
+    {
+        dispatcher_active_.store(true, std::memory_order_release);
+    }
+
+    void mark_dispatcher_idle() noexcept
+    {
+        dispatcher_active_.store(false, std::memory_order_release);
+    }
+
+    bool dispatcher_active() const noexcept
+    {
+        return dispatcher_active_.load(std::memory_order_acquire);
+    }
+
+    // True when at least one partition is non-empty (re-check before sleep).
+    bool any_buffered() const noexcept
+    {
+        return (0U != size(Partition::High))
+            || (0U != size(Partition::Normal))
+            || (0U != size(Partition::Low));
+    }
+
     // Usage as a 0-100 percentage: used / capacity * 100. The dispatcher maps
     // this to the 50/80/95 watermark bands (design 10.5): <50 normal batch,
     // 50-80 enlarge batch, 80-95 wake immediately, >95 hard-throttle.
@@ -344,6 +376,7 @@ private:
     std::optional<LowQueue> low_q_;
 
     BatchSelector selector_;
+    std::atomic<bool> dispatcher_active_{false};
     uint64_t low_head_arrival_ns_ = 0U;   // publish time of the Low head
     uint64_t now_ns_ = 0U;                // cached aging clock base
     bool now_valid_ = false;

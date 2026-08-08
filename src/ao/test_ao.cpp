@@ -247,6 +247,53 @@ COACT_TEST(ao_illegal_reentry_is_abort)
     g_reentry_target = nullptr;
 }
 
+COACT_TEST(ao_direct_dispatch_lease_busy_returns_false)
+{
+    AoA ao(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,
+           kAoInitialState, kAoMaxDepth);
+    ao.init(coact::Event{SIG_TICK, 0U, 0U});
+    REQUIRE(coact::AoRunState::Idle == ao.lease().state());
+
+    // Hold the lease as if another thread already owns a dispatch on this AO
+    // (the cross-thread direct-path race), then drive dispatch_direct.
+    CHECK(ao.lease().try_acquire(coact::AoRunState::RunningDirect));
+
+    coact::Event busy{};
+    busy.signal = SIG_TICK; busy.pool_id = 0U; busy.ref_ctr = 0U;
+
+    // Must not abort: it reports that the direct dispatch was not taken, and
+    // the caller (coordinator) falls back to staging. Signature returns bool.
+    const bool taken = ao.dispatch_direct(busy);
+
+    CHECK(!taken);
+    CHECK(coact::AoRunState::RunningDirect == ao.lease().state());  // owner unchanged
+
+    ao.lease().release(coact::AoRunState::RunningDirect);
+    CHECK(coact::AoRunState::Idle == ao.lease().state());
+}
+
+COACT_TEST(ao_dispatch_dispatcher_path_busy_still_aborts)
+{
+    AoA ao(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,
+           kAoInitialState, kAoMaxDepth);
+    ao.init(coact::Event{SIG_TICK, 0U, 0U});
+    REQUIRE(coact::AoRunState::Idle == ao.lease().state());
+
+    // Hold the lease (another thread / a previous dispatch), then the
+    // Dispatcher-path dispatch must still hard-fault (re-entry is a fault).
+    CHECK(ao.lease().try_acquire(coact::AoRunState::RunningDispatcher));
+
+    coact::Event busy{};
+    busy.signal = SIG_TICK; busy.pool_id = 0U; busy.ref_ctr = 0U;
+    bool aborted = expect_abort([&ao, &busy]() {
+        ao.dispatch(busy);   // dispatch() keeps the abort contract
+    });
+    CHECK(aborted);
+
+    ao.lease().release(coact::AoRunState::RunningDispatcher);
+    CHECK(coact::AoRunState::Idle == ao.lease().state());
+}
+
 COACT_TEST(ao_traits_injected_through_interface)
 {
     AoA aoa(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,

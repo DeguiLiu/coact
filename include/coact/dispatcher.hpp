@@ -55,8 +55,10 @@ public:
         while (!stop_.load(std::memory_order_acquire)) {
             const uint64_t now_ns = pal_.monotonic_ns();
 
-            /* Open a new batch; dequeue_one takes now_ns for Low aging. */
+            /* Open a new batch; dequeue_one takes now_ns for Low aging.
+               While active, producers skip the wakeup signal. */
             staging_.begin_batch();
+            staging_.mark_dispatcher_active();
 
             bool any = false;
             while (staging_.batch_used() < BatchCfg::kBatchSizeMax) {
@@ -71,6 +73,10 @@ public:
                     /* Ao::dispatch() acquires RunningDispatcher lease
                        internally; never pre-acquire here. */
                     ao->dispatch(*slot.event);
+                    /* Match the coordinator's pending().increment() on enqueue
+                       (design 9.3: decrement after final dispatch). Without this
+                       the uint16 pending counter leaks and wraps -> underflow. */
+                    ao->pending().decrement();
                     breaker_.on_dispatch_cycle();
                     monitor_.record_disposition(SubmitDisposition::Queued);
                 }
@@ -82,6 +88,13 @@ public:
                 /* Feed watchdog on idle cycles so the breaker cooldown
                    does not stall when there is no traffic. */
                 breaker_.on_dispatch_cycle();
+                /* Going to sleep: clear the active flag (release), then
+                   re-check so an event enqueued against the stale active bit
+                   is not stranded. Producers signal when they observe idle. */
+                staging_.mark_dispatcher_idle();
+                if (staging_.any_buffered()) {
+                    continue;   /* something arrived before we slept */
+                }
                 pal_.wait_dispatcher(BatchCfg::kBatchTimeoutMs);
             }
         }

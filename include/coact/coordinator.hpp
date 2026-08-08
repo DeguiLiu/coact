@@ -108,44 +108,70 @@ private:
         }
 
         /* --- M1 direct dispatch (Task path only) ------------------------ */
+        /* A successful direct path consumes the event's single counted
+           reference in-place. On a lost cross-thread race the direct attempt
+           leaves that reference held and ownership passes to the staging path
+           below, which must NOT re-increment. The event is handed by pointer
+           (zero-copy); nothing is copied or reclaimed between paths. */
+        bool direct_ref_held = false;
         if (!from_isr
             && ao->direct_eligible()
             && breaker_.direct_allowed(target))
         {
-            /* Peek at the lease. dispatch_direct() owns the acquire internally
-               with a RunningDirect state (distinct from RunningDispatcher, so
-               C5 monitoring can tell the two paths apart). We only attempt it
-               if the AO appears Idle to avoid a guaranteed COACT_ASSERT. */
+            /* dispatch_direct() owns the acquire internally with a RunningDirect
+               state (distinct from RunningDispatcher, so C5 monitoring can tell
+               the two paths apart). */
             if (AoRunState::Idle == ao->lease().state()) {
                 event_ref_inc(e);
+                direct_ref_held = true;
                 pal_.enter_direct();
-                ao->dispatch_direct(*e);
+                const bool taken = ao->dispatch_direct(*e);
                 pal_.leave_direct();
-                event_gc(e);
-                monitor_.record_disposition(SubmitDisposition::Direct);
-                return {SubmitDisposition::Direct, 0U};
+                if (taken) {
+                    /* direct completed: the fetched reference was consumed */
+                    event_gc(e);
+                    direct_ref_held = false;
+                    monitor_.record_disposition(SubmitDisposition::Direct);
+                    return {SubmitDisposition::Direct, 0U};
+                }
+                /* Lost the direct race: keep the counted reference for the
+                   staging path and fall through. Do NOT reclaim the block. */
+                monitor_.record_lease_contention(target);
             }
-            /* lease non-Idle: fall through to staging */
-            monitor_.record_lease_contention(target);
+            else {
+                /* lease non-Idle: fall through to staging (no ref taken yet) */
+                monitor_.record_lease_contention(target);
+            }
         }
 
         /* --- staging (queued) ------------------------------------------- */
         const uint64_t now_ns = pal_.monotonic_ns();
-        event_ref_inc(e);
+        if (!direct_ref_held) {
+            event_ref_inc(e);
+        }
         ao->pending().increment();
         if (!staging_.enqueue(target, e, ao->priority_class(), now_ns)) {
             ao->pending().decrement();
+            /* The event is dropped: reclaim it whether its counted ref was
+               taken by the direct attempt (direct_ref_held) or just now. */
             event_gc(e);
             monitor_.record_overflow();
             monitor_.record_disposition(SubmitDisposition::RejectedFull);
             return {SubmitDisposition::RejectedFull, 0U};
         }
 
-        if (!from_isr) {
-            pal_.signal_dispatcher_from_task();
-        }
-        else {
-            pal_.signal_dispatcher_from_isr();
+        /* Wake the Dispatcher only while it is idle. While it is actively
+           draining it picks this event up in the same batch; the draining flag
+           plus the Dispatcher's re-check-before-sleep close the missed-wakeup
+           window. Removes the per-submit condvar/semaphore signal that was the
+           #1 single-core hot cost in the flame profile. */
+        if (!staging_.dispatcher_active()) {
+            if (!from_isr) {
+                pal_.signal_dispatcher_from_task();
+            }
+            else {
+                pal_.signal_dispatcher_from_isr();
+            }
         }
         monitor_.record_disposition(SubmitDisposition::Queued);
         monitor_.record_pending(target, ao->pending().load());

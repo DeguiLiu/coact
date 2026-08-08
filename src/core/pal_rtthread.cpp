@@ -31,11 +31,22 @@ RtThread::RtThread(uint32_t /*cpu_freq_hz*/) noexcept
       user_entry_(nullptr),
       user_ctx_(nullptr),
       thread_started_(false),
-      ns_per_tick_(1000000000U / RT_TICK_PER_SECOND)
+      ns_per_tick_(1000000000U / RT_TICK_PER_SECOND),
+      dispatcher_stack_bytes_(4096U)
 {
     wake_sem_ = rt_sem_create("coact_wake", 0U, RT_IPC_FLAG_PRIO);
     join_sem_ = rt_sem_create("coact_join", 0U, RT_IPC_FLAG_PRIO);
     /* Both sems are required; assert on failure (init-phase allocation). */
+}
+
+void RtThread::set_dispatcher_stack_bytes(uint32_t bytes) noexcept
+{
+    dispatcher_stack_bytes_ = bytes;
+}
+
+uint32_t RtThread::dispatcher_stack_bytes() const noexcept
+{
+    return dispatcher_stack_bytes_;
 }
 
 CriticalToken RtThread::irq_save() noexcept
@@ -189,7 +200,7 @@ void RtThread::start_dispatcher(ThreadEntry entry, void* context) noexcept
         "coact_disp",
         &RtThread::dispatcher_thread_entry,
         this,
-        /* stack size */ 4096U,
+        /* stack size */ dispatcher_stack_bytes_,
         /* priority  */ 10U,
         /* timeslice */ 10U);
 
