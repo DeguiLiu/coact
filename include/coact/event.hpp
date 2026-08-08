@@ -29,6 +29,7 @@ struct PoolRecord {
     uint16_t used;
     uint16_t high_watermark;
     void (*reclaim)(Event* e);              // returns a block to this pool
+    void* lock_ptr;                         // owning pool's sync guard (LockT*)
 };
 
 // Maximum number of event pools that can be registered at once. pool_id is a

@@ -50,14 +50,13 @@ public:
         while (!stop_.load(std::memory_order_acquire)) {
             const uint64_t now_ns = pal_.monotonic_ns();
 
-            /* Refresh Low aging baseline before opening a new batch. */
-            staging_.tick(now_ns);
+            /* Open a new batch; dequeue_one takes now_ns for Low aging. */
             staging_.begin_batch();
 
             bool any = false;
             while (staging_.batch_used() < DefaultConfig::kBatchSizeMax) {
                 StagingSlot slot;
-                if (!staging_.dequeue_one(slot)) {
+                if (!staging_.dequeue_one(slot, now_ns)) {
                     break;
                 }
                 any = true;

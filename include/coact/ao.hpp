@@ -107,7 +107,16 @@ class AoBase {
 public:
     virtual ~AoBase() {}
 
+    // Dispatcher-path RTC dispatch (M5): acquires RunningDispatcher lease
+    // internally, runs the HSM to completion, releases. Re-entry is a fault.
     virtual void dispatch(const Event& event) noexcept = 0;
+
+    // Direct-path RTC dispatch (M1): acquires RunningDirect lease internally,
+    // runs the HSM to completion, releases. Kept distinct so Monitor/C5
+    // can distinguish a direct dispatch from a dispatcher-driven one via
+    // ExecutionLease::state() (RunningDirect vs RunningDispatcher).
+    virtual void dispatch_direct(const Event& event) noexcept = 0;
+
     virtual LogicalPrio logical_prio() const noexcept = 0;
     virtual PriorityClass priority_class() const noexcept = 0;
     virtual bool direct_eligible() const noexcept = 0;
@@ -216,6 +225,10 @@ public:
         hsm_.init(context_, init_evt);
     }
 
+    // Application context accessor. Callers configure the AO's context
+    // (payload, flags, whatever the HSM actions need) before init().
+    Context& context() noexcept { return context_; }
+
     void dispatch(const Event& event) noexcept override
     {
         const AoRunState held = AoRunState::RunningDispatcher;
@@ -225,6 +238,21 @@ public:
         }
         else {
             // Re-entry while the AO is already running: upper-layer violation.
+            COACT_ASSERT(0 == 1);
+        }
+    }
+
+    void dispatch_direct(const Event& event) noexcept override
+    {
+        const AoRunState held = AoRunState::RunningDirect;
+        if (lease_.try_acquire(held)) {
+            hsm_.dispatch(context_, event);
+            lease_.release(held);
+        }
+        else {
+            // Direct dispatch while the AO is already running: the caller
+            // (coordinator) checked lease Idle before invoking, so this is a
+            // protocol violation.
             COACT_ASSERT(0 == 1);
         }
     }

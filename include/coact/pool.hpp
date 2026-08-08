@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <type_traits>
 
 #include "coact/assert.hpp"
@@ -28,7 +29,27 @@ inline constexpr size_t pool_block_align(size_t size) noexcept
     return (size + align - 1U) & ~(align - 1U);
 }
 
+// NoLock: default pool sync policy. Assumes a single allocating context (or
+// external serialization). Used by single-producer unit tests.
+struct NoPoolLock {
+    struct Scoped {
+        Scoped(NoPoolLock&) noexcept {}
+    };
+};
+
 }  // namespace detail
+
+// Thread-safe pool lock using a std::mutex (POSIX/SMP pools, per design 6.4
+// "POSIX/SMP 实现使用 PAL 原子或实例 mutex"). lock/unlock never allocate; no
+// exceptions under -fno-exceptions. The Scoped guard is not RAII-deferring:
+// it locks on construction and unlocks on destruction.
+struct PoolMutexLock {
+    std::mutex mtx{};
+    struct Scoped {
+        explicit Scoped(PoolMutexLock& l) noexcept : lock_(l.mtx) {}
+        std::unique_lock<std::mutex> lock_;
+    };
+};
 
 // Reference-count helpers (QP QF semantics, see contract 4.1). Call
 // event_ref_inc before every post (queue/direct) and event_gc after a
@@ -64,7 +85,8 @@ inline void event_gc(Event* e) noexcept
 // in the first word of each free block; the live pool state lives in a
 // PoolRecord registered in the global registry, so the reclaim callback is
 // routed by the event's pool_id and works for any number of pool instances.
-template <uint16_t BlockSize, uint16_t Capacity>
+template <uint16_t BlockSize, uint16_t Capacity,
+          typename LockT = detail::NoPoolLock>
 class EventPool {
 public:
     static_assert(Capacity > 0U, "EventPool requires a non-zero capacity");
@@ -117,6 +139,7 @@ public:
         record_.used = 0U;
         record_.high_watermark = 0U;
         record_.reclaim = &EventPool::reclaim;
+        record_.lock_ptr = &lock_;
 
         pool_id_ = register_pool(&record_);
         COACT_ASSERT(pool_id_ != 0U);  // registry full: configuration error
@@ -124,8 +147,12 @@ public:
 
     // Take a free block and initialize the Event base: signal set, ref_ctr 0,
     // pool_id bound to this pool. Returns nullptr when the pool is exhausted.
+    // Thread-safe when LockT provides an RAII Scoped guard (guards alloc and
+    // the pool's reclaim path); with the default NoPoolLock this is single-
+    // producer semantics and the caller must serialize access.
     Event* alloc(uint16_t signal) noexcept
     {
+        typename LockT::Scoped guard(lock_);
         void* block = record_.free_list;
         if (block == nullptr) {
             return nullptr;
@@ -152,13 +179,18 @@ public:
 private:
     // Reclaim callback bound into PoolRecord::reclaim. Routed through the
     // event's pool_id so one static function serves every instance of this
-    // instantiation.
+    // instantiation. The pool's sync guard (record_.lock_ptr, a LockT*) guards
+    // the free-list critical section, so a Dispatcher reclaim is serialized
+    // against a concurrent producer alloc (with LockT != NoPoolLock).
     static void reclaim(Event* e) noexcept
     {
         COACT_ASSERT(e != nullptr);
         PoolRecord* rec = pool_record(e->pool_id);
         COACT_ASSERT(rec != nullptr);
         COACT_ASSERT(rec->used > 0U);
+
+        typename LockT::Scoped guard(
+            *static_cast<LockT*>(rec->lock_ptr));
 
         void* block = static_cast<void*>(e);
         std::memcpy(block, &rec->free_list, sizeof(void*));
@@ -168,6 +200,7 @@ private:
 
     PoolRecord record_;
     uint8_t pool_id_;
+    LockT lock_;
 };
 
 }  // namespace coact

@@ -184,11 +184,17 @@ public:
     }
 
     // Pop one slot in batch order (priority-first with the Low aging
-    // exception). Returns false when all partitions are empty, or when the
-    // current batch already reached BatchSizeMax. Succeeding increments the
-    // in-progress batch counter; call begin_batch() to open a new one.
-    bool dequeue_one(StagingSlot& out) noexcept
+    // exception). now_ns is the current monotonic time (used to judge whether
+    // the Low head has aged past kLowMaxWaitMs); pass it each batch so no
+    // separate tick() call is strictly required. Returns false when all
+    // partitions are empty, or when the current batch already reached
+    // BatchSizeMax. Succeeding increments the in-progress batch counter; call
+    // begin_batch() to open a new one.
+    bool dequeue_one(StagingSlot& out, uint64_t now_ns) noexcept
     {
+        now_ns_ = now_ns;
+        now_valid_ = true;
+
         Partition part;
         const uint16_t bmax = static_cast<uint16_t>(Config::kBatchSizeMax);
         if (!selector_.select(part,
@@ -224,6 +230,13 @@ public:
             ++batch_used_;
         }
         return ok;
+    }
+
+    // Compat shim used by tests / callers that drive the aging clock via
+    // tick() (or never need Low aging): routes through the cached now.
+    bool dequeue_one(StagingSlot& out) noexcept
+    {
+        return dequeue_one(out, now_valid_ ? now_ns_ : 0U);
     }
 
     // Begin a new dispatch batch, resetting the batch-size accounting.

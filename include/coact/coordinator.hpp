@@ -108,13 +108,14 @@ private:
             && ao->direct_eligible()
             && breaker_.direct_allowed(target))
         {
-            /* Peek at the lease. dispatch() owns the acquire internally;
-               we only attempt direct if the AO appears Idle to avoid a
-               guaranteed COACT_ASSERT inside dispatch(). */
+            /* Peek at the lease. dispatch_direct() owns the acquire internally
+               with a RunningDirect state (distinct from RunningDispatcher, so
+               C5 monitoring can tell the two paths apart). We only attempt it
+               if the AO appears Idle to avoid a guaranteed COACT_ASSERT. */
             if (AoRunState::Idle == ao->lease().state()) {
                 event_ref_inc(e);
                 pal_.enter_direct();
-                ao->dispatch(*e);
+                ao->dispatch_direct(*e);
                 pal_.leave_direct();
                 event_gc(e);
                 monitor_.record_disposition(SubmitDisposition::Direct);
