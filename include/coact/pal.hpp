@@ -53,6 +53,39 @@ inline CriticalSection make_critical_section(PalT& pal) noexcept
     return cs;
 }
 
+// A CriticalSection that actually serializes on SMP hosts. The POSIX PAL's
+// irq_save() is a documented no-op (see design 13) — its pools/queues rely on
+// the 32-bit head CAS alone. That is safe for the free-list HEAD, but the
+// batched reclaim (ReclaimBatcher) writes each block's `next` field OUTSIDE
+// the head CAS while chaining blocks, which races a concurrent alloc's
+// load_next on the same block. For any pool shared between an allocating
+// thread and a reclaiming thread on SMP, inject THIS critical section instead
+// of make_critical_section(pal): a short per-pool spinlock held across the
+// alloc / reclaim / batch-splice operations so their head + next-field writes
+// serialize. Single-core targets keep make_critical_section (irq mask), which
+// is O(1) and unaffected by the race (alloc and reclaim are never concurrent
+// on one core).
+struct SpinCriticalSection {
+    std::atomic_flag flag = ATOMIC_FLAG_INIT;
+};
+inline CriticalSection make_spin_critical_section(SpinCriticalSection& scs) noexcept
+{
+    CriticalSection cs;
+    cs.ctx = static_cast<void*>(&scs);
+    cs.save = [](void* ctx) -> CriticalSection::Token {
+        auto* s = static_cast<SpinCriticalSection*>(ctx);
+        // Acquire: spin until the flag was clear. Token 1 marks "held".
+        while (s->flag.test_and_set(std::memory_order_acquire)) {
+        }
+        return 1U;
+    };
+    cs.restore = [](void* ctx, CriticalSection::Token) {
+        auto* s = static_cast<SpinCriticalSection*>(ctx);
+        s->flag.clear(std::memory_order_release);
+    };
+    return cs;
+}
+
 namespace pal {
 
 typedef void (*ThreadEntry)(void* context);

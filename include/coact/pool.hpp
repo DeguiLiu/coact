@@ -381,6 +381,14 @@ public:
     // Release an event's final reference, deferring the free_list splice.
     // Mirrors event_gc()'s ref-count semantics (pool_id 0 == static, never
     // recycled; decrement and reclaim at 0). Only for pool-owned events.
+    //
+    // SMP-correctness: chaining a block writes its `next` field, which a
+    // concurrent alloc reads via load_next on the shared free list. On a
+    // multi-core host the injected CriticalSection must therefore be a real
+    // serialization (make_spin_critical_section): it is held here across the
+    // chain-link AND the cap-triggered splice so alloc / reclaim / batch never
+    // interleave on one block's next field. The single-core irq-mask CS is
+    // also correct (alloc and reclaim are never concurrent on one core).
     void release(Event* e) noexcept
     {
         COACT_ASSERT(e != nullptr);
@@ -398,6 +406,8 @@ public:
         if (nullptr == rec) {
             return;
         }
+        const CriticalSection::Token tok = rec->cs.save(rec->cs.ctx);
+
         const uintptr_t addr = reinterpret_cast<uintptr_t>(e);
         COACT_ASSERT(addr >= rec->base);
         const uint32_t idx = static_cast<uint32_t>((addr - rec->base)
@@ -413,9 +423,10 @@ public:
         }
         p->count = static_cast<uint16_t>(p->count + 1U);
         if (p->count >= detail::kReclaimBatchCap) {
-            detail::pool_reclaim_chain(p->rec, p->first, p->last, p->count);
-            p->count = 0U;
+            splice_locked(p, tok);   // already inside rec->cs: no re-acquire
         }
+
+        rec->cs.restore(rec->cs.ctx, tok);
     }
 
 private:
@@ -439,6 +450,34 @@ private:
         p->rec = rec;
         p->count = 0U;
         return p;
+    }
+
+    // Splice one pool's pending chain onto its free list. rec->cs is already
+    // held by the caller (release holds it for the whole chain + splice so the
+    // block `next` writes and the head CAS serialize against a concurrent
+    // alloc). The token is passed through so we do NOT re-enter the CS.
+    static void splice_locked(Pending* p, CriticalSection::Token tok) noexcept
+    {
+        PoolRecord* rec = p->rec;
+        uint32_t head = rec->free_head.load(std::memory_order_relaxed);
+        unsigned spin = 0U;
+        uint32_t new_head = 0U;
+        for (;;) {
+            const uintptr_t last_addr = detail::pool_block_base(
+                rec->base, p->last, rec->block_size);
+            detail::pool_store_next(last_addr, detail::pool_head_index(head));
+            new_head = detail::pool_pack_head(
+                p->first, detail::pool_head_tag(head) + 1U);
+            if (rec->free_head.compare_exchange_weak(
+                    head, new_head,
+                    std::memory_order_relaxed, std::memory_order_relaxed)) {
+                break;
+            }
+            detail::pool_backoff(head, rec->free_head, spin);
+        }
+        rec->used.fetch_sub(p->count, std::memory_order_relaxed);
+        p->count = 0U;
+        (void)tok;
     }
 
     Pending pending_[kMaxPending];

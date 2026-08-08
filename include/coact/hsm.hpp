@@ -25,6 +25,7 @@ struct StateDef {
     int8_t parent;                 // parent state index; 0 is the root; -1 = no parent
     void (*entry)(Context&);       // entry action, may be null
     void (*exit)(Context&);        // exit action, may be null
+    const char* name;              // debug label; may be null (falls back to null)
 };
 
 template <typename Context>
@@ -53,6 +54,10 @@ public:
     void init(Context& ctx, const Event& evt) noexcept;   // enter initial_state, root first
     bool dispatch(Context& ctx, const Event& evt) noexcept;  // handled?
     int8_t current_state() const noexcept;
+
+    // Debug label of the active state, or nullptr when not initialized / the
+    // state carries no name. Zero-cost: only reads the static table slot.
+    const char* current_state_name() const noexcept;
 
 private:
     int8_t parent_of(int8_t state) const noexcept;
@@ -131,6 +136,14 @@ bool Hsm<Context>::dispatch(Context& ctx, const Event& evt) noexcept {
 template <typename Context>
 int8_t Hsm<Context>::current_state() const noexcept {
     return current_;
+}
+
+template <typename Context>
+const char* Hsm<Context>::current_state_name() const noexcept {
+    if (current_ < 0 || current_ >= static_cast<int8_t>(num_states_)) {
+        return nullptr;
+    }
+    return states_[current_].name;
 }
 
 template <typename Context>

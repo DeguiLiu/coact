@@ -114,10 +114,10 @@ void ignore_heartbeat(NodeContext& ctx, const coact::Event&)
 }
 
 const coact::StateDef<NodeContext> kStates[] = {
-    { -1, nullptr, nullptr },                 // root
-    { kRoot, connected_entry, nullptr },      // Connected
-    { kRoot, suspect_entry, nullptr },        // Suspect
-    { kRoot, disconnected_entry, nullptr },   // Disconnected
+    { -1, nullptr, nullptr, "Root" },
+    { kRoot, connected_entry, nullptr, "Connected" },
+    { kRoot, suspect_entry, nullptr, "Suspect" },
+    { kRoot, disconnected_entry, nullptr, "Disconnected" },
 };
 
 const coact::TransitionDef<NodeContext> kTransitions[] = {
@@ -269,10 +269,17 @@ int main()
     std::printf("\n=== final node states ===\n");
     const NodeContext* all[] = { &node1.context(), &node2.context(),
                                  &node3.context(), &node4.context() };
+    const char* final_names[] = { node1.hsm_current_state_name(),
+                                  node2.hsm_current_state_name(),
+                                  node3.hsm_current_state_name(),
+                                  node4.hsm_current_state_name() };
+    int ni = 0;
     for (const NodeContext* c : all) {
-        std::printf("Node %u: connected=%s missed=%u total=%u\n",
+        std::printf("Node %u: connected=%s missed=%u total=%u [%s]\n",
                     c->node_id, c->connected ? "true" : "false",
-                    c->missed_heartbeats, c->total_heartbeats);
+                    c->missed_heartbeats, c->total_heartbeats,
+                    (final_names[ni] != nullptr) ? final_names[ni] : "?");
+        ++ni;
     }
     std::printf("pool.used: %u\n", static_cast<unsigned>(pool.used()));
     return 0;

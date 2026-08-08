@@ -118,13 +118,13 @@ void error_action(ProtocolContext& ctx, const coact::Event&)
 }
 
 const coact::StateDef<ProtocolContext> kStates[] = {
-    { -1, nullptr, nullptr },                        // Operational (root)
-    { kOperational, disconnected_entry, nullptr },   // Disconnected
-    { kOperational, connecting_entry, nullptr },     // Connecting
-    { kOperational, connected_entry, connected_exit },  // Connected (parent)
-    { kConnected, idle_entry, nullptr },              // Idle   (child of Connected)
-    { kConnected, active_entry, nullptr },            // Active (child of Connected)
-    { kOperational, disconnecting_entry, nullptr },   // Disconnecting
+    { -1, nullptr, nullptr, "Operational" },
+    { kOperational, disconnected_entry, nullptr, "Disconnected" },
+    { kOperational, connecting_entry, nullptr, "Connecting" },
+    { kOperational, connected_entry, connected_exit, "Connected" },
+    { kConnected, idle_entry, nullptr, "Idle" },
+    { kConnected, active_entry, nullptr, "Active" },
+    { kOperational, disconnecting_entry, nullptr, "Disconnecting" },
 };
 
 const coact::TransitionDef<ProtocolContext> kTransitions[] = {
@@ -240,6 +240,7 @@ int main()
     std::printf("error_count:     %d\n", ao.context().error_count);
     std::printf("connected:       %s\n", ao.context().connected ? "true" : "false");
     std::printf("last_action:     %s\n", ao.context().last_action);
+    std::printf("hsm state:       %s\n", ao.hsm_current_state_name());
     std::printf("drained:         %s\n",
                 (0U == ao.pending().load()) ? "yes" : "NO");
     std::printf("pool.used:       %u\n", static_cast<unsigned>(pool.used()));

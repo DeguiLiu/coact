@@ -290,6 +290,13 @@ public:
     ExecutionLease& lease() noexcept override { return lease_; }
     PendingCounter& pending() noexcept override { return pending_; }
 
+    // Debug accessors into the underlying HSM (active state / its label).
+    int8_t hsm_current_state() const noexcept { return hsm_.current_state(); }
+    const char* hsm_current_state_name() const noexcept
+    {
+        return hsm_.current_state_name();
+    }
+
     // Compile-time RTC budget injected by Traits (monitor reads it for the
     // Dispatcher timeout path).
     static constexpr uint64_t rtc_budget_ns() noexcept
