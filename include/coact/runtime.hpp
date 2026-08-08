@@ -12,7 +12,6 @@
 #include "coact/coordinator.hpp"
 #include "coact/dispatcher.hpp"
 #include "coact/monitor.hpp"
-#include "coact/pal_posix.hpp"
 #include "coact/pool.hpp"
 #include "coact/queue.hpp"
 #include "coact/staging.hpp"

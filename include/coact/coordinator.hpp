@@ -12,7 +12,6 @@
 #include "coact/config.hpp"
 #include "coact/event.hpp"
 #include "coact/monitor.hpp"
-#include "coact/pal_posix.hpp"
 #include "coact/policy.hpp"
 #include "coact/pool.hpp"
 #include "coact/staging.hpp"

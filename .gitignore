@@ -1,6 +1,11 @@
 # Build directories
 build_*/
+build-*/
 build/
+
+# Object files left in-tree by ad-hoc toolchain runs (e.g. QEMU BSP bring-up)
+*.o
+
 # Editor artifacts
 *.swp
 *.swo

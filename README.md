@@ -7,10 +7,9 @@ coact（**Co**operative **Act**ive-object framework）是一个面向资源受�
 ## 特性
 
 - **无锁事件池**：`EventPool` 用 32-bit 原子 + 索引式 Treiber free-list，`[15:0]=索引 / [31:16]=ABA tag`。32-bit CAS 在 x86 与 ARM Cortex-M 上均为原生指令，**不依赖 libatomic**，单核 100 MHz 下经注入的 `CriticalSection`（irq mask）以 O(1) 保护 ISR 抢占。
-- **批量回收**：`ReclaimBatcher` 将 Dispatcher 逐事件释放的多个 free-head CAS 折叠为一次 splice，多生产者 + 单回收线程场景实测吞吐提升约 42%。
+- **批量回收**：`ReclaimBatcher` 将 Dispatcher 逐事件释放的多个 free-head CAS 折叠为一次 splice，减少多生产者 + 单回收线程场景下的 free-head 争用。
 - **三级无锁队列**：High / Normal / Low 分区隔离 + 限压保护（Breaker），批处理减少唤醒抖动。
 - **QP 式引用计数**：池事件经 `event_ref_inc` / `event_gc` 管理生命周期，静态事件（`pool_id==0`）永不被回收。
-- **三层 API**：`L3 Runtime 装配` → `L2 Struct+Loader` → `L1 hash+CRC`（内存/字节对齐固化到编译期）。
 - **嵌入式安全**：无堆分配 / 无递归 / 无 goto，固定宽度整型，`-fno-exceptions -fno-rtti`，MISRA C++ 对齐（恒配 `{ }`、常量前置、`switch` 必带 `default`）。
 
 ## 架构
@@ -85,9 +84,9 @@ rt.start();
 
 ## 测试与健壮性
 
-- 14 个测试目标，覆盖事件池并发、队列 MPSC 争用、HSM 迁移、Breaker 限压、Coordinator 直接/入队分流、整体装配生命周期。
+- 15 个测试目标，覆盖事件池并发、队列 MPSC 争用、HSM 迁移、Breaker 限压、Coordinator 直接/入队分流、整体装配生命周期。
 - **TSan**（ASLR-off）通过：多生产者池 alloc/reclaim、Dispatcher 批量回收路径 0 数据竞争。
-- `-Wconversion -Wshadow` 下核心头文件零告警；`.ai/` 提供 `lint.sh` / `format.sh` / `tidy.sh`（codelining 工具链）。
+- `-Wconversion -Wshadow` 下核心头文件零告警；`.ai/` 提供 `check.sh` / `lint.sh` / `format.sh` / `tidy.sh` / `run-tsan.sh`。
 - 性能基准：`src/core/bench_hotpath.cpp`（SIGPROF 采样 + 折叠火焰图），`--mode staged|direct`。
 
 ## 许可

@@ -26,7 +26,7 @@
 | 并发策略 | 32-bit tagged-CAS（LDREX/STREX 原生）+ 注入 `CriticalSection`（irq mask） | `osp::Mutex`（`std::mutex` 封装），每次 Alloc/Free 加锁 | 64-bit tagged-CAS，`atomic<uint64_t> free_head_`，高 32 bit ABA tag |
 | ABA tag | 16 bit tag（`[31:16]`），32-bit 原子，无 libatomic | 无 | 32 bit tag（`[63:32]`），64-bit 原子 |
 | 目标平台 | 32-bit Cortex-M 原生无锁 | Linux 只，std::mutex 不可用于裸机 ISR | Linux SMP 优化 |
-| 批量回收 | `ReclaimBatcher`：Dispatcher 尾部 flush，多事件一次 CAS splice，热路径实测 ~42% 提升（注：该数字来自修复前基线；SMP 下为消除块 `next` 字段竞争引入 spinlock CS 后需复测） | 无 | 无 |
+| 批量回收 | `ReclaimBatcher`：Dispatcher 尾部 flush，多事件一次 CAS splice，减少 free-head 争用 | 无 | 无 |
 
 **结论**：newosp `FixedPool` 用互斥锁——无法在 RT-Thread ISR 上下文调用；coact `EventPool` 32-bit CAS + irq mask 是 Cortex-M 单核的正确选择。newosp `DataDispatcher` 的 64-bit ABA 更适合 64-bit SMP Linux。`ReclaimBatcher` 是 coact 独有的批量回收优化。
 
@@ -107,9 +107,7 @@
 
 ## 9. 并发内存序纪律
 
-两库均全程显式 memory_order，无 seq_cst 兜底——这是正确的高性能并发实践。
-
-coact 额外：
+两库均全程显式 memory_order，无 seq_cst 兜底。coact 额外：
 - `dispatcher_active_` release/acquire + Dispatcher 退出前 `any_buffered()` 再检查，文档化 missed-wakeup-safe 证明
 - ReclaimBatcher：批内链写与 flush 的 head CAS 均在注入的 CriticalSection（SMP=spinlock，单核=irq mask）内完成，CAS 用 relaxed，串行性由 CS 提供，保证块 `next` 字段写入与并发 alloc 读互不交错
 
