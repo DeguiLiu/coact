@@ -397,7 +397,11 @@ COACT_TEST(policy_mergecell_concurrent_producers)
     //    the single CAS gate (no assertion can bound it higher than that).
     CHECK(published.load() > 0);
     CHECK(consumed.load() <= published.load());
-    CHECK(merge_wins.load() > 0);   // the same slot was merged repeatedly
+    /* Not asserted: merge is best-effort and non-blocking. Under optimized
+       (-O2) timing two producers can race through publish without one ever
+       reaching the merge CAS, so merge_wins == 0 is legal here. Deterministic
+       merge behavior is covered by the single-threaded merge tests above. */
+    (void)merge_wins;
 }
 
 // Double-consume guard: after release_empty the cell is Empty; a stale
