@@ -1,0 +1,102 @@
+// coact Dispatcher - single-thread batch dispatch loop over the three-tier
+// staging queues. See design 13 and implementation contract 4.8.
+//
+// Model adapted from QP/C++ QF dispatcher loop (src/qf/qf_act.cpp);
+// the coact API is an original re-expression. Project license: MIT.
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+
+#include "coact/ao.hpp"
+#include "coact/config.hpp"
+#include "coact/event.hpp"
+#include "coact/monitor.hpp"
+#include "coact/pool.hpp"
+#include "coact/staging.hpp"
+
+namespace coact {
+
+// ---------------------------------------------------------------------------
+// Single-threaded Dispatcher. Runs on a dedicated thread started by the PAL.
+// Each batch: tick(now) -> begin_batch -> dequeue loop -> ao->dispatch ->
+// event_gc. When all queues are empty the thread sleeps via pal.wait_dispatcher
+// and wakes on signal_dispatcher_from_task/isr.
+//
+// Key constraint (S6 definition, interface_contract 4.6):
+//   Ao::dispatch() owns its own execution lease internally. The Dispatcher
+//   MUST NOT try_acquire the lease before calling ao->dispatch(); doing so
+//   causes a double-acquire and an immediate COACT_ASSERT abort.
+// ---------------------------------------------------------------------------
+template <typename StagingT, typename PalT>
+class Dispatcher
+{
+public:
+    Dispatcher(StagingT& staging, AoRegistry& registry,
+               Monitor& monitor, Breaker& breaker, PalT& pal) noexcept
+        : staging_(staging),
+          registry_(registry),
+          monitor_(monitor),
+          breaker_(breaker),
+          pal_(pal),
+          stop_(false)
+    {
+    }
+
+    // Main loop. Called from the PAL dispatcher thread via ThreadEntry.
+    void run() noexcept
+    {
+        while (!stop_.load(std::memory_order_acquire)) {
+            const uint64_t now_ns = pal_.monotonic_ns();
+
+            /* Refresh Low aging baseline before opening a new batch. */
+            staging_.tick(now_ns);
+            staging_.begin_batch();
+
+            bool any = false;
+            while (staging_.batch_used() < DefaultConfig::kBatchSizeMax) {
+                StagingSlot slot;
+                if (!staging_.dequeue_one(slot)) {
+                    break;
+                }
+                any = true;
+
+                AoBase* ao = registry_.lookup(slot.target);
+                if (ao != nullptr) {
+                    /* Ao::dispatch() acquires RunningDispatcher lease
+                       internally; never pre-acquire here. */
+                    ao->dispatch(*slot.event);
+                    breaker_.on_dispatch_cycle();
+                    monitor_.record_disposition(SubmitDisposition::Queued);
+                }
+                /* Release the reference regardless of lookup result. */
+                event_gc(slot.event);
+            }
+
+            if (!any) {
+                /* Feed watchdog on idle cycles so the breaker cooldown
+                   does not stall when there is no traffic. */
+                breaker_.on_dispatch_cycle();
+                pal_.wait_dispatcher(DefaultConfig::kBatchTimeoutMs);
+            }
+        }
+    }
+
+    // Thread-safe stop request. The run() loop checks this after each batch.
+    void request_stop() noexcept
+    {
+        stop_.store(true, std::memory_order_release);
+        pal_.signal_dispatcher_from_task();
+    }
+
+private:
+    StagingT&    staging_;
+    AoRegistry&  registry_;
+    Monitor&     monitor_;
+    Breaker&     breaker_;
+    PalT&        pal_;
+    std::atomic<bool> stop_;
+};
+
+}  // namespace coact
