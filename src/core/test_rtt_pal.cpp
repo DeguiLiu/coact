@@ -74,13 +74,13 @@ COACT_TEST(rtthread_pal_signal_wait_dispatcher)
 COACT_TEST(rtthread_pal_start_join_dispatcher)
 {
     coact::pal::RtThread pal;
-    struct Flag { volatile int done; };
-    Flag flag{0};
+    struct Flag { std::atomic<int> done{0}; };
+    Flag flag;
     pal.start_dispatcher([](void* ctx) {
-        static_cast<Flag*>(ctx)->done = 1;
+        static_cast<Flag*>(ctx)->done.store(1, std::memory_order_relaxed);
     }, &flag);
     pal.join_dispatcher();
-    CHECK_EQ(1, flag.done);
+    CHECK_EQ(1, flag.done.load(std::memory_order_relaxed));
 }
 
 /* ---- End-to-end with RT-Thread PAL ---------------------------------------- */
@@ -123,16 +123,18 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
 {
     g_rtt_counter.store(0);
 
-    /* Thread-safe pool: main thread allocs, Dispatcher thread gc-concurrently. */
-    coact::EventPool<kRttBlk, kRttCap, coact::PoolMutexLock> pool;
-    pool.init(g_rtt_pool_storage, sizeof(g_rtt_pool_storage));
+    coact::pal::RtThread pal;
+    /* Thread-safe pool under the RT-Thread irq-mask critical section: main
+       thread allocs, Dispatcher thread gc-concurrently, guarded in O(1). */
+    coact::EventPool<kRttBlk, kRttCap> pool;
+    pool.init(g_rtt_pool_storage, sizeof(g_rtt_pool_storage),
+              coact::make_critical_section(pal));
 
     RttAo ao(kRttStates, 2U, kRttTrans, 1U, 1, 4U);
     coact::Event init_e;
     init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
     ao.init(init_e);
 
-    coact::pal::RtThread pal;
     coact::Runtime<coact::DefaultConfig, coact::pal::RtThread> rt(pal);
 
     CHECK(rt.bind(&ao));
@@ -145,6 +147,96 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
         rt.coordinator().submit_from_task(1U, e, qos);
+    }
+
+    for (int w = 0; w < 200; ++w) {
+        if (g_rtt_counter.load() >= kN) { break; }
+        usleep(5000);
+    }
+    rt.stop();
+
+    CHECK_EQ(kN, g_rtt_counter.load());
+    CHECK_EQ(0U, pool.used());
+}
+
+/* ---- RT-Thread 5.2.x single-core semantics ------------------------------- */
+
+/* A pool wired to a counting CriticalSection must call save/restore exactly
+   once per alloc and once per reclaim: this is the O(1) irq-mask guard the
+   single-core 100 MHz MCU relies on (rt_hw_interrupt_disable/enable). */
+struct PoolCsCounters { int saves = 0; int restores = 0; };
+PoolCsCounters g_pool_cs;
+uintptr_t pool_cs_save(void*) { ++g_pool_cs.saves; return 0xABABABABu; }
+void pool_cs_restore(void*, uintptr_t) { ++g_pool_cs.restores; }
+
+COACT_TEST(rtthread_pool_cs_guards_alloc_reclaim)
+{
+    g_pool_cs = {};
+    coact::CriticalSection cs;
+    cs.ctx = nullptr;
+    cs.save = &pool_cs_save;
+    cs.restore = &pool_cs_restore;
+
+    coact::EventPool<kRttBlk, kRttCap> pool;
+    pool.init(g_rtt_pool_storage, sizeof(g_rtt_pool_storage), cs);
+
+    coact::Event* e = pool.alloc(1U);
+    REQUIRE(e != nullptr);
+    /* one save/restore per head operation; balanced, never nested */
+    CHECK_EQ(1, g_pool_cs.saves);
+    CHECK_EQ(1, g_pool_cs.restores);
+
+    coact::event_ref_inc(e);
+    coact::event_gc(e);   /* ref 1->0 -> reclaim -> another save/restore */
+    CHECK_EQ(2, g_pool_cs.saves);
+    CHECK_EQ(2, g_pool_cs.restores);
+    CHECK_EQ(0U, pool.used());
+}
+
+/* Simulated ISR nesting (rt_interrupt_get_nest() > 0) must flip
+   current_context() to Isr - the check the coordinator uses to reject the
+   blocking direct path from ISR. */
+COACT_TEST(rtthread_pal_current_context_isr)
+{
+    coact::pal::RtThread pal;
+    stub_set_isr_nest(1U);
+    coact::ExecutionContext isr_ctx = pal.current_context();
+    CHECK_EQ(static_cast<int>(coact::ContextKind::Isr),
+             static_cast<int>(isr_ctx.kind));
+    stub_set_isr_nest(0U);
+    coact::ExecutionContext task_ctx = pal.current_context();
+    CHECK_NE(static_cast<int>(coact::ContextKind::Isr),
+             static_cast<int>(task_ctx.kind));
+}
+
+/* ISR-path submit end-to-end: try_submit_from_isr must stage + wake the
+   Dispatcher (rt_sem_release is ISR-safe) and drain to used()==0. */
+COACT_TEST(rtthread_pal_isr_submit_end_to_end)
+{
+    g_rtt_counter.store(0);
+
+    coact::pal::RtThread pal;
+    coact::EventPool<kRttBlk, kRttCap> pool;
+    pool.init(g_rtt_pool_storage, sizeof(g_rtt_pool_storage),
+              coact::make_critical_section(pal));
+
+    RttAo ao(kRttStates, 2U, kRttTrans, 1U, 1, 4U);
+    coact::Event init_e;
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    ao.init(init_e);
+
+    coact::Runtime<coact::DefaultConfig, coact::pal::RtThread> rt(pal);
+    CHECK(rt.bind(&ao));
+    CHECK(rt.initialize());
+    rt.start();
+
+    coact::EventQos qos{false, false};
+    static constexpr int kN = 10;
+    for (int i = 0; i < kN; ++i) {
+        coact::Event* e = pool.alloc(1U);
+        REQUIRE(e != nullptr);
+        coact::SubmitResult r = rt.coordinator().try_submit_from_isr(1U, e, qos);
+        CHECK(coact::SubmitDisposition::RejectedFull != r.disposition);
     }
 
     for (int w = 0; w < 200; ++w) {

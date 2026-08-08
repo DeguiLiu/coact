@@ -40,8 +40,16 @@ python3 tools/flamegraph_svg.py out.folded out.svg "coact staged 1c/100Hz"
 
 - 单核 100 Hz staged（-O2）：condvar 唤醒+等待约 31%、`clock_gettime` 约 14%；
   多核：EventPool `std::mutex` 约 47%。
-- 已落地：Dispatcher 仅 idle 时唤醒（signal 调用 -28%）、队列 cell 32 字节对齐。
-- 待做：EventPool 无锁 free-list（设计 §6.4 原子倾向）。
+- 已落地：Dispatcher 仅 idle 时唤醒（signal 调用 -28%）、队列 cell 32 字节对齐、
+  **EventPool 无锁 indexed tagged-CAS free-list**（设计 §6.4 原子倾向，复用 newosp
+  `data_dispatcher.hpp` 索引+ABA-tag 模式；TSan 无数据竞争）。
+- 无锁池实测（RelWithDebInfo, 100 核）：
+  - direct 模式吞吐 **+13%**（15.4M → 17.4M ev/s，未竞争时 CAS alloc 优于 mutex）；
+  - staged 模式聚合吞吐 **-12~15%**（0.90~1.22M vs 1.38M ev/s）：单共享
+    `free_head` 原子同时被多生产者 alloc 与单消费者 reclaim 锤击，cache-line
+    ping-pong 于短临界区 mutex。**多核 staged 若要追回，需多头/批量回收**；
+    单核 RT-Thread 目标上池锁本非热点，此改动偏向中性。
+- 池锁（`pthread_mutex_*`）帧已从多核热点 top 消失。
 
 ## 局限
 

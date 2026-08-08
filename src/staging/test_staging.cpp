@@ -66,13 +66,13 @@ struct CsCounters {
 };
 CsCounters g_cs;
 
-uintptr_t cs_save()
+uintptr_t cs_save(void*)
 {
     ++g_cs.saves;
     return 0x0F0F0F0Fu;
 }
 
-void cs_restore(uintptr_t)
+void cs_restore(void*, uintptr_t)
 {
     ++g_cs.restores;
 }
@@ -124,7 +124,7 @@ int drain_all(S& s, std::vector<coact::StagingSlot>& out)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_partition_routing)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     CHECK(s.enqueue(1U, seq_event(0), coact::PriorityClass::High, 0U));
     CHECK(s.enqueue(2U, seq_event(1), coact::PriorityClass::Normal, 0U));
@@ -154,7 +154,7 @@ COACT_TEST(staging_partition_routing)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_full_returns_false)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     for (uint16_t i = 0U; i < TestConfig::kHighCapacity; ++i) {
         CHECK(s.enqueue(1U, seq_event(static_cast<uint8_t>(i)),
@@ -180,7 +180,7 @@ COACT_TEST(staging_full_returns_false)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_high_priority_first)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     s.enqueue(1U, seq_event(10), coact::PriorityClass::Low, 0U);
     s.enqueue(1U, seq_event(11), coact::PriorityClass::Normal, 0U);
@@ -200,7 +200,7 @@ COACT_TEST(staging_high_priority_first)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_low_aging_exception)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
     const uint64_t wait_ns =
         static_cast<uint64_t>(TestConfig::kLowMaxWaitMs) * 1000000ULL;
 
@@ -236,7 +236,7 @@ COACT_TEST(staging_low_aging_exception)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_low_aging_within_budget_no_force)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     s.enqueue(3U, seq_event(30), coact::PriorityClass::Low, 0U);
     s.enqueue(2U, seq_event(31), coact::PriorityClass::Normal, 0U);
@@ -256,7 +256,7 @@ COACT_TEST(staging_low_aging_within_budget_no_force)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_batch_size_max)
 {
-    BatchStaging s(coact::CriticalSection{nullptr, nullptr});
+    BatchStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     for (uint16_t i = 0U; i < 8U; ++i) {
         CHECK(s.enqueue(1U, seq_event(static_cast<uint8_t>(i)),
@@ -288,7 +288,7 @@ COACT_TEST(staging_batch_size_max)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_watermark_bands)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     CHECK_EQ(s.watermark(coact::Partition::Normal), 0U);
 
@@ -325,7 +325,7 @@ COACT_TEST(staging_never_changes_refcount)
     REQUIRE(e != nullptr);
     REQUIRE_EQ(e->ref_ctr, 0U);
 
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
     REQUIRE(s.enqueue(9U, e, coact::PriorityClass::High, 0U));
 
     // enqueue must not have inc'ed the event
@@ -353,7 +353,7 @@ COACT_TEST(staging_never_changes_refcount)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_dequeue_empty_false)
 {
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
     coact::StagingSlot slot;
     s.begin_batch();
     CHECK(!s.dequeue_one(slot));
@@ -403,7 +403,7 @@ COACT_TEST(staging_concurrent_no_loss)
     constexpr int kPerProducer = 80;          // 240 distinct tags, fits uint8_t
     constexpr int kSlots = kProducers * kPerProducer;
 
-    MpscStaging s(coact::CriticalSection{nullptr, nullptr});
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
     std::atomic<int> done{0};
     std::vector<std::thread> threads;
     std::vector<unsigned char> seen(static_cast<size_t>(kSlots), 0U);

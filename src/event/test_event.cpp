@@ -2,11 +2,14 @@
 // exhaustion, block reuse and zero-heap proof. See contract 4.1.
 // SPDX-License-Identifier: MIT
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <thread>
+#include <vector>
 
 #include "coact/event.hpp"
 #include "coact/pool.hpp"
@@ -344,6 +347,55 @@ COACT_TEST(event_zero_heap)
     // the whole alloc/inc/gc/reclaim loop never touched the heap
     CHECK_EQ(g_alloc_count, alloc_before);
     CHECK_EQ(g_free_count, free_before);
+}
+
+COACT_TEST(event_pool_mp_alloc_sc_reclaim_lockfree)
+{
+    // Any EventPool is now lock-free (index-based tagged-CAS free list). Under
+    // concurrent multi-producer alloc + single-consumer-ish reclaim the free
+    // list must not lose or duplicate blocks: after the storm every block is
+    // accounted for, the pool drains to used()==0, and a full re-alloc succeeds.
+    constexpr std::uint16_t kPoolCap = 32U;
+    PoolStorage<16U, kPoolCap> storage;
+    coact::EventPool<16U, kPoolCap> pool;   // no LockT: always lock-free
+    pool.init(storage.data, sizeof(storage.data));
+
+    constexpr int kThreads = 8;
+    constexpr int kRounds = 5000;
+    std::atomic<bool> go{false};
+    std::vector<std::thread> th;
+    for (int t = 0; t < kThreads; ++t) {
+        th.emplace_back([&]() {
+            while (!go.load(std::memory_order_acquire)) { }
+            int disp = 0;
+            while (disp < kRounds) {
+                coact::Event* e = pool.alloc(1U);
+                if (nullptr == e) {
+                    continue;       // transiently empty: retry the round
+                }
+                ++disp;
+                coact::event_ref_inc(e);
+                coact::event_gc(e); // ref 1->0 -> reclaim back to the pool
+            }
+        });
+    }
+    go.store(true, std::memory_order_release);
+    for (auto& x : th) { x.join(); }
+
+    // Every block must have returned (used()==0). A lost block would leave
+    // used()>0; a duplicated free would corrupt the list and show up as a bad
+    // drain below.
+    CHECK_EQ(0U, pool.used());
+
+    // Drain-verify: alloc the whole capacity back; each must succeed (nothing
+    // lost) and the high-watermark must equal a full pool at some point.
+    CHECK(pool.high_watermark() > 0U);
+    coact::Event* all[kPoolCap];
+    for (std::uint16_t i = 0U; i < kPoolCap; ++i) {
+        all[i] = pool.alloc(1U);
+        REQUIRE(all[i] != nullptr);
+    }
+    CHECK_EQ(static_cast<std::uint16_t>(kPoolCap), pool.used());
 }
 
 COACT_TEST(event_registry_queries)

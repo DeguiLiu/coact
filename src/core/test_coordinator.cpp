@@ -81,9 +81,9 @@ using StageT = coact::Staging<SmallCfg, coact::BoundedMpscQueue>;
 
 static StageT make_staging()
 {
-    return StageT(coact::CriticalSection{
-        []() -> coact::CriticalSection::Token { return 0U; },
-        [](coact::CriticalSection::Token) {} });
+    return StageT(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {} });
 }
 
 /* =========================================================================

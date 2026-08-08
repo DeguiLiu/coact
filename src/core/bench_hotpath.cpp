@@ -247,8 +247,7 @@ static void write_folded(FILE* out, bool verbose)
 /* ============================ runners ============================ */
 
 // Produce into a pool/submit loop until stop is set. Waits on pool exhaustion.
-static void producer_loop(std::atomic<bool>& stop, coact::EventPool<kBlk, kCap,
-                          coact::PoolMutexLock>& pool,
+static void producer_loop(std::atomic<bool>& stop, coact::EventPool<kBlk, kCap>& pool,
                           coact::DispatchCoordinator<coact::Staging<
                               coact::DefaultConfig,
                               coact::pal::Posix::QueueBackend>,
@@ -330,7 +329,7 @@ int main(int argc, char** argv)
     ao_h.init(init_e);
     ao_d.init(init_e);
 
-    coact::EventPool<kBlk, kCap, coact::PoolMutexLock> pool;
+    coact::EventPool<kBlk, kCap> pool;
     pool.init(g_storage, sizeof(g_storage));
 
     coact::pal::Posix pal;

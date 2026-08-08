@@ -92,7 +92,7 @@ alignas(16) static unsigned char g_pool_storage[kBlk * (kCap + 1U)];
 static StaticAo g_ao(kStStates, 2U, kStTrans, 1U, 1, 4U);
 static coact::pal::RtThread g_pal;
 static coact::Runtime<BoardCfg, coact::pal::RtThread> g_rt(g_pal);
-static coact::EventPool<kBlk, kCap, coact::PoolMutexLock> g_pool;
+static coact::EventPool<kBlk, kCap> g_pool;
 
 namespace {
 

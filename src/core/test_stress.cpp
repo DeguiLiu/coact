@@ -108,7 +108,7 @@ COACT_TEST(stress_multiproducer_concurrent)
     init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
     ao.init(init_e);
 
-    coact::EventPool<kBlk, kCap, coact::PoolMutexLock> pool;
+    coact::EventPool<kBlk, kCap> pool;
     pool.init(g_storage, sizeof(g_storage));
 
     coact::pal::Posix pal;
@@ -167,9 +167,9 @@ COACT_TEST(stress_overload_drops_noncritical)
     coact::pal::Posix pal;
     using StageT = coact::Staging<coact::DefaultConfig,
         coact::pal::Posix::QueueBackend>;
-    StageT staging(coact::CriticalSection{
-        []() -> coact::CriticalSection::Token { return 0U; },
-        [](coact::CriticalSection::Token) {} });
+    StageT staging(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {} });
 
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
@@ -226,7 +226,7 @@ COACT_TEST(stress_zero_heap_hot_path)
     init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
     ao.init(init_e);
 
-    coact::EventPool<kBlk, kCap, coact::PoolMutexLock> pool;
+    coact::EventPool<kBlk, kCap> pool;
     pool.init(g_storage, sizeof(g_storage));
 
     coact::pal::Posix pal;

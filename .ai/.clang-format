@@ -1,0 +1,137 @@
+# .clang-format
+# Google C++ Style Guide with Modern C++17 support
+# Reference: https://google.github.io/styleguide/cppguide.html
+# clang-format options: https://clang.llvm.org/docs/ClangFormatStyleOptions.html
+
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++17
+
+# =============================================================================
+# Indentation
+# =============================================================================
+IndentWidth: 2
+TabWidth: 2
+UseTab: Never
+AccessModifierOffset: -1
+IndentCaseLabels: true
+IndentPPDirectives: None
+IndentWrappedFunctionNames: false
+NamespaceIndentation: None
+
+# =============================================================================
+# Line Width and Wrapping
+# =============================================================================
+ColumnLimit: 120
+ContinuationIndentWidth: 4
+
+# =============================================================================
+# Braces and Blocks
+# =============================================================================
+BreakBeforeBraces: Attach
+Cpp11BracedListStyle: true
+
+# =============================================================================
+# Alignment
+# =============================================================================
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+
+# =============================================================================
+# Short Statements (Single Line)
+# =============================================================================
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: All
+AllowShortLoopsOnASingleLine: false
+
+# =============================================================================
+# Breaking Rules
+# =============================================================================
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: true
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: true
+BinPackParameters: true
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeColon
+BreakInheritanceList: BeforeColon
+BreakStringLiterals: true
+
+# =============================================================================
+# Spaces
+# =============================================================================
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: false
+SpacesInCStyleCastParentheses: false
+SpacesInContainerLiterals: true
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# =============================================================================
+# Include Sorting (Google Style)
+# =============================================================================
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Main header (same name as .cpp file)
+  - Regex: '^"[^/]*\.(h|hpp)"$'
+    Priority: 1
+  # Project headers
+  - Regex: '^".*"$'
+    Priority: 2
+  # C++ wrappers for C headers
+  - Regex: '^<c(assert|ctype|errno|fenv|float|inttypes|limits|locale|math|setjmp|signal|stdarg|stddef|stdint|stdio|stdlib|string|time|uchar|wchar|wctype)>$'
+    Priority: 3
+  # C++ standard library headers
+  - Regex: '^<.*>$'
+    Priority: 4
+SortIncludes: true
+SortUsingDeclarations: true
+
+# =============================================================================
+# Pointers and References
+# =============================================================================
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+# =============================================================================
+# Namespace and Comments
+# =============================================================================
+CompactNamespaces: false
+FixNamespaceComments: true
+MaxEmptyLinesToKeep: 1
+ReflowComments: true
+CommentPragmas: '^ IWYU pragma:|^ NOLINT'
+
+# =============================================================================
+# Penalties (Line Breaking Decisions)
+# =============================================================================
+PenaltyBreakAssignment: 2
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyBreakTemplateDeclaration: 10
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 200

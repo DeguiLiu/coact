@@ -7,19 +7,9 @@
 #include <new>
 #include <utility>
 
-namespace coact {
+#include "coact/pal.hpp"
 
-// ---------------------------------------------------------------------------
-// CriticalSection: platform interrupt-critical-section hook injected into the
-// single-core backend. save() masks interrupts and returns an opaque token;
-// restore(token) unmasks them again. Host tests may inject no-op hooks.
-// Per contract 4.3 the function pointers carry no noexcept qualifier.
-// ---------------------------------------------------------------------------
-struct CriticalSection {
-    typedef uintptr_t Token;
-    Token (*save)();
-    void (*restore)(Token);
-};
+namespace coact {
 
 namespace detail {
 
@@ -217,7 +207,7 @@ public:
     SingleCoreCriticalRing& operator=(const SingleCoreCriticalRing&) = delete;
 
     bool try_push(T&& v) noexcept {
-        const CriticalSection::Token token = cs_.save();
+        const CriticalSection::Token token = cs_.save(cs_.ctx);
         bool ok = false;
         if (count_ < Capacity) {
             const uint32_t index = static_cast<uint32_t>(write_index_)
@@ -227,12 +217,12 @@ public:
             ++count_;
             ok = true;
         }
-        cs_.restore(token);
+        cs_.restore(cs_.ctx, token);
         return ok;
     }
 
     bool try_pop(T& out) noexcept {
-        const CriticalSection::Token token = cs_.save();
+        const CriticalSection::Token token = cs_.save(cs_.ctx);
         bool ok = false;
         if (count_ > 0U) {
             T* slot = reinterpret_cast<T*>(&cells_[write_index_]);
@@ -243,14 +233,14 @@ public:
             --count_;
             ok = true;
         }
-        cs_.restore(token);
+        cs_.restore(cs_.ctx, token);
         return ok;
     }
 
     uint16_t size() const noexcept {
-        const CriticalSection::Token token = cs_.save();
+        const CriticalSection::Token token = cs_.save(cs_.ctx);
         const uint16_t n = count_;
-        cs_.restore(token);
+        cs_.restore(cs_.ctx, token);
         return n;
     }
 

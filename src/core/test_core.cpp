@@ -82,9 +82,9 @@ alignas(8) static unsigned char g_pool_storage[kBlk * (kCap + 1U)];
 using StageT = coact::Staging<coact::DefaultConfig, coact::pal::Posix::QueueBackend>;
 static StageT make_staging()
 {
-    return StageT(coact::CriticalSection{
-        []() -> coact::CriticalSection::Token { return 0U; },
-        [](coact::CriticalSection::Token) {} });
+    return StageT(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {} });
 }
 
 namespace {

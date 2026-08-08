@@ -33,12 +33,37 @@ typedef intptr_t  rt_base_t;
 #define RT_IPC_FLAG_PRIO   0x01
 #define RT_TICK_PER_SECOND 1000
 
-/* --- Interrupt masking: no-op on POSIX host ----------------------------- */
-inline rt_base_t rt_hw_interrupt_disable() noexcept { return 0; }
-inline void      rt_hw_interrupt_enable(rt_base_t) noexcept {}
+/* --- Interrupt masking: emulate single-core exclusivity on host -------- */
+/* A single-core irq mask prevents both ISR and thread preemption. On the SMP
+   host we emulate that with one global mutex acquired in irq_save and released
+   in irq_restore, so the SingleCoreCriticalRing / pool critical sections are
+   genuinely mutually exclusive in the host tests. Coact usage is strictly
+   non-nested (one save/restore pair per pool/ring op); the depth counter is a
+   safety net. inline thread_local so every TU shares one depth variable. */
+inline pthread_mutex_t& stub_irq_mutex() noexcept
+{
+    static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+    return m;
+}
+inline thread_local int g_irq_depth = 0;
+inline rt_base_t rt_hw_interrupt_disable() noexcept
+{
+    if (0 == g_irq_depth++) {
+        pthread_mutex_lock(&stub_irq_mutex());
+    }
+    return static_cast<rt_base_t>(g_irq_depth);
+}
+inline void rt_hw_interrupt_enable(rt_base_t) noexcept
+{
+    if (0 == --g_irq_depth) {
+        pthread_mutex_unlock(&stub_irq_mutex());
+    }
+}
 
 /* --- ISR nesting: always 0 on host -------------------------------------- */
-static thread_local uint8_t g_isr_nest = 0U;
+/* inline (external linkage) so the test TU and the PAL TU share one counter;
+   a `static thread_local` copy would diverge per TU. */
+inline thread_local uint8_t g_isr_nest = 0U;
 inline uint8_t rt_interrupt_get_nest() noexcept { return g_isr_nest; }
 inline void stub_set_isr_nest(uint8_t n) noexcept { g_isr_nest = n; }
 

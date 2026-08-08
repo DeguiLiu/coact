@@ -1,5 +1,6 @@
 # Build directories
 build_*/
+build/
 # Editor artifacts
 *.swp
 *.swo

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 namespace coact {
@@ -21,15 +22,29 @@ struct Event {
     uint8_t ref_ctr;   // 0 after alloc; +1 per post; 0 again => recycle
 };
 
-// Live state of one event pool, addressable through the global registry.
+// Packing for the pool free-list head.
+//
+// The free-list head is a 32-bit tagged word (native 32-bit CAS on both x86
+// and 32-bit ARM Cortex-M — no libatomic fallback):[15:0] = free block index,
+// [31:16] = an ABA tag that increments on every successful alloc/reclaim so a
+// stale-pop cannot win. Capacity must stay below 0xFFFF (index 0xFFFF is the
+// empty sentinel). Blocks are fixed-stride from the pool's aligned base, so an
+// index maps to (base + index*block_size).
 struct PoolRecord {
-    void* free_list;                        // head of the embedded free list
-    uint16_t block_size;                    // aligned stride between blocks
+    // free_head is the only write-contended atomic (every alloc/reclaim CAS
+    // targets it). Give it its own cache line so concurrent producers and the
+    // reclaiming thread never invalidate each other's copy of the used/hwm
+    // stats, which also change on every operation. newosp isolates the same
+    // way (data_dispatcher.hpp: alignas(kCacheLineSize) free_head_ etc.).
+    alignas(64) std::atomic<uint32_t> free_head{0};   // [31:16]=ABA tag, [15:0]=free index
+    uintptr_t base;                       // aligned base of the block area
+    uint16_t block_size;                  // aligned stride between blocks
     uint16_t capacity;
-    uint16_t used;
-    uint16_t high_watermark;
-    void (*reclaim)(Event* e);              // returns a block to this pool
-    void* lock_ptr;                         // owning pool's sync guard (LockT*)
+    // Start a fresh cache line so free_head's line never carries used/hwm.
+    alignas(64) std::atomic<uint16_t> used{0};
+    std::atomic<uint16_t> high_watermark{0};
+    void (*reclaim)(Event* e);            // returns a block to this pool (lock-free)
+    void* owner;                          // owning EventPool* (for its CriticalSection)
 };
 
 // Maximum number of event pools that can be registered at once. pool_id is a

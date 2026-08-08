@@ -56,7 +56,7 @@ public:
     explicit Runtime(PalT& pal) noexcept
         : pal_(pal),
           cfg_{},
-          staging_(make_noop_cs()),
+          staging_(make_critical_section(pal_)),
           dispatcher_(staging_, registry_, monitor_, breaker_, pal_),
           coordinator_(staging_, registry_, monitor_, breaker_, pal_),
           initialized_(false),
@@ -113,14 +113,6 @@ public:
     Breaker<Config>& breaker()     noexcept { return breaker_; }
 
 private:
-    static CriticalSection make_noop_cs() noexcept
-    {
-        CriticalSection cs;
-        cs.save    = []() -> CriticalSection::Token { return 0U; };
-        cs.restore = [](CriticalSection::Token) {};
-        return cs;
-    }
-
     PalT&           pal_;
     ConfigType      cfg_;
     AoRegistry<Config> registry_;

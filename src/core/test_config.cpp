@@ -73,9 +73,9 @@ COACT_TEST(config_staging_and_dispatcher_config_type)
         "StagingT::ConfigType must be TestConfig");
 
     coact::pal::Posix pal;
-    StageT staging(coact::CriticalSection{
-        []() -> coact::CriticalSection::Token { return 0U; },
-        [](coact::CriticalSection::Token) {} });
+    StageT staging(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {} });
     coact::AoRegistry<TestConfig> registry;
     coact::Monitor<TestConfig>     monitor;
     TestConfig                     cfg{};
@@ -108,7 +108,7 @@ COACT_TEST(config_monitor_bounded_by_max_ao)
     /* Out-of-range access (5 > kMaxAo) must be safely guarded, not UB. */
     coact::AoCounters const& oob =
         monitor.ao(static_cast<coact::TargetId>(5U));
-    CHECK_EQ(0U, oob.direct_timeouts);  /* returns the zeroed unused slot */
+    CHECK_EQ(0U, coact_test::relaxed(oob.direct_timeouts));  /* zeroed unused slot */
 }
 
 }  // namespace

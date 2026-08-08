@@ -330,10 +330,10 @@ COACT_TEST(monitor_counts_dispositions) {
     m.record_disposition(SubmitDisposition::RejectedFull);
     m.record_disposition(SubmitDisposition::RejectedState);
 
-    CHECK_EQ(m.global().disposition_merge, 2U);
-    CHECK_EQ(m.global().disposition_filter, 1U);
-    CHECK_EQ(m.global().disposition_rate_limit, 1U);
-    CHECK_EQ(m.global().disposition_overload, 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().disposition_merge), 2U);
+    CHECK_EQ(coact_test::relaxed(m.global().disposition_filter), 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().disposition_rate_limit), 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().disposition_overload), 1U);
 }
 
 COACT_TEST(monitor_counts_per_ao_and_global) {
@@ -345,45 +345,45 @@ COACT_TEST(monitor_counts_per_ao_and_global) {
     m.record_direct_timeout(kSlowAo);
     m.record_rtc_timeout(kSlowAo);
 
-    CHECK_EQ(m.ao(kSlowAo).direct_duration_ns, 1500ULL);
-    CHECK_EQ(m.ao(kSlowAo).dispatcher_duration_ns, 2000ULL);
-    CHECK_EQ(m.ao(kSlowAo).direct_timeouts, 1U);
-    CHECK_EQ(m.ao(kSlowAo).rtc_timeouts, 1U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).direct_duration_ns), 1500ULL);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).dispatcher_duration_ns), 2000ULL);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).direct_timeouts), 1U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).rtc_timeouts), 1U);
 
     m.record_rejection(kSlowAo, RejectReason::kC2Priority);
     m.record_rejection(kSlowAo, RejectReason::kC2Priority);
     m.record_rejection(kSlowAo, RejectReason::kC5LeaseBusy);
-    CHECK_EQ(m.ao(kSlowAo).rejections[static_cast<size_t>(RejectReason::kC2Priority)], 2U);
-    CHECK_EQ(m.ao(kSlowAo).rejections[static_cast<size_t>(RejectReason::kC5LeaseBusy)], 1U);
-    CHECK_EQ(m.ao(kSlowAo).rejections[static_cast<size_t>(RejectReason::kC1Eligibility)], 0U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).rejections[static_cast<size_t>(RejectReason::kC2Priority)]), 2U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).rejections[static_cast<size_t>(RejectReason::kC5LeaseBusy)]), 1U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).rejections[static_cast<size_t>(RejectReason::kC1Eligibility)]), 0U);
 
     m.record_lease_contention(kSlowAo);
-    CHECK_EQ(m.ao(kSlowAo).lease_contention, 1U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).lease_contention), 1U);
 
     m.record_pending(kSlowAo, 5U);
     m.record_pending(kSlowAo, 8U);
     m.record_pending(kSlowAo, 3U);
-    CHECK_EQ(m.ao(kSlowAo).pending_max, 8U);
-    CHECK_EQ(m.ao(kSlowAo).pending, 3U);
-    CHECK_EQ(m.global().pending_max, 8U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).pending_max), 8U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kSlowAo).pending), 3U);
+    CHECK_EQ(coact_test::relaxed(m.global().pending_max), 8U);
 
     m.sample_watermark(PriorityClass::High, 85U);
     m.sample_watermark(PriorityClass::High, 100U);
     m.sample_watermark(PriorityClass::Low, 40U);
-    CHECK_EQ(m.global().watermark_pct[0], 100U);    // High
-    CHECK_EQ(m.global().high_water_count[0], 2U);
-    CHECK_EQ(m.global().full_count[0], 1U);
-    CHECK_EQ(m.global().watermark_pct[2], 40U);     // Low
-    CHECK_EQ(m.global().high_water_count[2], 0U);
-    CHECK_EQ(m.global().full_count[2], 0U);
+    CHECK_EQ(coact_test::relaxed(m.global().watermark_pct[0]), 100U);    // High
+    CHECK_EQ(coact_test::relaxed(m.global().high_water_count[0]), 2U);
+    CHECK_EQ(coact_test::relaxed(m.global().full_count[0]), 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().watermark_pct[2]), 40U);     // Low
+    CHECK_EQ(coact_test::relaxed(m.global().high_water_count[2]), 0U);
+    CHECK_EQ(coact_test::relaxed(m.global().full_count[2]), 0U);
 
     m.record_overflow();
     m.heartbeat();
     m.heartbeat();
     m.record_platform_fault();
-    CHECK_EQ(m.global().overflow, 1U);
-    CHECK_EQ(m.global().watchdog_heartbeats, 2U);
-    CHECK_EQ(m.global().platform_faults, 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().overflow), 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().watchdog_heartbeats), 2U);
+    CHECK_EQ(coact_test::relaxed(m.global().platform_faults), 1U);
 }
 
 COACT_TEST(monitor_invalid_target_safely_ignored) {
@@ -391,9 +391,9 @@ COACT_TEST(monitor_invalid_target_safely_ignored) {
     m.record_rejection(kInvalidTarget, RejectReason::kC1Eligibility);
     m.record_pending(kInvalidTarget, 3U);
     m.add_direct_duration(kInvalidTarget, 100ULL);
-    CHECK_EQ(m.ao(kInvalidTarget).direct_timeouts, 0U);
-    CHECK_EQ(m.ao(kInvalidTarget).pending_max, 0U);
-    CHECK_EQ(m.ao(kInvalidTarget).direct_duration_ns, 0ULL);
+    CHECK_EQ(coact_test::relaxed(m.ao(kInvalidTarget).direct_timeouts), 0U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kInvalidTarget).pending_max), 0U);
+    CHECK_EQ(coact_test::relaxed(m.ao(kInvalidTarget).direct_duration_ns), 0ULL);
 }
 
 }  // namespace

@@ -23,7 +23,7 @@ struct CsCounters {
 
 CsCounters g_cs;
 
-uintptr_t cs_save() {
+uintptr_t cs_save(void*) {
     g_cs.saves++;
     g_cs.depth++;
     if (g_cs.depth > g_cs.max_depth) {
@@ -32,7 +32,7 @@ uintptr_t cs_save() {
     return 0x1234ABCDu;
 }
 
-void cs_restore(uintptr_t) {
+void cs_restore(void*, uintptr_t) {
     g_cs.restores++;
     g_cs.depth--;
 }

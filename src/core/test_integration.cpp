@@ -78,7 +78,7 @@ static constexpr uint16_t kBS  = 16U;
 static constexpr uint16_t kCAP = 64U;
 /* Thread-safe pool: the main thread allocates while the Dispatcher thread
    reclaims (event_gc) concurrently. */
-using IntPool = coact::EventPool<kBS, kCAP, coact::PoolMutexLock>;
+using IntPool = coact::EventPool<kBS, kCAP>;
 alignas(16) static unsigned char g_pool_storage[kBS * kCAP + kBS];  /* +1 block margin */
 
 /* =========================================================================

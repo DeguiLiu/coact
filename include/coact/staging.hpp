@@ -164,7 +164,7 @@ public:
                 return false;
             }
             if (was_empty) {
-                low_head_arrival_ns_ = now_ns;
+                low_head_arrival_ns_.store(now_ns, std::memory_order_relaxed);
             }
             return true;
         }
@@ -220,7 +220,7 @@ public:
         case Partition::Low:
             ok = low_q_.has_value() && low_q_->try_pop(out);
             if (low_q_.has_value() && low_q_->size() == 0U) {
-                low_head_arrival_ns_ = 0U;   // Low drained: reset aging clock
+                low_head_arrival_ns_.store(0U, std::memory_order_relaxed);   // Low drained
             }
             break;
         default:
@@ -367,7 +367,8 @@ private:
         }
         const uint64_t wait_ns =
             static_cast<uint64_t>(Config::kLowMaxWaitMs) * 1000000ULL;
-        const uint64_t waited = now_ns_ - low_head_arrival_ns_;
+        const uint64_t waited =
+            now_ns_ - low_head_arrival_ns_.load(std::memory_order_relaxed);
         return (waited >= wait_ns);
     }
 
@@ -377,7 +378,7 @@ private:
 
     BatchSelector selector_;
     std::atomic<bool> dispatcher_active_{false};
-    uint64_t low_head_arrival_ns_ = 0U;   // publish time of the Low head
+    std::atomic<uint64_t> low_head_arrival_ns_{0U};   // Low head publish time (relaxed)
     uint64_t now_ns_ = 0U;                // cached aging clock base
     bool now_valid_ = false;
     uint8_t batch_used_ = 0U;

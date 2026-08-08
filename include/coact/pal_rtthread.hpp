@@ -88,9 +88,13 @@ public:
     void enter_direct() noexcept;
     void leave_direct() noexcept;
 
-    /* ---- Queue backend (MPSC, lock-free, SMP-safe) -------------------- */
+    /* ---- Queue backend (single-core irq-mask ring, no atomics) --------- */
+    /* RT-Thread 5.2.x single-core: the injected CriticalSection (mapped to
+       rt_hw_interrupt_disable/enable) provides mutual exclusion between the
+       Dispatcher thread and ISR/producer tasks without atomic AMO+fence
+       traffic. SMP RT-Thread would use the BoundedMpscQueue backend instead. */
     template <typename T, uint16_t Cap>
-    using QueueBackend = coact::BoundedMpscQueue<T, Cap>;
+    using QueueBackend = coact::SingleCoreCriticalRing<T, Cap>;
 
 private:
     static void dispatcher_thread_entry(void* param) noexcept;

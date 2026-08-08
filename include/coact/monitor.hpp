@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -363,34 +364,37 @@ enum class RejectReason : uint8_t {
 };
 
 // ---------------------------------------------------------------------------
-// AoCounters: fixed per-AO counters (design 12.1).
+// AoCounters: fixed per-AO counters (design 12.1). Telemetry counters are
+// written from producer threads and the Dispatcher thread concurrently, so they
+// are relaxed atomics: no torn increment on SMP, no barrier cost on the
+// single-core target (relaxed atomics compile to plain ops there).
 // ---------------------------------------------------------------------------
 struct AoCounters {
-    uint64_t direct_duration_ns{0};        // accumulated direct dispatch time
-    uint64_t dispatcher_duration_ns{0};    // accumulated Dispatcher RTC time
-    uint32_t direct_timeouts{0};
-    uint32_t rtc_timeouts{0};
-    uint32_t rejections[static_cast<size_t>(RejectReason::kRejectCount)]{};
-    uint32_t lease_contention{0};          // C5 execution lease contention
-    uint16_t pending{0};                   // current pending count
-    uint16_t pending_max{0};               // high-watermark of pending
+    std::atomic<uint64_t> direct_duration_ns{0};        // accumulated direct dispatch time
+    std::atomic<uint64_t> dispatcher_duration_ns{0};    // accumulated Dispatcher RTC time
+    std::atomic<uint32_t> direct_timeouts{0};
+    std::atomic<uint32_t> rtc_timeouts{0};
+    std::atomic<uint32_t> rejections[static_cast<size_t>(RejectReason::kRejectCount)]{};
+    std::atomic<uint32_t> lease_contention{0};          // C5 execution lease contention
+    std::atomic<uint16_t> pending{0};                   // current pending count
+    std::atomic<uint16_t> pending_max{0};               // high-watermark of pending
 };
 
 // ---------------------------------------------------------------------------
 // GlobalCounters: fixed system-wide counters (design 12.1).
 // ---------------------------------------------------------------------------
 struct GlobalCounters {
-    uint8_t  watermark_pct[3]{};           // current watermark, by PriorityClass index
-    uint32_t high_water_count[3]{};        // samples >= 80%
-    uint32_t full_count[3]{};              // samples >= 100%
-    uint32_t disposition_filter{0};        // M4 filter drops
-    uint32_t disposition_merge{0};         // M4 merges
-    uint32_t disposition_rate_limit{0};    // M4 rate-limit drops
-    uint32_t disposition_overload{0};      // M4 overload drops
-    uint32_t overflow{0};
-    uint32_t watchdog_heartbeats{0};
-    uint32_t platform_faults{0};
-    uint16_t pending_max{0};
+    std::atomic<uint8_t>  watermark_pct[3]{};
+    std::atomic<uint32_t> high_water_count[3]{};
+    std::atomic<uint32_t> full_count[3]{};
+    std::atomic<uint32_t> disposition_filter{0};
+    std::atomic<uint32_t> disposition_merge{0};
+    std::atomic<uint32_t> disposition_rate_limit{0};
+    std::atomic<uint32_t> disposition_overload{0};
+    std::atomic<uint32_t> overflow{0};
+    std::atomic<uint32_t> watchdog_heartbeats{0};
+    std::atomic<uint32_t> platform_faults{0};
+    std::atomic<uint16_t> pending_max{0};
 };
 
 // ---------------------------------------------------------------------------
@@ -470,7 +474,7 @@ inline void Monitor<Config>::add_direct_duration(TargetId ao, uint64_t ns) noexc
     if (nullptr == s) {
         return;
     }
-    s->direct_duration_ns += ns;
+    s->direct_duration_ns.fetch_add(ns, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -479,7 +483,7 @@ inline void Monitor<Config>::add_dispatcher_duration(TargetId ao, uint64_t ns) n
     if (nullptr == s) {
         return;
     }
-    s->dispatcher_duration_ns += ns;
+    s->dispatcher_duration_ns.fetch_add(ns, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -488,7 +492,7 @@ inline void Monitor<Config>::record_direct_timeout(TargetId ao) noexcept {
     if (nullptr == s) {
         return;
     }
-    ++s->direct_timeouts;
+    s->direct_timeouts.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -497,7 +501,7 @@ inline void Monitor<Config>::record_rtc_timeout(TargetId ao) noexcept {
     if (nullptr == s) {
         return;
     }
-    ++s->rtc_timeouts;
+    s->rtc_timeouts.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -509,7 +513,8 @@ inline void Monitor<Config>::record_rejection(TargetId ao, RejectReason reason) 
     if (nullptr == s) {
         return;
     }
-    ++s->rejections[static_cast<size_t>(reason)];
+    s->rejections[static_cast<size_t>(reason)].fetch_add(
+        1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -518,7 +523,7 @@ inline void Monitor<Config>::record_lease_contention(TargetId ao) noexcept {
     if (nullptr == s) {
         return;
     }
-    ++s->lease_contention;
+    s->lease_contention.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -527,46 +532,46 @@ inline void Monitor<Config>::record_pending(TargetId ao, uint16_t pending) noexc
     if (nullptr == s) {
         return;
     }
-    s->pending = pending;
-    if (pending > s->pending_max) {
-        s->pending_max = pending;
+    s->pending.store(pending, std::memory_order_relaxed);
+    if (pending > s->pending_max.load(std::memory_order_relaxed)) {
+        s->pending_max.store(pending, std::memory_order_relaxed);
     }
-    if (pending > global_.pending_max) {
-        global_.pending_max = pending;
+    if (pending > global_.pending_max.load(std::memory_order_relaxed)) {
+        global_.pending_max.store(pending, std::memory_order_relaxed);
     }
 }
 
 template <typename Config>
 inline void Monitor<Config>::sample_watermark(PriorityClass p, uint8_t pct) noexcept {
     const size_t idx = partition_index(p);
-    global_.watermark_pct[idx] = pct;
+    global_.watermark_pct[idx].store(pct, std::memory_order_relaxed);
     if (pct >= kHighWatermarkPct) {
-        ++global_.high_water_count[idx];
+        global_.high_water_count[idx].fetch_add(1U, std::memory_order_relaxed);
     }
     if (pct >= kFullWatermarkPct) {
-        ++global_.full_count[idx];
+        global_.full_count[idx].fetch_add(1U, std::memory_order_relaxed);
     }
 }
 
 template <typename Config>
 inline void Monitor<Config>::record_overflow() noexcept {
-    ++global_.overflow;
+    global_.overflow.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
 inline void Monitor<Config>::record_disposition(SubmitDisposition disposition) noexcept {
     switch (disposition) {
         case SubmitDisposition::Merged:
-            ++global_.disposition_merge;
+            global_.disposition_merge.fetch_add(1U, std::memory_order_relaxed);
             break;
         case SubmitDisposition::DroppedPolicy:
-            ++global_.disposition_filter;
+            global_.disposition_filter.fetch_add(1U, std::memory_order_relaxed);
             break;
         case SubmitDisposition::DroppedRateLimit:
-            ++global_.disposition_rate_limit;
+            global_.disposition_rate_limit.fetch_add(1U, std::memory_order_relaxed);
             break;
         case SubmitDisposition::DroppedOverload:
-            ++global_.disposition_overload;
+            global_.disposition_overload.fetch_add(1U, std::memory_order_relaxed);
             break;
         case SubmitDisposition::Direct:
         case SubmitDisposition::Queued:
@@ -580,12 +585,12 @@ inline void Monitor<Config>::record_disposition(SubmitDisposition disposition) n
 
 template <typename Config>
 inline void Monitor<Config>::heartbeat() noexcept {
-    ++global_.watchdog_heartbeats;
+    global_.watchdog_heartbeats.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
 inline void Monitor<Config>::record_platform_fault() noexcept {
-    ++global_.platform_faults;
+    global_.platform_faults.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>

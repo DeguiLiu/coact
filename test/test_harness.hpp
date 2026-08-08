@@ -3,12 +3,21 @@
 // No exceptions, no RTTI, no external framework (Catch2 unavailable on host).
 #pragma once
 
+#include <atomic>
 #include <cstdio>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace coact_test {
+
+// Relaxed read helper for Monitor's telemetry atomics (keeps test asserts
+// short: CHECK_EQ(relaxed(m.global().overflow), 1U)).
+template <typename T>
+inline T relaxed(const std::atomic<T>& a) noexcept
+{
+    return a.load(std::memory_order_relaxed);
+}
 
 struct Stats {
     int passed = 0;
