@@ -34,6 +34,10 @@ namespace detail {
 
 inline constexpr uint32_t pool_index_invalid = 0xFFFFU;  // [15:0] empty sentinel
 inline constexpr uint32_t pool_tag_shift = 16U;
+// Reclaim is batched in the Dispatcher to collapse many free_head CAS ops into
+// a single splice (see ReclaimBatcher). Events are staged in a per-pool chain
+// and spliced once per kReclaimBatchCap reclaimed blocks, or at batch end.
+inline constexpr uint16_t kReclaimBatchCap = 16U;
 
 inline uint32_t pool_pack_head(uint32_t index, uint32_t tag) noexcept
 {
@@ -79,6 +83,41 @@ inline constexpr size_t pool_block_align(size_t size) noexcept
 {
     const size_t align = alignof(std::max_align_t);
     return (size + align - 1U) & ~(align - 1U);
+}
+
+inline void pool_store_next(uintptr_t addr, uint32_t next) noexcept
+{
+    std::memcpy(reinterpret_cast<void*>(addr), &next, sizeof(next));
+}
+
+// Splice a caller-linked chain [first..last] (count blocks, all belonging to
+// the pool `rec`) back onto the free list in ONE CAS on the shared head. The
+// blocks are linked via their own `next` fields (set by the caller). This is
+// the batching primitive: N reclaims collapse to a single head RMW, which is
+// the core win against single-shared-head contention (multi-producer, one
+// reclaimer). Lock-free, wrapped in the pool's injected CriticalSection.
+inline void pool_reclaim_chain(PoolRecord* rec, uint32_t first,
+                               uint32_t last, uint16_t count) noexcept
+{
+    const CriticalSection::Token tok = rec->cs.save(rec->cs.ctx);
+
+    uint32_t head = rec->free_head.load(std::memory_order_relaxed);
+    unsigned spin = 0U;
+    uint32_t new_head = 0U;
+    for (;;) {
+        const uintptr_t last_addr = pool_block_base(rec->base, last, rec->block_size);
+        pool_store_next(last_addr, pool_head_index(head));
+        new_head = pool_pack_head(first, pool_head_tag(head) + 1U);
+        if (rec->free_head.compare_exchange_weak(
+                head, new_head,
+                std::memory_order_relaxed, std::memory_order_relaxed)) {
+            break;
+        }
+        pool_backoff(head, rec->free_head, spin);
+    }
+    rec->used.fetch_sub(count, std::memory_order_relaxed);
+
+    rec->cs.restore(rec->cs.ctx, tok);
 }
 
 // Default no-op critical section for host-only tests. Production pools bind the
@@ -192,6 +231,7 @@ public:
         record_.high_watermark.store(0U, std::memory_order_relaxed);
         record_.reclaim = &EventPool::reclaim;
         record_.owner = this;
+        record_.cs = cs;
 
         pool_id_ = register_pool(&record_);
         COACT_ASSERT(pool_id_ != 0U);  // registry full: configuration error
@@ -308,6 +348,101 @@ private:
     PoolRecord record_;
     uint8_t pool_id_;
     CriticalSection cs_;
+};
+
+// Batched reclaim for the flow in Dispatcher::run()'s dequeue loop: a single
+// reclaiming thread consumes many events per batch, each carrying a final
+// reference (ref_ctr reaches 0). Instead of one free_head CAS per event
+// (EventPool::reclaim), defer them per pool and splice each pool's pending
+// chain back with a single CAS via detail::pool_reclaim_chain. Producers that
+// reclaim on the (rare) drop path keep using the immediate reclaim().
+//
+// Only the single reclaiming thread may touch one of these; it is not
+// thread-safe by design.
+class ReclaimBatcher
+{
+public:
+    // Must call begin() before the dequeue batch and flush() after it.
+    void begin() noexcept { active_count_ = 0; }
+
+    // Splice every pool's pending chain back and reset the batch.
+    void flush() noexcept
+    {
+        for (uint8_t i = 0U; i < active_count_; ++i) {
+            Pending& p = pending_[i];
+            if (p.count > 0U) {
+                detail::pool_reclaim_chain(p.rec, p.first, p.last, p.count);
+                p.count = 0U;
+            }
+        }
+        active_count_ = 0U;
+    }
+
+    // Release an event's final reference, deferring the free_list splice.
+    // Mirrors event_gc()'s ref-count semantics (pool_id 0 == static, never
+    // recycled; decrement and reclaim at 0). Only for pool-owned events.
+    void release(Event* e) noexcept
+    {
+        COACT_ASSERT(e != nullptr);
+        if (COACT_UNLIKELY(e->pool_id == 0U)) {
+            return;  // static event: never recycled
+        }
+        if (COACT_LIKELY(e->ref_ctr > 0U)) {
+            --e->ref_ctr;
+        }
+        if (COACT_UNLIKELY(e->ref_ctr != 0U)) {
+            return;  // a reference is still held: not yet recyclable
+        }
+        PoolRecord* rec = pool_record(e->pool_id);
+        COACT_ASSERT(rec != nullptr);
+        if (nullptr == rec) {
+            return;
+        }
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(e);
+        COACT_ASSERT(addr >= rec->base);
+        const uint32_t idx = static_cast<uint32_t>((addr - rec->base)
+                                                   / rec->block_size);
+        Pending* p = pending_of(rec);
+        if (p->count == 0U) {
+            p->first = idx;
+            p->last = idx;
+        } else {
+            // prepend: e->next = old first
+            detail::pool_store_next(addr, p->first);
+            p->first = idx;
+        }
+        p->count = static_cast<uint16_t>(p->count + 1U);
+        if (p->count >= detail::kReclaimBatchCap) {
+            detail::pool_reclaim_chain(p->rec, p->first, p->last, p->count);
+            p->count = 0U;
+        }
+    }
+
+private:
+    struct Pending {
+        PoolRecord* rec = nullptr;
+        uint32_t first = 0U;
+        uint32_t last = 0U;
+        uint16_t count = 0U;
+    };
+    static constexpr uint8_t kMaxPending = 4U;   // distinct pools per batch
+
+    Pending* pending_of(PoolRecord* rec) noexcept
+    {
+        for (uint8_t i = 0U; i < active_count_; ++i) {
+            if (pending_[i].rec == rec) {
+                return &pending_[i];
+            }
+        }
+        COACT_ASSERT(active_count_ < kMaxPending);
+        Pending* p = &pending_[active_count_++];
+        p->rec = rec;
+        p->count = 0U;
+        return p;
+    }
+
+    Pending pending_[kMaxPending];
+    uint8_t active_count_ = 0U;
 };
 
 }  // namespace coact

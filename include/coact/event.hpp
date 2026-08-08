@@ -10,6 +10,8 @@
 #include <atomic>
 #include <cstdint>
 
+#include "coact/pal.hpp"   // CriticalSection: gate for pool head RMW
+
 namespace coact {
 
 // Base of every dynamic event. pool_id == 0 marks a non-pool (static) event,
@@ -45,6 +47,7 @@ struct PoolRecord {
     std::atomic<uint16_t> high_watermark{0};
     void (*reclaim)(Event* e);            // returns a block to this pool (lock-free)
     void* owner;                          // owning EventPool* (for its CriticalSection)
+    CriticalSection cs;                   // gate for free_head RMW (irq mask / no-op)
 };
 
 // Maximum number of event pools that can be registered at once. pool_id is a
