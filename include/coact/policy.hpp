@@ -111,9 +111,9 @@ private:
         }
     }
 
-    RateLimitRule rule_;
-    uint64_t tokens_;
-    uint64_t last_;
+    RateLimitRule rule_{};
+    uint64_t tokens_ = 0U;
+    uint64_t last_ = 0U;
 };
 
 // ---------------------------------------------------------------------------
@@ -212,10 +212,10 @@ public:
     }
 
 private:
-    TargetId target_;
-    uint16_t signal_;
-    std::atomic<MergeCellState> state_;
-    Event* event_;
+    TargetId target_ = kInvalidTarget;
+    uint16_t signal_ = 0U;
+    std::atomic<MergeCellState> state_{MergeCellState::Empty};
+    Event* event_ = nullptr;
 };
 
 }  // namespace coact

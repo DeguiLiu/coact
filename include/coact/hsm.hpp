@@ -183,7 +183,7 @@ int8_t Hsm<Context>::find_lca(int8_t a, int8_t b) const noexcept {
 template <typename Context>
 const TransitionDef<Context>* Hsm<Context>::find_transition(
     Context& ctx, const Event& evt, int8_t source) const noexcept {
-    for (uint16_t i = 0; i < num_transitions_; ++i) {
+    for (uint16_t i = 0U; i < num_transitions_; ++i) {
         const TransitionDef<Context>& tran = transitions_[i];
         if (tran.source == source && tran.signal == evt.signal) {
             if (tran.guard != nullptr && !tran.guard(ctx, evt)) {

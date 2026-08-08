@@ -85,14 +85,14 @@ public:
 
     void increment() noexcept
     {
-        count_.fetch_add(1U, std::memory_order_release);
+        count_.fetch_add(static_cast<uint16_t>(1U), std::memory_order_release);
     }
 
     void decrement() noexcept
     {
         const uint16_t prior = count_.load(std::memory_order_relaxed);
         COACT_ASSERT(prior > 0U);  // underflow on an empty counter is a fault
-        count_.fetch_sub(1U, std::memory_order_acq_rel);
+        count_.fetch_sub(static_cast<uint16_t>(1U), std::memory_order_acq_rel);
     }
 
 private:

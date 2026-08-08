@@ -272,8 +272,8 @@ public:
             e->signal = signal;
             e->pool_id = pool_id_;
             e->ref_ctr = 0U;
-            const uint16_t u = record_.used.fetch_add(1U,
-                                                      std::memory_order_relaxed) + 1U;
+            const uint16_t u = static_cast<uint16_t>(
+                record_.used.fetch_add(1U, std::memory_order_relaxed) + 1U);
             uint16_t h = record_.high_watermark.load(std::memory_order_relaxed);
             while (u > h &&
                    !record_.high_watermark.compare_exchange_weak(
@@ -340,13 +340,13 @@ private:
             }
             detail::pool_backoff(head, rec->free_head, spin);
         }
-        rec->used.fetch_sub(1U, std::memory_order_relaxed);
+        rec->used.fetch_sub(static_cast<uint16_t>(1U), std::memory_order_relaxed);
 
         self->cs_.restore(self->cs_.ctx, tok);
     }
 
     PoolRecord record_;
-    uint8_t pool_id_;
+    uint8_t pool_id_ = 0U;
     CriticalSection cs_;
 };
 

@@ -103,12 +103,12 @@ template <typename Config>
 inline Breaker<Config>::Breaker(const Config& cfg) noexcept
     : cooldown_cycles_(static_cast<uint16_t>(cfg.kCooldownCycles)),
       level_(BreakerLevel::Normal),
-      cooldown_remaining_(0),
-      direct_timeout_consec_(0),
-      rtc_timeout_consec_(0),
-      high_watermark_consec_(0),
-      low_watermark_consec_(0),
-      healthy_window_count_(0),
+      cooldown_remaining_(static_cast<uint16_t>(0U)),
+      direct_timeout_consec_(static_cast<uint8_t>(0U)),
+      rtc_timeout_consec_(static_cast<uint8_t>(0U)),
+      high_watermark_consec_(static_cast<uint8_t>(0U)),
+      low_watermark_consec_(static_cast<uint8_t>(0U)),
+      healthy_window_count_(static_cast<uint8_t>(0U)),
       probe_success_(false) {}
 
 template <typename Config>
@@ -166,6 +166,8 @@ inline void Breaker<Config>::on_direct_timeout() noexcept {
         case BreakerLevel::Recovering:
             enter_l2();  // re-violation inside the recovery window -> L2
             break;
+        default:
+            break;
     }
 }
 
@@ -184,6 +186,8 @@ inline void Breaker<Config>::on_dispatcher_rtc_timeout() noexcept {
             break;
         case BreakerLevel::Recovering:
             enter_l2();
+            break;
+        default:
             break;
     }
 }
@@ -236,6 +240,8 @@ inline void Breaker<Config>::on_watermark(uint8_t percent) noexcept {
                 enter_l2();  // hysteresis: a single rise above 50% aborts recovery
             }
             break;
+        default:
+            break;
     }
 }
 
@@ -249,6 +255,8 @@ inline void Breaker<Config>::on_overflow() noexcept {
             break;
         case BreakerLevel::BrokenL2:
         case BreakerLevel::Safe:
+            break;
+        default:
             break;
     }
 }

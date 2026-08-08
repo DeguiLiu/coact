@@ -81,9 +81,10 @@ public:
 
     uint16_t size() const noexcept {
         if constexpr (Capacity == 1U) {
-            return (cells_[0].seq.load(std::memory_order_relaxed) == kSinglePublished)
-                       ? 1U
-                       : 0U;
+            return static_cast<uint16_t>(
+                (cells_[0].seq.load(std::memory_order_relaxed) == kSinglePublished)
+                    ? 1U
+                    : 0U);
         }
         else {
             const uint32_t h = head_.value.load(std::memory_order_relaxed);

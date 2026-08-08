@@ -180,8 +180,8 @@ int main()
     coact::EventPool<kBlk, kCap> pool;
     pool.init(storage, sizeof(storage), coact::make_critical_section(pal));
 
-    ProtocolAo ao(kStates, sizeof(kStates) / sizeof(kStates[0]),
-                  kTransitions, sizeof(kTransitions) / sizeof(kTransitions[0]),
+    ProtocolAo ao(kStates, static_cast<uint16_t>(sizeof(kStates) / sizeof(kStates[0])),
+                  kTransitions, static_cast<uint16_t>(sizeof(kTransitions) / sizeof(kTransitions[0])),
                   kDisconnected, /*max_depth=*/3U);
 
     coact::Event init_e;

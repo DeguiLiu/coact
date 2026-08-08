@@ -180,17 +180,17 @@ int main()
 
     /* Four independent node AOs, each with a distinct logical priority;
        each owns its own context/HSM instance. */
-    NodeAo30 node1(kStates, sizeof(kStates) / sizeof(kStates[0]),
-                   kTransitions, sizeof(kTransitions) / sizeof(kTransitions[0]),
+    NodeAo30 node1(kStates, static_cast<uint16_t>(sizeof(kStates) / sizeof(kStates[0])),
+                   kTransitions, static_cast<uint16_t>(sizeof(kTransitions) / sizeof(kTransitions[0])),
                    kNodeConnected, /*max_depth=*/2U);
-    NodeAo25 node2(kStates, sizeof(kStates) / sizeof(kStates[0]),
-                   kTransitions, sizeof(kTransitions) / sizeof(kTransitions[0]),
+    NodeAo25 node2(kStates, static_cast<uint16_t>(sizeof(kStates) / sizeof(kStates[0])),
+                   kTransitions, static_cast<uint16_t>(sizeof(kTransitions) / sizeof(kTransitions[0])),
                    kNodeConnected, /*max_depth=*/2U);
-    NodeAo20 node3(kStates, sizeof(kStates) / sizeof(kStates[0]),
-                   kTransitions, sizeof(kTransitions) / sizeof(kTransitions[0]),
+    NodeAo20 node3(kStates, static_cast<uint16_t>(sizeof(kStates) / sizeof(kStates[0])),
+                   kTransitions, static_cast<uint16_t>(sizeof(kTransitions) / sizeof(kTransitions[0])),
                    kNodeConnected, /*max_depth=*/2U);
-    NodeAo15 node4(kStates, sizeof(kStates) / sizeof(kStates[0]),
-                   kTransitions, sizeof(kTransitions) / sizeof(kTransitions[0]),
+    NodeAo15 node4(kStates, static_cast<uint16_t>(sizeof(kStates) / sizeof(kStates[0])),
+                   kTransitions, static_cast<uint16_t>(sizeof(kTransitions) / sizeof(kTransitions[0])),
                    kNodeConnected, /*max_depth=*/2U);
 
     node1.context().node_id = 101U;
