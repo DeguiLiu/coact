@@ -310,7 +310,7 @@ COACT_TEST(registry_lookup_unknown_or_invalid_target_is_null)
 
     CHECK(nullptr == reg.lookup(coact::kInvalidTarget));
     CHECK(nullptr == reg.lookup(static_cast<coact::TargetId>(
-                     coact::AoRegistry::kCapacity + 1U)));  // out of range
+                     coact::AoRegistry<>::kCapacity + 1U)));  // out of range
     const coact::TargetId id_a = reg.target_of(&aoa);
     CHECK(nullptr == reg.lookup(static_cast<coact::TargetId>(id_a + 1U)));
 }

@@ -33,8 +33,12 @@ template <typename StagingT, typename PalT>
 class Dispatcher
 {
 public:
-    Dispatcher(StagingT& staging, AoRegistry& registry,
-               Monitor& monitor, Breaker& breaker, PalT& pal) noexcept
+    using RegistryT = AoRegistry<typename StagingT::ConfigType>;
+    using MonitorT  = Monitor<typename StagingT::ConfigType>;
+    using BreakerT  = Breaker<typename StagingT::ConfigType>;
+
+    Dispatcher(StagingT& staging, RegistryT& registry,
+               MonitorT& monitor, BreakerT& breaker, PalT& pal) noexcept
         : staging_(staging),
           registry_(registry),
           monitor_(monitor),
@@ -47,6 +51,7 @@ public:
     // Main loop. Called from the PAL dispatcher thread via ThreadEntry.
     void run() noexcept
     {
+        using BatchCfg = typename StagingT::ConfigType;
         while (!stop_.load(std::memory_order_acquire)) {
             const uint64_t now_ns = pal_.monotonic_ns();
 
@@ -54,7 +59,7 @@ public:
             staging_.begin_batch();
 
             bool any = false;
-            while (staging_.batch_used() < DefaultConfig::kBatchSizeMax) {
+            while (staging_.batch_used() < BatchCfg::kBatchSizeMax) {
                 StagingSlot slot;
                 if (!staging_.dequeue_one(slot, now_ns)) {
                     break;
@@ -77,7 +82,7 @@ public:
                 /* Feed watchdog on idle cycles so the breaker cooldown
                    does not stall when there is no traffic. */
                 breaker_.on_dispatch_cycle();
-                pal_.wait_dispatcher(DefaultConfig::kBatchTimeoutMs);
+                pal_.wait_dispatcher(BatchCfg::kBatchTimeoutMs);
             }
         }
     }
@@ -91,9 +96,9 @@ public:
 
 private:
     StagingT&    staging_;
-    AoRegistry&  registry_;
-    Monitor&     monitor_;
-    Breaker&     breaker_;
+    RegistryT&   registry_;
+    MonitorT&    monitor_;
+    BreakerT&    breaker_;
     PalT&        pal_;
     std::atomic<bool> stop_;
 };

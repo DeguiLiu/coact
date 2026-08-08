@@ -22,15 +22,15 @@ constexpr TargetId kSlowAo = 1U;
 constexpr TargetId kOtherAo = 2U;
 
 // Drive a breaker into Recovering via the L1 -> cooldown -> low-water path.
-void drive_to_recovering(Breaker& b, const DefaultConfig& cfg) {
-    for (int i = 0; i < static_cast<int>(Breaker::kDirectTimeoutThreshold); ++i) {
+void drive_to_recovering(Breaker<>& b, const DefaultConfig& cfg) {
+    for (int i = 0; i < static_cast<int>(Breaker<>::kDirectTimeoutThreshold); ++i) {
         b.on_direct_timeout();
     }
     REQUIRE_EQ(b.level(), BreakerLevel::BrokenL1);
     for (int i = 0; i < static_cast<int>(cfg.kCooldownCycles); ++i) {
         b.on_dispatch_cycle();
     }
-    for (int i = 0; i < static_cast<int>(Breaker::kLowWatermarkPersist); ++i) {
+    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
     REQUIRE_EQ(b.level(), BreakerLevel::Recovering);
@@ -42,7 +42,7 @@ void drive_to_recovering(Breaker& b, const DefaultConfig& cfg) {
 
 COACT_TEST(breaker_three_direct_timeouts_to_l1) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     REQUIRE_EQ(b.level(), BreakerLevel::Normal);
     CHECK(b.direct_allowed(kSlowAo));
 
@@ -56,7 +56,7 @@ COACT_TEST(breaker_three_direct_timeouts_to_l1) {
 
 COACT_TEST(breaker_l1_to_l2_via_sustained_high_watermark) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_direct_timeout();
     b.on_direct_timeout();
     b.on_direct_timeout();
@@ -73,7 +73,7 @@ COACT_TEST(breaker_l1_to_l2_via_sustained_high_watermark) {
 
 COACT_TEST(breaker_three_rtc_timeouts_to_l2) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_dispatcher_rtc_timeout();
     b.on_dispatcher_rtc_timeout();
     CHECK_EQ(b.level(), BreakerLevel::Normal);
@@ -83,14 +83,14 @@ COACT_TEST(breaker_three_rtc_timeouts_to_l2) {
 
 COACT_TEST(breaker_overflow_to_l2) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_overflow();
     CHECK_EQ(b.level(), BreakerLevel::BrokenL2);
 }
 
 COACT_TEST(breaker_persistent_watermark_violation_to_l2) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_watermark_violation();
     b.on_watermark_violation();
     CHECK_EQ(b.level(), BreakerLevel::Normal);
@@ -100,14 +100,14 @@ COACT_TEST(breaker_persistent_watermark_violation_to_l2) {
 
 COACT_TEST(breaker_key_reserve_exhausted_to_safe) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_key_reserve_exhausted();
     CHECK_EQ(b.level(), BreakerLevel::Safe);
     CHECK(b.safe_events_only());
     CHECK(b.drop_non_critical());
 
     // From L2 as well.
-    Breaker b2(cfg);
+    Breaker<> b2(cfg);
     b2.on_overflow();
     REQUIRE_EQ(b2.level(), BreakerLevel::BrokenL2);
     b2.on_key_reserve_exhausted();
@@ -121,14 +121,14 @@ COACT_TEST(breaker_key_reserve_exhausted_to_safe) {
 
 COACT_TEST(breaker_watchdog_to_safe) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_watchdog();
     CHECK_EQ(b.level(), BreakerLevel::Safe);
 }
 
 COACT_TEST(breaker_safe_external_restore_to_recovering) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_key_reserve_exhausted();
     REQUIRE_EQ(b.level(), BreakerLevel::Safe);
     b.on_external_safe_restore();
@@ -140,10 +140,10 @@ COACT_TEST(breaker_safe_external_restore_to_recovering) {
     for (int i = 0; i < static_cast<int>(cfg.kCooldownCycles); ++i) {
         b.on_dispatch_cycle();
     }
-    for (int i = 0; i < static_cast<int>(Breaker::kLowWatermarkPersist); ++i) {
+    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
-    for (int i = 0; i < static_cast<int>(Breaker::kHealthyWindowsRequired); ++i) {
+    for (int i = 0; i < static_cast<int>(Breaker<>::kHealthyWindowsRequired); ++i) {
         b.on_probe_success();
         b.on_dispatch_cycle();
     }
@@ -154,7 +154,7 @@ COACT_TEST(breaker_safe_external_restore_to_recovering) {
 
 COACT_TEST(breaker_recovering_healthy_probes_to_normal) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     drive_to_recovering(b, cfg);
     CHECK_EQ(b.level(), BreakerLevel::Recovering);
 
@@ -177,7 +177,7 @@ COACT_TEST(breaker_recovering_healthy_probes_to_normal) {
 
 COACT_TEST(breaker_probe_failure_back_to_l2) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     drive_to_recovering(b, cfg);
     b.on_probe_failure();
     CHECK_EQ(b.level(), BreakerLevel::BrokenL2);
@@ -186,7 +186,7 @@ COACT_TEST(breaker_probe_failure_back_to_l2) {
 
 COACT_TEST(breaker_rtc_timeout_in_recovering_back_to_l2) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     drive_to_recovering(b, cfg);
     b.on_dispatcher_rtc_timeout();
     CHECK_EQ(b.level(), BreakerLevel::BrokenL2);
@@ -194,7 +194,7 @@ COACT_TEST(breaker_rtc_timeout_in_recovering_back_to_l2) {
 
 COACT_TEST(breaker_overflow_in_recovering_back_to_l2) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     drive_to_recovering(b, cfg);
     b.on_overflow();
     CHECK_EQ(b.level(), BreakerLevel::BrokenL2);
@@ -206,14 +206,14 @@ COACT_TEST(breaker_overflow_in_recovering_back_to_l2) {
 
 COACT_TEST(breaker_cooldown_not_done_blocks_recovery) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_direct_timeout();
     b.on_direct_timeout();
     b.on_direct_timeout();
     REQUIRE_EQ(b.level(), BreakerLevel::BrokenL1);
 
     // Sustained low watermark while the cooldown is incomplete: no recovery.
-    for (int i = 0; i < static_cast<int>(Breaker::kLowWatermarkPersist); ++i) {
+    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
     CHECK_EQ(b.level(), BreakerLevel::BrokenL1);
@@ -233,7 +233,7 @@ COACT_TEST(breaker_cooldown_not_done_blocks_recovery) {
 
 COACT_TEST(breaker_rtc_ok_clears_timeout_count_but_not_cooldown) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
 
     // Two consecutive direct timeouts, then a qualifying call resets the
     // consecutive counter so two more timeouts do NOT trip L1.
@@ -248,7 +248,7 @@ COACT_TEST(breaker_rtc_ok_clears_timeout_count_but_not_cooldown) {
 
     // The qualifying call must not skip the cooldown window.
     b.on_rtc_ok();
-    for (int i = 0; i < static_cast<int>(Breaker::kLowWatermarkPersist); ++i) {
+    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
     CHECK_EQ(b.level(), BreakerLevel::BrokenL1);  // cooldown still running
@@ -262,7 +262,7 @@ COACT_TEST(breaker_rtc_ok_clears_timeout_count_but_not_cooldown) {
 
 COACT_TEST(breaker_recovery_hysteresis_low_watermark) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     drive_to_recovering(b, cfg);
 
     // A brief rise to 60% (still below the 80% violation band) aborts
@@ -279,8 +279,8 @@ COACT_TEST(breaker_recovery_hysteresis_low_watermark) {
 
 COACT_TEST(breaker_direct_allowed_per_ao) {
     DefaultConfig cfg;
-    Breaker slow(cfg);
-    Breaker other(cfg);
+    Breaker<> slow(cfg);
+    Breaker<> other(cfg);
 
     // The offending AO's breaker enters L1 and revokes its direct...
     slow.on_direct_timeout();
@@ -296,7 +296,7 @@ COACT_TEST(breaker_direct_allowed_per_ao) {
 
 COACT_TEST(breaker_l2_drops_non_critical_keeps_safety) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_overflow();
     REQUIRE_EQ(b.level(), BreakerLevel::BrokenL2);
     CHECK(!b.direct_allowed(kSlowAo));
@@ -306,7 +306,7 @@ COACT_TEST(breaker_l2_drops_non_critical_keeps_safety) {
 
 COACT_TEST(breaker_safe_allows_only_safety_events) {
     DefaultConfig cfg;
-    Breaker b(cfg);
+    Breaker<> b(cfg);
     b.on_watchdog();
     REQUIRE_EQ(b.level(), BreakerLevel::Safe);
     CHECK(b.safe_events_only());

@@ -29,3 +29,12 @@ coact_add_test(test_stress
     pal_posix.cpp)
 target_link_libraries(test_stress PRIVATE Threads::Threads)
 target_include_directories(test_stress PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# Config pass-through test: one board-level Config threads through registry,
+# monitor, breaker, staging and dispatcher (compile-time + runtime).
+coact_add_test(test_config
+    test_config.cpp
+    pal_posix.cpp)
+target_link_libraries(test_config PRIVATE Threads::Threads)
+target_include_directories(test_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+

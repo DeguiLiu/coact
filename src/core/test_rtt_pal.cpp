@@ -123,7 +123,8 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
 {
     g_rtt_counter.store(0);
 
-    coact::EventPool<kRttBlk, kRttCap> pool;
+    /* Thread-safe pool: main thread allocs, Dispatcher thread gc-concurrently. */
+    coact::EventPool<kRttBlk, kRttCap, coact::PoolMutexLock> pool;
     pool.init(g_rtt_pool_storage, sizeof(g_rtt_pool_storage));
 
     RttAo ao(kRttStates, 2U, kRttTrans, 1U, 1, 4U);

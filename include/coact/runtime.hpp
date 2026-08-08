@@ -47,6 +47,7 @@ template <typename Config, typename PalT>
 class Runtime
 {
 public:
+    using ConfigType = Config;
     using StagingType = Staging<Config,
         PalT::template QueueBackend>;
     using DispatcherType    = Dispatcher<StagingType, PalT>;
@@ -107,8 +108,8 @@ public:
     }
 
     CoordinatorType& coordinator() noexcept { return coordinator_; }
-    Monitor&         monitor()     noexcept { return monitor_; }
-    Breaker&         breaker()     noexcept { return breaker_; }
+    Monitor<Config>& monitor()     noexcept { return monitor_; }
+    Breaker<Config>& breaker()     noexcept { return breaker_; }
 
 private:
     static CriticalSection make_noop_cs() noexcept
@@ -120,10 +121,10 @@ private:
     }
 
     PalT&           pal_;
-    DefaultConfig   cfg_;
-    AoRegistry      registry_;
-    Monitor         monitor_;
-    Breaker         breaker_{cfg_};
+    ConfigType      cfg_;
+    AoRegistry<Config> registry_;
+    Monitor<Config> monitor_;
+    Breaker<Config> breaker_{cfg_};
     StagingType     staging_;
     DispatcherType  dispatcher_;
     CoordinatorType coordinator_;

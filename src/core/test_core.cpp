@@ -99,7 +99,7 @@ COACT_TEST(coordinator_unknown_target_rejected)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker     breaker(cfg);
+    coact::Breaker<>     breaker(cfg);
     coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
         staging, registry, monitor, breaker, pal);
 
@@ -120,7 +120,7 @@ COACT_TEST(coordinator_normal_submit_queued)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker     breaker(cfg);
+    coact::Breaker<>     breaker(cfg);
     coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
         staging, registry, monitor, breaker, pal);
 
@@ -153,7 +153,7 @@ COACT_TEST(coordinator_direct_dispatch)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker     breaker(cfg);
+    coact::Breaker<>     breaker(cfg);
     coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
         staging, registry, monitor, breaker, pal);
 
@@ -181,7 +181,7 @@ COACT_TEST(dispatcher_stop_exits_run)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker     breaker(cfg);
+    coact::Breaker<>     breaker(cfg);
     coact::Dispatcher<StageT, coact::pal::Posix> dispatcher(
         staging, registry, monitor, breaker, pal);
 
@@ -225,7 +225,7 @@ COACT_TEST(coordinator_breaker_l2_drops_noncritical)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker     breaker(cfg);
+    coact::Breaker<>     breaker(cfg);
     breaker.on_overflow();   /* drive to L2 */
     coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
         staging, registry, monitor, breaker, pal);

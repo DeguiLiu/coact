@@ -131,10 +131,13 @@ public:
 // C1-C7 hot path). bind validates priority uniqueness; priorities are the
 // registry's own bookkeeping (kMaxPrio is far larger than kMaxAo so stealing
 // a slot never needs to reuse a freed priority in steady state).
+// Capacity comes from Config::kMaxAo so the board's AO budget is compile-time
+// consistent across the registry, monitor and breaker.
 // ---------------------------------------------------------------------------
+template <typename Config = DefaultConfig>
 class AoRegistry {
 public:
-    static constexpr uint8_t kCapacity = DefaultConfig::kMaxAo;
+    static constexpr uint8_t kCapacity = Config::kMaxAo;
 
     AoRegistry() noexcept
     {

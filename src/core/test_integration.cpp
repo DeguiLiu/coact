@@ -76,7 +76,9 @@ using AoB    = coact::Ao<IntCtx, IntHsm, TraitsB>;
    x86_64) so that kCAP blocks actually fit in the storage array. */
 static constexpr uint16_t kBS  = 16U;
 static constexpr uint16_t kCAP = 64U;
-using IntPool = coact::EventPool<kBS, kCAP>;
+/* Thread-safe pool: the main thread allocates while the Dispatcher thread
+   reclaims (event_gc) concurrently. */
+using IntPool = coact::EventPool<kBS, kCAP, coact::PoolMutexLock>;
 alignas(16) static unsigned char g_pool_storage[kBS * kCAP + kBS];  /* +1 block margin */
 
 /* =========================================================================

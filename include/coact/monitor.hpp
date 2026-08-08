@@ -39,9 +39,10 @@ enum class BreakerLevel : uint8_t {
 // and enough consecutive healthy windows. One successful dispatch is not
 // enough.
 // ---------------------------------------------------------------------------
+template <typename Config = DefaultConfig>
 class Breaker {
 public:
-    explicit Breaker(const DefaultConfig& cfg) noexcept;
+    explicit Breaker(const Config& cfg) noexcept;
 
     // -- Event inputs (contract 4.4) --
     void on_direct_timeout() noexcept;          // consecutive 3 -> L1
@@ -97,7 +98,8 @@ private:
     bool probe_success_;
 };
 
-inline Breaker::Breaker(const DefaultConfig& cfg) noexcept
+template <typename Config>
+inline Breaker<Config>::Breaker(const Config& cfg) noexcept
     : cooldown_cycles_(static_cast<uint16_t>(cfg.kCooldownCycles)),
       level_(BreakerLevel::Normal),
       cooldown_remaining_(0),
@@ -108,7 +110,8 @@ inline Breaker::Breaker(const DefaultConfig& cfg) noexcept
       healthy_window_count_(0),
       probe_success_(false) {}
 
-inline void Breaker::reset_metrics() noexcept {
+template <typename Config>
+inline void Breaker<Config>::reset_metrics() noexcept {
     direct_timeout_consec_ = 0;
     rtc_timeout_consec_ = 0;
     high_watermark_consec_ = 0;
@@ -117,32 +120,37 @@ inline void Breaker::reset_metrics() noexcept {
     probe_success_ = false;
 }
 
-inline void Breaker::enter_l1() noexcept {
+template <typename Config>
+inline void Breaker<Config>::enter_l1() noexcept {
     level_ = BreakerLevel::BrokenL1;
     cooldown_remaining_ = cooldown_cycles_;
     reset_metrics();
 }
 
-inline void Breaker::enter_l2() noexcept {
+template <typename Config>
+inline void Breaker<Config>::enter_l2() noexcept {
     level_ = BreakerLevel::BrokenL2;
     cooldown_remaining_ = cooldown_cycles_;
     reset_metrics();
 }
 
-inline void Breaker::enter_safe() noexcept {
+template <typename Config>
+inline void Breaker<Config>::enter_safe() noexcept {
     level_ = BreakerLevel::Safe;
     cooldown_remaining_ = cooldown_cycles_;
     reset_metrics();
 }
 
-inline void Breaker::enter_recovering() noexcept {
+template <typename Config>
+inline void Breaker<Config>::enter_recovering() noexcept {
     level_ = BreakerLevel::Recovering;
     reset_metrics();
     // cooldown_remaining_ is left untouched: from L1/L2 it is already 0;
     // from Safe it still counts down before healthy windows may advance.
 }
 
-inline void Breaker::on_direct_timeout() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_direct_timeout() noexcept {
     ++direct_timeout_consec_;
     switch (level_) {
         case BreakerLevel::Normal:
@@ -160,7 +168,8 @@ inline void Breaker::on_direct_timeout() noexcept {
     }
 }
 
-inline void Breaker::on_dispatcher_rtc_timeout() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_dispatcher_rtc_timeout() noexcept {
     ++rtc_timeout_consec_;
     switch (level_) {
         case BreakerLevel::Normal:
@@ -178,11 +187,13 @@ inline void Breaker::on_dispatcher_rtc_timeout() noexcept {
     }
 }
 
-inline void Breaker::on_watermark_violation() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_watermark_violation() noexcept {
     on_watermark(static_cast<uint8_t>(kWatermarkViolationPct + 1U));
 }
 
-inline void Breaker::on_watermark(uint8_t percent) noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_watermark(uint8_t percent) noexcept {
     if (percent > kWatermarkViolationPct) {
         ++high_watermark_consec_;
         low_watermark_consec_ = 0;
@@ -227,7 +238,8 @@ inline void Breaker::on_watermark(uint8_t percent) noexcept {
     }
 }
 
-inline void Breaker::on_overflow() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_overflow() noexcept {
     switch (level_) {
         case BreakerLevel::Normal:
         case BreakerLevel::BrokenL1:
@@ -240,19 +252,22 @@ inline void Breaker::on_overflow() noexcept {
     }
 }
 
-inline void Breaker::on_key_reserve_exhausted() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_key_reserve_exhausted() noexcept {
     if (BreakerLevel::Safe != level_) {
         enter_safe();
     }
 }
 
-inline void Breaker::on_watchdog() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_watchdog() noexcept {
     if (BreakerLevel::Safe != level_) {
         enter_safe();
     }
 }
 
-inline void Breaker::on_dispatch_cycle() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_dispatch_cycle() noexcept {
     if (cooldown_remaining_ > 0) {
         --cooldown_remaining_;
     }
@@ -268,36 +283,42 @@ inline void Breaker::on_dispatch_cycle() noexcept {
     }
 }
 
-inline void Breaker::on_probe_success() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_probe_success() noexcept {
     if (BreakerLevel::Recovering == level_) {
         probe_success_ = true;
     }
 }
 
-inline void Breaker::on_probe_failure() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_probe_failure() noexcept {
     if (BreakerLevel::Recovering == level_) {
         enter_l2();
     }
 }
 
-inline void Breaker::on_external_safe_restore() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_external_safe_restore() noexcept {
     if (BreakerLevel::Safe == level_) {
         enter_recovering();
     }
 }
 
-inline void Breaker::on_rtc_ok() noexcept {
+template <typename Config>
+inline void Breaker<Config>::on_rtc_ok() noexcept {
     // A qualifying call clears the consecutive-timeout counters but does NOT
     // touch cooldown_remaining_: the recovery window is never skipped.
     direct_timeout_consec_ = 0;
     rtc_timeout_consec_ = 0;
 }
 
-inline BreakerLevel Breaker::level() const noexcept {
+template <typename Config>
+inline BreakerLevel Breaker<Config>::level() const noexcept {
     return level_;
 }
 
-inline bool Breaker::direct_allowed(TargetId ao) const noexcept {
+template <typename Config>
+inline bool Breaker<Config>::direct_allowed(TargetId ao) const noexcept {
     if (kInvalidTarget == ao) {
         return false;
     }
@@ -306,7 +327,8 @@ inline bool Breaker::direct_allowed(TargetId ao) const noexcept {
     return (BreakerLevel::Normal == level_);
 }
 
-inline bool Breaker::healthy_window_passed() const noexcept {
+template <typename Config>
+inline bool Breaker<Config>::healthy_window_passed() const noexcept {
     if (BreakerLevel::Normal == level_) {
         return true;
     }
@@ -316,11 +338,13 @@ inline bool Breaker::healthy_window_passed() const noexcept {
     return false;
 }
 
-inline bool Breaker::drop_non_critical() const noexcept {
+template <typename Config>
+inline bool Breaker<Config>::drop_non_critical() const noexcept {
     return (BreakerLevel::BrokenL2 == level_) || (BreakerLevel::Safe == level_);
 }
 
-inline bool Breaker::safe_events_only() const noexcept {
+template <typename Config>
+inline bool Breaker<Config>::safe_events_only() const noexcept {
     return (BreakerLevel::Safe == level_);
 }
 
@@ -374,9 +398,10 @@ struct GlobalCounters {
 // strings and never blocks. SMP may keep per-CPU instances and fold them at a
 // higher layer; this module provides the per-instance accounting.
 // ---------------------------------------------------------------------------
+template <typename Config = DefaultConfig>
 class Monitor {
 public:
-    static constexpr uint8_t kMaxAo = DefaultConfig::kMaxAo;
+    static constexpr uint8_t kMaxAo = Config::kMaxAo;
     static constexpr uint8_t kHighWatermarkPct = 80U;
     static constexpr uint8_t kFullWatermarkPct = 100U;
 
@@ -415,28 +440,32 @@ private:
     GlobalCounters global_;
 };
 
-inline AoCounters* Monitor::slot(TargetId ao) noexcept {
+template <typename Config>
+inline AoCounters* Monitor<Config>::slot(TargetId ao) noexcept {
     if ((kInvalidTarget == ao) || (ao > kMaxAo)) {
         return nullptr;
     }
     return &ao_[static_cast<size_t>(ao)];
 }
 
-inline const AoCounters* Monitor::slot(TargetId ao) const noexcept {
+template <typename Config>
+inline const AoCounters* Monitor<Config>::slot(TargetId ao) const noexcept {
     if ((kInvalidTarget == ao) || (ao > kMaxAo)) {
         return nullptr;
     }
     return &ao_[static_cast<size_t>(ao)];
 }
 
-inline size_t Monitor::partition_index(PriorityClass p) noexcept {
+template <typename Config>
+inline size_t Monitor<Config>::partition_index(PriorityClass p) noexcept {
     if (p > PriorityClass::Low) {
         return 0U;
     }
     return static_cast<size_t>(p);
 }
 
-inline void Monitor::add_direct_duration(TargetId ao, uint64_t ns) noexcept {
+template <typename Config>
+inline void Monitor<Config>::add_direct_duration(TargetId ao, uint64_t ns) noexcept {
     AoCounters* s = slot(ao);
     if (nullptr == s) {
         return;
@@ -444,7 +473,8 @@ inline void Monitor::add_direct_duration(TargetId ao, uint64_t ns) noexcept {
     s->direct_duration_ns += ns;
 }
 
-inline void Monitor::add_dispatcher_duration(TargetId ao, uint64_t ns) noexcept {
+template <typename Config>
+inline void Monitor<Config>::add_dispatcher_duration(TargetId ao, uint64_t ns) noexcept {
     AoCounters* s = slot(ao);
     if (nullptr == s) {
         return;
@@ -452,7 +482,8 @@ inline void Monitor::add_dispatcher_duration(TargetId ao, uint64_t ns) noexcept 
     s->dispatcher_duration_ns += ns;
 }
 
-inline void Monitor::record_direct_timeout(TargetId ao) noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_direct_timeout(TargetId ao) noexcept {
     AoCounters* s = slot(ao);
     if (nullptr == s) {
         return;
@@ -460,7 +491,8 @@ inline void Monitor::record_direct_timeout(TargetId ao) noexcept {
     ++s->direct_timeouts;
 }
 
-inline void Monitor::record_rtc_timeout(TargetId ao) noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_rtc_timeout(TargetId ao) noexcept {
     AoCounters* s = slot(ao);
     if (nullptr == s) {
         return;
@@ -468,7 +500,8 @@ inline void Monitor::record_rtc_timeout(TargetId ao) noexcept {
     ++s->rtc_timeouts;
 }
 
-inline void Monitor::record_rejection(TargetId ao, RejectReason reason) noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_rejection(TargetId ao, RejectReason reason) noexcept {
     if (reason >= RejectReason::kRejectCount) {
         return;
     }
@@ -479,7 +512,8 @@ inline void Monitor::record_rejection(TargetId ao, RejectReason reason) noexcept
     ++s->rejections[static_cast<size_t>(reason)];
 }
 
-inline void Monitor::record_lease_contention(TargetId ao) noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_lease_contention(TargetId ao) noexcept {
     AoCounters* s = slot(ao);
     if (nullptr == s) {
         return;
@@ -487,7 +521,8 @@ inline void Monitor::record_lease_contention(TargetId ao) noexcept {
     ++s->lease_contention;
 }
 
-inline void Monitor::record_pending(TargetId ao, uint16_t pending) noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_pending(TargetId ao, uint16_t pending) noexcept {
     AoCounters* s = slot(ao);
     if (nullptr == s) {
         return;
@@ -501,7 +536,8 @@ inline void Monitor::record_pending(TargetId ao, uint16_t pending) noexcept {
     }
 }
 
-inline void Monitor::sample_watermark(PriorityClass p, uint8_t pct) noexcept {
+template <typename Config>
+inline void Monitor<Config>::sample_watermark(PriorityClass p, uint8_t pct) noexcept {
     const size_t idx = partition_index(p);
     global_.watermark_pct[idx] = pct;
     if (pct >= kHighWatermarkPct) {
@@ -512,11 +548,13 @@ inline void Monitor::sample_watermark(PriorityClass p, uint8_t pct) noexcept {
     }
 }
 
-inline void Monitor::record_overflow() noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_overflow() noexcept {
     ++global_.overflow;
 }
 
-inline void Monitor::record_disposition(SubmitDisposition disposition) noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_disposition(SubmitDisposition disposition) noexcept {
     switch (disposition) {
         case SubmitDisposition::Merged:
             ++global_.disposition_merge;
@@ -540,15 +578,18 @@ inline void Monitor::record_disposition(SubmitDisposition disposition) noexcept 
     }
 }
 
-inline void Monitor::heartbeat() noexcept {
+template <typename Config>
+inline void Monitor<Config>::heartbeat() noexcept {
     ++global_.watchdog_heartbeats;
 }
 
-inline void Monitor::record_platform_fault() noexcept {
+template <typename Config>
+inline void Monitor<Config>::record_platform_fault() noexcept {
     ++global_.platform_faults;
 }
 
-inline const AoCounters& Monitor::ao(TargetId ao) const noexcept {
+template <typename Config>
+inline const AoCounters& Monitor<Config>::ao(TargetId ao) const noexcept {
     const AoCounters* s = slot(ao);
     if (nullptr == s) {
         return ao_[0U];  // unused slot, always zero
@@ -556,7 +597,8 @@ inline const AoCounters& Monitor::ao(TargetId ao) const noexcept {
     return *s;
 }
 
-inline const GlobalCounters& Monitor::global() const noexcept {
+template <typename Config>
+inline const GlobalCounters& Monitor<Config>::global() const noexcept {
     return global_;
 }
 

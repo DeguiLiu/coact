@@ -128,6 +128,7 @@ template <typename Config,
           template <typename, uint16_t> class QueueBackend>
 class Staging {
 public:
+    using ConfigType = Config;
     using HighQueue = QueueBackend<StagingSlot, Config::kHighCapacity>;
     using NormalQueue = QueueBackend<StagingSlot, Config::kNormalCapacity>;
     using LowQueue = QueueBackend<StagingSlot, Config::kLowCapacity>;

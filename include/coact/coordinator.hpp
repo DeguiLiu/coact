@@ -35,8 +35,12 @@ template <typename StagingT, typename PalT>
 class DispatchCoordinator
 {
 public:
-    DispatchCoordinator(StagingT& staging, AoRegistry& registry,
-                        Monitor& monitor, Breaker& breaker, PalT& pal,
+    using RegistryT = AoRegistry<typename StagingT::ConfigType>;
+    using MonitorT  = Monitor<typename StagingT::ConfigType>;
+    using BreakerT  = Breaker<typename StagingT::ConfigType>;
+
+    DispatchCoordinator(StagingT& staging, RegistryT& registry,
+                        MonitorT& monitor, BreakerT& breaker, PalT& pal,
                         const PolicyOps* policy_ops = nullptr,
                         void* policy_ctx = nullptr) noexcept
         : staging_(staging),
@@ -149,9 +153,9 @@ private:
     }
 
     StagingT&          staging_;
-    AoRegistry&        registry_;
-    Monitor&           monitor_;
-    Breaker&           breaker_;
+    RegistryT&         registry_;
+    MonitorT&          monitor_;
+    BreakerT&          breaker_;
     PalT&              pal_;
     const PolicyOps*   policy_ops_;
     void*              policy_ctx_;

@@ -160,7 +160,7 @@ COACT_TEST(stress_multiproducer_concurrent)
 
 /* =========================================================================
  * Test: overload degradation (qpc stress_overload intent): with a full staging
- * + Breaker at L2, non-critical submits are dropped (DroppedOverload).
+ * + Breaker<> at L2, non-critical submits are dropped (DroppedOverload).
  * ========================================================================= */
 COACT_TEST(stress_overload_drops_noncritical)
 {
@@ -174,7 +174,7 @@ COACT_TEST(stress_overload_drops_noncritical)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker     breaker(cfg);
+    coact::Breaker<>     breaker(cfg);
 
     StressAo ao(sStates, 2U, sTrans, 1U, 1, 4U);
     ao.context() = StressCtx{nullptr};
