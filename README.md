@@ -1,64 +1,64 @@
-# coact — 嵌入式主动对象事件框架
+[中文](README_zh.md) | **English**
 
-coact（**Co**operative **Act**ive-object framework）是一个面向资源受限 MCU 的 C++17 事件驱动框架，基于 **主动对象（Active Object）+ 层次状态机（HSM）** 模型，为实时系统提供确定性的异步事件调度。
+# coact
 
-核心设计取自 QP/Quantum-like 参考实现与作者自研的 newosp 库，在 **32-bit 单核（RT-Thread 5.2.x / Cortex-M）** 与 **多核（Linux host）** 双平台上保持一致的无锁语义。
+[![CI](https://github.com/DeguiLiu/coact/actions/workflows/ci.yml/badge.svg)](https://github.com/DeguiLiu/coact/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## 特性
+coact (**Co**operative **Act**ive-object framework) is a C++17 event-driven
+framework for MCUs that run RT-Thread. It schedules asynchronous events through
+**Active Objects (AO)** and **Hierarchical State Machines (HSM)**, giving a
+deterministic, preemptive-safe dispatch model on a single core.
 
-- **无锁事件池**：`EventPool` 用 32-bit 原子 + 索引式 Treiber free-list，`[15:0]=索引 / [31:16]=ABA tag`。32-bit CAS 在 x86 与 ARM Cortex-M 上均为原生指令，**不依赖 libatomic**，单核 100 MHz 下经注入的 `CriticalSection`（irq mask）以 O(1) 保护 ISR 抢占。
-- **批量回收**：`ReclaimBatcher` 将 Dispatcher 逐事件释放的多个 free-head CAS 折叠为一次 splice，减少多生产者 + 单回收线程场景下的 free-head 争用。
-- **三级无锁队列**：High / Normal / Low 分区隔离 + 限压保护（Breaker），批处理减少唤醒抖动。
-- **QP 式引用计数**：池事件经 `event_ref_inc` / `event_gc` 管理生命周期，静态事件（`pool_id==0`）永不被回收。
-- **嵌入式安全**：无堆分配 / 无递归 / 无 goto，固定宽度整型，`-fno-exceptions -fno-rtti`，MISRA C++ 对齐（恒配 `{ }`、常量前置、`switch` 必带 `default`）。
+**RT-Thread is the primary target.** Linux (host) is kept working as a
+development, test and SMP reference — the same headers build both, with a small
+PAL swap.
 
-## 架构
+## Why it exists
 
-```mermaid
-flowchart LR
-    subgraph Producer
-        T1[任务/ISR 生产者]
-    end
-    T1 -->|submit_from_task / try_submit_from_isr| C{Coordinator}
-    C -->|直接投递| AO1[ActObj A]
-    C -->|入队| S[Staging 三级队列]
-    S -->|dequeue_one 批处理| D[Dispatcher]
-    D --> AO1
-    D --> AO2[ActObj B]
-    AO1 -->|hsm.dispatch| A(HSM 层次状态机)
-    AO1 -->|event_gc 批量回收| P[EventPool 无锁池]
-    S -.->|dispatcher_active 门控| D
-```
+Bare-metal RTOS event loops leave the developer to hand-write mailbox + wait
+logic per module. coact raises that to a reusable pipeline: an event is
+allocated from a fixed pool, submitted from *task* or *ISR* context, routed
+through a three-tier queue, dispatched by a single thread, and recycled back
+to the pool — with reference counting so the same event can fan out to several
+AOs safely.
 
-- **Coordinator**：策略评估、Breaker 限压、直接投递 / 入队分流。
-- **Dispatcher**：单线程 `run()` 循环，批量取、批量派发、批量回收。
-- **Ao**：一个主动对象 = 执行租约（lease）+ 状态机 + 优先级，`dispatch()` 内部持有执行权（S6 约定）。锁层级 **L1 Singleton → L2 Context → L3 Device**，禁止反向获取。
+## Design goals (what it actually guarantees)
 
-## 模块
+- **No heap on the hot path.** Events come from a fixed-size `EventPool`; the
+  dispatcher batch-reclaims them. `-fno-exceptions -fno-rtti`.
+- **Lock-free on 32-bit MCUs without libatomic.** The pool free-list is a
+  single 32-bit tagged index (`[15:0]=index, [31:16]=ABA tag`); the CAS is a
+  native instruction on Cortex-M. ISR safety comes from an injected
+  `CriticalSection` that maps to `rt_hw_interrupt_disable/enable` on RT-Thread.
+- **Deterministic wakeups.** The dispatcher is signalled only when it is idle;
+  a drain-check closes the missed-wakeup window. `submit_from_task` may run the
+  AO directly (S6 fast path); `try_submit_from_isr` never blocks.
+- **Back-pressure built in.** A breaker (Normal → BrokenL1 → BrokenL2 → Safe →
+  Recovering) degrades under overload instead of dropping silently, and the
+  low-priority partition ages out instead of starving.
+- **Compile-time structure.** HSM transitions are static tables, and the AO
+  budget (`kMaxAo`, queue capacities) is one `Config`.
 
-| 模块 | 头文件 | 职责 |
-|---|---|---|
-| event | `event.hpp` / `pool.hpp` | 事件定义、池注册表、引用计数、无锁池 |
-| hsm | `hsm.hpp` | 层次状态机（父状态事件继承、LCA 迁移） |
-| queue | `queue.hpp` | MPSC 有界队列、单核 CriticalSection 环形队列 |
-| ao | `ao.hpp` | 主动对象、执行租约、优先级、AoRegistry |
-| staging | `staging.hpp` | 三级分区队列、批处理、Low 老化 |
-| monitor | `monitor.hpp` | Breaker 限压、水位、RTC 超时监控 |
-| policy | `policy.hpp` | 速率限制 / 策略评估钩子 |
-| core | `coordinator.hpp` `dispatcher.hpp` `runtime.hpp` | 集成装配与运行循环 |
-| pal | `pal_*.hpp` | 平台抽象（POSIX / RT-Thread） |
+## What runs where
 
-## 快速开始
+| Target | Default queue backend | Synchronization | Note |
+|---|---|---|---|
+| **RT-Thread 5.2.x, single-core** (primary) | `SingleCoreCriticalRing` (irq-mask, no atomics) | `rt_hw_interrupt_disable/enable` | Cortex-M native 32-bit CAS, zero heap |
+| Linux host (compat) | `BoundedMpscQueue` (Vyukov) | native CAS | for dev / tests / SMP reference |
 
-**构建（Linux host）**
+Choose the PAL: `coact/pal_rtthread.hpp` for RT-Thread, `coact/pal_posix.hpp`
+for host. The rest of the framework is identical.
+
+## Quick start (host)
 
 ```sh
 cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
 cmake --build build -j
-ctest --test-dir build          # 运行全部单测
+ctest --test-dir build          # host test suite
 ```
 
-**最小装配（两行绑定一个主动对象）**
+Bind one AO and run:
 
 ```cpp
 #include "coact/runtime.hpp"
@@ -66,33 +66,50 @@ ctest --test-dir build          # 运行全部单测
 
 coact::pal::Posix pal;
 coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
-rt.bind(&my_ao);     // my_ao : coact::Ao<...>
+rt.bind(&my_ao);      // my_ao : coact::Ao<Ctx, Hsm, Traits>
 rt.initialize();
 rt.start();
 ```
 
-更完整的用法见 `examples/hsm_protocol_demo.cpp`（层次协议状态机）与 `examples/node_manager_demo.cpp`（多节点心跳管理的多个主动对象）。
+## On RT-Thread
 
-## 平台支持
+Include the same headers, pick `coact/pal_rtthread.hpp`, and compile
+`src/core/pal_rtthread.cpp` into the BSP (it only uses the kernel API:
+semaphores, threads, `rt_hw_interrupt_disable/enable`, `rt_tick_get`). The
+dispatcher runs as a normal RT-Thread thread; producers call
+`coordinator().submit_from_task(...)` and ISRs call `try_submit_from_isr(...)`.
+See `examples/` for running AOs.
 
-| 平台 | 同步原语 | 内存序 |
+## Examples
+
+- `examples/hsm_protocol_demo.cpp` — hierarchical protocol HSM (parent-state
+  event inheritance), full pipeline: pool → submit → queue → dispatch.
+- `examples/node_manager_demo.cpp` — four heartbeat-driven node AOs under one
+  runtime, table-ordered guards.
+- `examples/serial_ota/` — serial OTA bridge built on coact + newosp.
+
+## Modules
+
+| Piece | Header | Responsibility |
 |---|---|---|
-| RT-Thread 5.2.x 单核 | 注入 `CriticalSection`（`rt_hw_interrupt_disable/enable`）+ 32-bit CAS | relaxed 为主，单核降级 |
-| Linux 多核 | 原生 32-bit CAS | acquire/release 尾部 |
+| event / pool | `event.hpp` `pool.hpp` | event, ref-counting, global pool registry, lock-free pool |
+| hsm | `hsm.hpp` | HSM, parent-state inheritance, static transition tables |
+| queue | `queue.hpp` | MPSC / single-core critical ring, cache-line isolation |
+| ao | `ao.hpp` | active object, single-execution lease, registry |
+| staging | `staging.hpp` | three-tier queues, batch selection, low aging |
+| monitor | `monitor.hpp` | breaker, watermark, RTC timeout |
+| policy | `policy.hpp` | rate-limit / policy hooks |
+| core | `coordinator.hpp` `dispatcher.hpp` `runtime.hpp` | submit pipeline, dispatch loop, assembly |
+| pal | `pal_posix.hpp` `pal_rtthread.hpp` | platform abstraction |
 
-单核目标通过 `pal_rtthread.hpp` 注入 irq-mask 临界区；多核直接用 CAS，无 libatomic 锁回退。
+## Testing
 
-## 测试与健壮性
+14 host test targets pass by default (`ctest`), TSan-clean on the
+pool/dispatcher paths, plus `serial_ota_demo` when built with
+`-DCOACT_BUILD_SERIAL_OTA=ON` (needs newosp headers out of tree). CI runs host
++ ASan/UBSan via `.github/workflows/ci.yml`. The framework was brought up on
+RT-Thread 5.2.1 / qemu-vexpress-a9 (single-core) during development.
 
-- 15 个测试目标，覆盖事件池并发、队列 MPSC 争用、HSM 迁移、Breaker 限压、Coordinator 直接/入队分流、整体装配生命周期。
-- **TSan**（ASLR-off）通过：多生产者池 alloc/reclaim、Dispatcher 批量回收路径 0 数据竞争。
-- `-Wconversion -Wshadow` 下核心头文件零告警；`.ai/` 提供 `check.sh` / `lint.sh` / `format.sh` / `tidy.sh` / `run-tsan.sh`。
-- 性能基准：`src/core/bench_hotpath.cpp`（SIGPROF 采样 + 折叠火焰图），`--mode staged|direct`。
+## License
 
-## 许可
-
-MIT License，见 `LICENSE`。
-
----
-
-有关更深入的设计决策（池无锁化 / cache-line 隔离 / 批量回收的实测依据）见 [docs/hotpath_profiling_zh.md](docs/hotpath_profiling_zh.md)。
+MIT — see `LICENSE`.
