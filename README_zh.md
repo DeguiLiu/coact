@@ -53,13 +53,15 @@ rt.start();
 
 ## 在 RT-Thread 上
 
-包含同一组头文件，改用 `coact/pal_rtthread.hpp`，并把 `src/core/pal_rtthread.cpp` 编进 BSP（它只用内核 API：信号量、线程、`rt_hw_interrupt_disable/enable`、`rt_tick_get`）。Dispatcher 以普通 RT-Thread 线程运行；producer 调 `coordinator().submit_from_task(...)`，ISR 调 `try_submit_from_isr(...)`。完整示例见 `examples/`。
+包含同一组头文件，改用 `coact/pal_rtthread.hpp`，并把 `src/core/pal_rtthread.cpp` 编进 BSP（它只用内核 API：信号量、线程、`rt_hw_interrupt_disable/enable`、`rt_tick_get`）。Dispatcher 以普通 RT-Thread 线程运行；producer 调 `coordinator().submit_from_task(...)`，ISR 调 `try_submit_from_isr(...)`。运行示例见 [`examples/README.md`](examples/README.md)。
 
 ## 示例
 
 - `examples/hsm_protocol_demo.cpp` — 层次协议状态机（父状态事件继承），完整走 pool → submit → 队列 → dispatch。
 - `examples/node_manager_demo.cpp` — 一个 runtime 下四个心跳驱动的节点 AO，表序 guard。
 - `examples/serial_ota/` — coact + newosp 搭的串口 OTA bridge。
+
+每个示例的用途、构建/运行方式，以及框架分层与事件交互时序图，详见 [`examples/README.md`](examples/README.md)。
 
 ## 模块
 

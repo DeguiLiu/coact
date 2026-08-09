@@ -78,7 +78,7 @@ Include the same headers, pick `coact/pal_rtthread.hpp`, and compile
 semaphores, threads, `rt_hw_interrupt_disable/enable`, `rt_tick_get`). The
 dispatcher runs as a normal RT-Thread thread; producers call
 `coordinator().submit_from_task(...)` and ISRs call `try_submit_from_isr(...)`.
-See `examples/` for running AOs.
+See [`examples/README.md`](examples/README.md) for running AOs.
 
 ## Examples
 
@@ -87,6 +87,10 @@ See `examples/` for running AOs.
 - `examples/node_manager_demo.cpp` — four heartbeat-driven node AOs under one
   runtime, table-ordered guards.
 - `examples/serial_ota/` — serial OTA bridge built on coact + newosp.
+
+Each demo's purpose, build/run steps, and the framework-layering and
+event-interaction diagrams are documented in
+[`examples/README.md`](examples/README.md).
 
 ## Modules
 
