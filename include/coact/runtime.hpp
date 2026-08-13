@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 
 #include "coact/ao.hpp"
 #include "coact/assert.hpp"
@@ -27,6 +28,27 @@ void dispatcher_trampoline(void* ctx) noexcept
     static_cast<DispatcherT*>(ctx)->run();
 }
 
+/* Starts the PAL dispatcher thread, propagating a status when the PAL reports
+   one (RtThread returns pal::InitError, design §7.5). Posix keeps void: the
+   if-constexpr discards the status branch so Posix still compiles. */
+template <typename PalT>
+inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry,
+                                 void* ctx) noexcept
+{
+    if constexpr (std::is_same<decltype(pal.start_dispatcher(entry, ctx)),
+                               void>::value) {
+        pal.start_dispatcher(entry, ctx);
+        return true;
+    }
+    else {
+        /* Status-returning PAL (RtThread, design §7.5): success == the enum's
+           0 value. decltype(status) keeps the name dependent so this branch is
+           only instantiated for PALs that actually return a status. */
+        auto status = pal.start_dispatcher(entry, ctx);
+        return status == decltype(status){0};
+    }
+}
+
 }  // namespace detail
 
 // ---------------------------------------------------------------------------
@@ -34,22 +56,30 @@ void dispatcher_trampoline(void* ctx) noexcept
 // Template parameters:
 //   Config  - a DefaultConfig-compatible struct providing capacity/timing
 //             constants as scoped enums.
-//   PalT    - concrete PAL type (e.g. pal::Posix).
+//   PalT    - concrete PAL type (e.g. pal::Posix, pal::RtThread).
+//   Profile - board pool/staging/reclaimer/monitor profile (design §7.4).
+//             Default HostSmpProfile keeps batched reclaim on host/POSIX.
+//             Single-core RT-Thread boards pass pal::RtThread::Profile
+//             (RttSingleCoreProfile), which the Dispatcher forwards to select
+//             ImmediateReclaimer.
 //
 // Three-phase initialization:
 //   Phase 1 (bind)      - register AOs, configure policy ops.
 //   Phase 2 (initialize)- commit registry; validate uniqueness; init HSM.
-//   Phase 3 (start)     - start Dispatcher thread; framework is live.
+//   Phase 3 (start)     - start Dispatcher thread; framework is live. Returns
+//                         bool; started_ is set ONLY after the PAL reports a
+//                         successful dispatcher start (design §7.5).
 //   stop()              - request stop, join Dispatcher thread.
 // ---------------------------------------------------------------------------
-template <typename Config, typename PalT>
+template <typename Config, typename PalT,
+          typename Profile = coact::HostSmpProfile>
 class Runtime
 {
 public:
     using ConfigType = Config;
     using StagingType = Staging<Config,
         PalT::template QueueBackend>;
-    using DispatcherType    = Dispatcher<StagingType, PalT>;
+    using DispatcherType    = Dispatcher<StagingType, PalT, Profile>;
     using CoordinatorType   = DispatchCoordinator<StagingType, PalT>;
 
     explicit Runtime(PalT& pal) noexcept
@@ -76,6 +106,17 @@ public:
         return registry_.bind(ao, ao->logical_prio());
     }
 
+    // Phase 1 variant for a board's constexpr domain table. The caller owns
+    // the stable target assignment; Runtime still prevents changes after
+    // initialize() and AoRegistry validates target/prio uniqueness.
+    bool bind_at(TargetId target, AoBase& ao) noexcept
+    {
+        if (initialized_) {
+            return false;
+        }
+        return registry_.bind_at(target, ao, ao.logical_prio());
+    }
+
     /* Phase 2: validate and commit. Idempotent on the second call. */
     bool initialize() noexcept
     {
@@ -86,16 +127,23 @@ public:
         return true;
     }
 
-    /* Phase 3: start the Dispatcher thread. */
-    void start() noexcept
+    /* Phase 3: start the Dispatcher thread. Returns false (leaving started_
+       false) when the PAL reports a definite init/start error - the Runtime
+       never enters started on a PAL failure (design §7.5). */
+    bool start() noexcept
     {
         COACT_ASSERT(initialized_);
-        COACT_ASSERT(!started_);
-        started_ = true;
+        if (started_) {
+            return false;
+        }
         pal_.set_dispatcher_stack_bytes(Config::kDispatcherStackBytes);
-        pal_.start_dispatcher(
-            &detail::dispatcher_trampoline<DispatcherType>,
-            &dispatcher_);
+        const bool ok = detail::pal_start_dispatcher(
+            pal_, &detail::dispatcher_trampoline<DispatcherType>, &dispatcher_);
+        if (!ok) {
+            return false;
+        }
+        started_ = true;
+        return true;
     }
 
     void stop() noexcept

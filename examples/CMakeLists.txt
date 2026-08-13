@@ -13,6 +13,17 @@ add_executable(node_manager_demo
     ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp)
 target_link_libraries(node_manager_demo PRIVATE coact_core Threads::Threads)
 
+# log_rtthread_demo: single-core RT-Thread static log adapter, compiled on host
+# against test/rtthread_stub.h (RT-Thread API backed by pthreads). Exercises the
+# writer end-to-end: task + ISR producers, admission drop, stop/drain.
+add_executable(log_rtthread_demo
+    log_rtthread_demo.cpp
+    ${CMAKE_SOURCE_DIR}/src/diag/log_rtthread.cpp)
+target_link_libraries(log_rtthread_demo PRIVATE coact_core Threads::Threads)
+target_compile_definitions(log_rtthread_demo PRIVATE COACT_RTT_STUB)
+target_include_directories(log_rtthread_demo PRIVATE ${CMAKE_SOURCE_DIR})
+add_test(NAME log_rtthread_demo COMMAND log_rtthread_demo)
+
 # serial_ota_demo: multi-file industrial example (Serial OTA upgrade) ported
 # from ~/newosp/examples/serial_ota. It depends on the header-only newosp
 # library (osp::StateMachine/BehaviorTree/SpscRingbuffer/TimerScheduler/...) for

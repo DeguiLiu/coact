@@ -18,15 +18,56 @@ namespace coact {
 // Per contract 4.3 the function pointers carry no noexcept qualifier.
 // ---------------------------------------------------------------------------
 struct CriticalSection {
-    typedef uintptr_t Token;
+    using Token = uintptr_t;
     void* ctx;                             // opaque PAL context (passed to hooks)
     Token (*save)(void* ctx);
     void (*restore)(void* ctx, Token);
 };
 
+// Unified RAII guard for a CriticalSection: save() on construction (a null
+// save hook degrades to no-op), restore() on destruction (a null restore hook
+// is a no-op). Factored into one canonical place so consumers no longer each
+// hand-roll their own `CriticalSectionScope` (previously duplicated across the
+// cmdfw delivery_runtime and response paths with inconsistent null-tolerance).
+// Value-initialized token field makes a null save leave the token in a safe
+// state. Trivial inline, zero heap, no exceptions.
+class CriticalSectionGuard {
+public:
+    explicit CriticalSectionGuard(const CriticalSection& cs) noexcept
+        : cs_(cs),
+          token_((cs_.save != nullptr) ? cs_.save(cs_.ctx)
+                                       : CriticalSection::Token{})
+    {
+    }
+    CriticalSectionGuard(const CriticalSectionGuard&) = delete;
+    CriticalSectionGuard& operator=(const CriticalSectionGuard&) = delete;
+    ~CriticalSectionGuard() noexcept
+    {
+        if (cs_.restore != nullptr) {
+            cs_.restore(cs_.ctx, token_);
+        }
+    }
+
+private:
+    CriticalSection cs_;
+    CriticalSection::Token token_;
+};
+
 namespace pal {
 struct CriticalToken {
     uintptr_t value;
+};
+
+// High-resolution monotonic counter injected into a PAL as a static function
+// table (design §7.5): no inheritance / virtual dispatch. read_counter()
+// returns raw counter ticks; frequency_hz converts them to nanoseconds. A
+// target binds a 10 MHz TIM counter (32-bit wrap extended across reads); host
+// tests inject a mock to check conversion / monotonicity / timeouts. RT tick
+// remains the source for Dispatcher blocking waits and long deadlines only.
+struct ClockOps {
+    uint64_t (*read_counter)(void* ctx);
+    uint32_t frequency_hz;
+    void* ctx;
 };
 }  // namespace pal
 
@@ -88,7 +129,7 @@ inline CriticalSection make_spin_critical_section(SpinCriticalSection& scs) noex
 
 namespace pal {
 
-typedef void (*ThreadEntry)(void* context);
+using ThreadEntry = void (*)(void* context);
 
 // Concrete PAL types (Posix, RtThread) provide these members; they are not
 // required to inherit from any base (concept-checked via the Runtime template).
@@ -103,9 +144,13 @@ typedef void (*ThreadEntry)(void* context);
 //   void signal_dispatcher_from_task() noexcept;
 //   void signal_dispatcher_from_isr() noexcept;
 //   void start_dispatcher(ThreadEntry entry, void* context) noexcept;
+//       // RtThread additionally returns pal::InitError (design §7.5): kOk only
+//       // after rt_thread_startup()==RT_EOK; kAlreadyStarted after a second
+//       // start or after stop. Posix keeps void.
 //   void join_dispatcher() noexcept;
 //   void watchdog_progress(uint32_t marker) noexcept;
 //   void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;   // may be no-op
+//   void set_clock_ops(ClockOps ops) noexcept;                  // optional (§7.5)
 
 }  // namespace pal
 }  // namespace coact

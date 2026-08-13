@@ -251,7 +251,6 @@ public:
 
 class AoBase {
 public:
-    virtual ~AoBase() {}
     virtual void dispatch(const Event& event) noexcept = 0;
     virtual LogicalPrio logical_prio() const noexcept = 0;
     virtual PriorityClass priority_class() const noexcept = 0;
@@ -259,6 +258,8 @@ public:
     virtual bool isr_direct_safe() const noexcept = 0;
     virtual ExecutionLease& lease() noexcept = 0;     // 补充：coordinator C5 访问
     virtual PendingCounter& pending() noexcept = 0;   // 补充：coordinator C4/C6 访问
+protected:
+    ~AoBase() noexcept = default;   // 非拥有基类：AO 静态/自动存储期，禁止经基类 delete
 };
 
 template <typename Context, typename Hsm, typename Traits>
@@ -268,7 +269,7 @@ class Ao : public AoBase {
 };
 ```
 
-`AoRegistry`：定长 `AoBase*` 数组，`TargetId`（1 基）映射，`lookup(TargetId)`、`bind(AoBase*, prio)` 校验优先级唯一。
+`AoRegistry`：定长 `AoBase*` 数组（**非拥有**，仅保存指针，永不 `delete`），`TargetId`（1 基）映射，`lookup(TargetId)`、`bind(AoBase*, prio)` 校验优先级唯一。AO 一律静态/自动存储期，生命周期由自身存储期决定，禁止经 `AoBase*` 释放。
 
 **执行权（已定型，S6 落地）**：`Ao<Context,Hsm,Traits>::dispatch()` 是**自包含单执行权**单元——内部自行 `try_acquire(RunningDispatcher)→hsm_.dispatch→release`，非法重入（state 非 Idle）时 `COACT_ASSERT`。core 的 Dispatcher **不要**预占 lease 后再调 `dispatch()`（会二次获取失败触发 assert）；只用 `lease()/state()` 做 C5 监控窥视、`pending()` 做 C4/C6 窥视。Direct 路径如需单执行权，由协调者持有 lease 并直接驱动 AO；Dispatcher 路径一律走 `Ao::dispatch()`。
 
@@ -304,8 +305,9 @@ public:
 
 - `dispatcher.hpp`：`Dispatcher`（单线程循环：drain → 取 batch → 对每事件取得 AO lease → dispatch → 释放；空闲调用 PAL wait）。
 - `coordinator.hpp`：`DispatchCoordinator::submit_from_task(TargetId, Event*, const EventQos&) / try_submit_from_isr(...)`（事件引用由 submit 管理：入队则保留 ref 待 dispatcher gc，direct 则处理完 gc，drop/merge 则立即 gc），按设计 §8.1 管线：M4 → M1(C1-C7) → direct | merge | staging。统一入口，禁止绕过。
-- `runtime.hpp`：`Runtime<Config, Pal>`：`initialize/bind/start/run_dispatcher/stop` 三阶段初始化。
+- `runtime.hpp`：`Runtime<Config, Pal, Profile=HostSmpProfile>`：`initialize/bind/start/run_dispatcher/stop` 三阶段初始化。`start()` 返回 `bool`，只有 PAL 报告 Dispatcher 启动成功才进入 started（design §7.5）；第三模板参把板级 profile 传导到 Dispatcher（单核 `RttSingleCoreProfile`→immediate reclaim，Host 默认→batched）。
 - `src/core/pal_posix.cpp`：`pal::Posix`（pthread、condvar、`clock_gettime(CLOCK_MONOTONIC)`）。
+- `src/core/pal_rtthread.cpp`：`pal::RtThread` 静态 PAL（design §7.5）：调用方提供 `RtThreadResources<StackBytes,ContextSlots>`（静态 TCB、对齐 stack、两个静态 semaphore、固定 `ContextSlot[N]`）；构造函数只保存引用；显式 `initialize()` 返回 `pal::InitError`；`start_dispatcher()` 返回 `pal::InitError`（只有 `rt_thread_startup()==RT_EOK` 才 kOk）；一次初始化/一次启动/一次停止，stop 后再次 start 返回 `kAlreadyStarted`；固定 ContextSlot 表不占 `user_data`、启动后冻结、Dispatcher 经静态 TCB 比较识别；`ClockOps` 静态函数表注入时钟（默认 RT tick，真机绑 10 MHz TIM）。
 - `src/core/test_integration.cpp`：端到端测试（生产→submit→dispatcher→AO action）。
 
 ## 5. 验收标准（每个模块）

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "coact/queue.hpp"
@@ -59,6 +60,28 @@ struct MoveOnly {
     MoveOnly& operator=(const MoveOnly&) = delete;
     MoveOnly(MoveOnly&&) = default;
     MoveOnly& operator=(MoveOnly&&) = default;
+};
+
+// Move-only handle that visibly invalidates the source on move, so a failed
+// push can prove the incoming object was NOT consumed while a successful push
+// consumed it (std::exchange leaves owns==false and value==0 in the source).
+struct MoveHandle {
+    uint32_t value = 0U;
+    bool owns = false;   // false == invalid (default or moved-from)
+
+    MoveHandle() noexcept = default;
+    explicit MoveHandle(uint32_t v) noexcept : value(v), owns(true) {}
+    MoveHandle(MoveHandle&& o) noexcept
+        : value(std::exchange(o.value, 0U)),
+          owns(std::exchange(o.owns, false)) {}
+    MoveHandle& operator=(MoveHandle&& o) noexcept
+    {
+        value = std::exchange(o.value, 0U);
+        owns = std::exchange(o.owns, false);
+        return *this;
+    }
+    MoveHandle(const MoveHandle&) = delete;
+    MoveHandle& operator=(const MoveHandle&) = delete;
 };
 
 // ---------------------------------------------------------------------------
@@ -154,6 +177,15 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
 // ---------------------------------------------------------------------------
 // BoundedMpscQueue: single-thread FIFO, full/empty, size bookkeeping.
 // ---------------------------------------------------------------------------
+COACT_TEST(mpsc_accepts_unified_critical_section_constructor) {
+    coact::BoundedMpscQueue<uint32_t, 2U> q(counting_cs());
+    CHECK(q.try_push(11U));
+
+    uint32_t value = 0U;
+    CHECK(q.try_pop(value));
+    CHECK_EQ(value, 11U);
+}
+
 COACT_TEST(mpsc_fifo_single_thread) {
     coact::BoundedMpscQueue<int, 8> q;
     REQUIRE_EQ(q.capacity(), 8);
@@ -318,6 +350,209 @@ COACT_TEST(ring_move_only) {
     MoveOnly out(0);
     CHECK(q.try_pop(out));
     CHECK_EQ(out.value, 5);
+    CHECK_EQ(q.size(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// SingleCoreCriticalRing: fused try_push_observed (design 5.4). Success reports
+// the fill level right after the push; a full failure reports the full level
+// and must NOT consume the caller's value.
+// ---------------------------------------------------------------------------
+COACT_TEST(ring_try_push_observed_basic) {
+    reset_counters();
+    coact::SingleCoreCriticalRing<int, 4> q(counting_cs());
+
+    coact::QueueResult r = q.try_push_observed(10);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 1U);
+
+    r = q.try_push_observed(11);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 2U);
+
+    r = q.try_push_observed(12);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 3U);
+
+    r = q.try_push_observed(13);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 4U);
+
+    // full: failure with size_after == capacity
+    r = q.try_push_observed(99);
+    CHECK(!r.success);
+    CHECK_EQ(r.size_after, 4U);
+
+    int v = 0;
+    REQUIRE(q.try_pop(v));
+    CHECK_EQ(v, 10);
+    r = q.try_push_observed(20);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 4U);
+}
+
+// ---------------------------------------------------------------------------
+// SingleCoreCriticalRing: try_push_observed must run the whole fused operation
+// inside ONE critical section (one save/restore pair, no nesting). This is the
+// regression guard for the cmdfw DeliveryTx double-critical-section removal.
+// ---------------------------------------------------------------------------
+COACT_TEST(ring_try_push_observed_single_critical_section) {
+    reset_counters();
+    coact::SingleCoreCriticalRing<int, 2> q(counting_cs());
+
+    coact::QueueResult r = q.try_push_observed(1);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 1U);
+    CHECK_EQ(g_cs.saves, 1);
+    CHECK_EQ(g_cs.restores, 1);
+    CHECK_EQ(g_cs.depth, 0);
+    CHECK_EQ(g_cs.max_depth, 1);
+
+    reset_counters();
+    r = q.try_push_observed(2);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 2U);
+    CHECK_EQ(g_cs.saves, 1);
+    CHECK_EQ(g_cs.restores, 1);
+    CHECK_EQ(g_cs.max_depth, 1);
+
+    reset_counters();
+    r = q.try_push_observed(3);   // full
+    CHECK(!r.success);
+    CHECK_EQ(r.size_after, 2U);
+    CHECK_EQ(g_cs.saves, 1);
+    CHECK_EQ(g_cs.restores, 1);
+    CHECK_EQ(g_cs.depth, 0);
+    CHECK_EQ(g_cs.max_depth, 1);
+}
+
+// ---------------------------------------------------------------------------
+// SingleCoreCriticalRing: move-only failed push keeps the input valid; a later
+// successful push consumes it. Proves the fused operation only moves the
+// payload once capacity is known to be available.
+// ---------------------------------------------------------------------------
+COACT_TEST(ring_try_push_observed_failed_push_keeps_input) {
+    reset_counters();
+    coact::SingleCoreCriticalRing<MoveHandle, 2> q(counting_cs());
+    REQUIRE(q.try_push_observed(MoveHandle(1U)).success);
+    REQUIRE(q.try_push_observed(MoveHandle(2U)).success);
+
+    MoveHandle incoming(3U);
+    coact::QueueResult r = q.try_push_observed(std::move(incoming));   // full
+    CHECK(!r.success);
+    CHECK_EQ(r.size_after, 2U);
+    CHECK(incoming.owns);                       // NOT consumed
+    CHECK_EQ(incoming.value, 3U);               // value intact
+
+    MoveHandle out;
+    REQUIRE(q.try_pop(out));                    // free a slot
+    CHECK(out.owns);
+    CHECK_EQ(out.value, 1U);
+
+    r = q.try_push_observed(std::move(incoming));   // now consumes
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 2U);
+    CHECK(!incoming.owns);                      // consumed (moved-from)
+
+    // FIFO: the pre-existing 2 is next, then the consumed 3.
+    MoveHandle out2;
+    REQUIRE(q.try_pop(out2));
+    CHECK(out2.owns);
+    CHECK_EQ(out2.value, 2U);
+
+    MoveHandle out3;
+    REQUIRE(q.try_pop(out3));
+    CHECK(out3.owns);
+    CHECK_EQ(out3.value, 3U);
+    CHECK_EQ(q.size(), 0);
+    CHECK(!q.try_pop(out3));                    // empty
+}
+
+// ---------------------------------------------------------------------------
+// SingleCoreCriticalRing: capacity-1 boundary for try_push_observed.
+// ---------------------------------------------------------------------------
+COACT_TEST(ring_try_push_observed_capacity_one) {
+    reset_counters();
+    coact::SingleCoreCriticalRing<int, 1> q(counting_cs());
+
+    coact::QueueResult r = q.try_push_observed(7);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 1U);
+
+    r = q.try_push_observed(8);   // full
+    CHECK(!r.success);
+    CHECK_EQ(r.size_after, 1U);
+
+    int v = 0;
+    REQUIRE(q.try_pop(v));
+    CHECK_EQ(v, 7);
+
+    r = q.try_push_observed(9);   // empty slot reused
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 1U);
+    CHECK_EQ(q.size(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// SingleCoreCriticalRing: try_push_observed fill-level bookkeeping must agree
+// with the plain try_push / size() path on the same ring (regression).
+// ---------------------------------------------------------------------------
+COACT_TEST(ring_try_push_observed_matches_plain_push) {
+    reset_counters();
+    coact::SingleCoreCriticalRing<int, 4> q(counting_cs());
+
+    CHECK(q.try_push(1));
+    coact::QueueResult r = q.try_push_observed(2);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 2U);
+    CHECK(q.try_push(3));
+    CHECK_EQ(q.size(), 3);
+
+    int v = 0;
+    REQUIRE(q.try_pop(v));
+    CHECK_EQ(v, 1);
+    CHECK_EQ(q.size(), 2);
+    r = q.try_push_observed(4);
+    CHECK(r.success);
+    CHECK_EQ(r.size_after, 3U);
+    CHECK_EQ(q.size(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// SingleCoreCriticalRing: try_push_observed across write_index_ wrap-around.
+// A push/pop stream longer than one full turn of the slot index must keep
+// reporting correct size_after and full/empty boundaries.
+// ---------------------------------------------------------------------------
+COACT_TEST(ring_try_push_observed_wrap) {
+    reset_counters();
+    coact::SingleCoreCriticalRing<uint32_t, 4> q(counting_cs());
+    constexpr uint32_t kIters = 70000U;   // forces write_index_ to wrap often
+
+    for (uint32_t i = 0U; i < kIters; ++i) {
+        coact::QueueResult r = q.try_push_observed(std::move(i));
+        REQUIRE(r.success);
+        CHECK_EQ(r.size_after, 1U);
+        uint32_t out = 0U;
+        REQUIRE(q.try_pop(out));
+        CHECK_EQ(out, i);
+    }
+    CHECK_EQ(q.size(), 0);
+
+    // Fill to the brim right after the wrap boundary.
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        coact::QueueResult r = q.try_push_observed(kIters + i);
+        REQUIRE(r.success);
+        CHECK_EQ(r.size_after, i + 1U);
+    }
+    coact::QueueResult r = q.try_push_observed(0xFFFFFFFFU);
+    CHECK(!r.success);
+    CHECK_EQ(r.size_after, 4U);
+
+    uint32_t out = 0U;
+    for (uint32_t i = 0U; i < 4U; ++i) {
+        REQUIRE(q.try_pop(out));
+        CHECK_EQ(out, kIters + i);
+    }
     CHECK_EQ(q.size(), 0);
 }
 

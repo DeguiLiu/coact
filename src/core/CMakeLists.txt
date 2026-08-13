@@ -8,6 +8,9 @@ coact_add_test(test_core
 target_link_libraries(test_core PRIVATE Threads::Threads)
 target_include_directories(test_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
+coact_add_test(test_expected test_expected.cpp)
+target_include_directories(test_expected PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
 coact_add_test(test_integration
     test_integration.cpp
     pal_posix.cpp)
@@ -54,6 +57,36 @@ target_link_libraries(test_static_lifetime PRIVATE Threads::Threads)
 target_compile_definitions(test_static_lifetime PRIVATE COACT_RTT_STUB)
 target_include_directories(test_static_lifetime PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
+# Static RT-Thread PAL test (design §7.5): RtThreadResources / explicit
+# initialize + error-returning start / fixed ContextSlot table / ClockOps /
+# single-core Dispatcher profile assembly. TDD: RED first against the
+# historical PAL, GREEN after the staticization below.
+coact_add_test(test_static_pal
+    test_static_pal.cpp
+    pal_rtthread.cpp)
+target_link_libraries(test_static_pal PRIVATE Threads::Threads)
+target_compile_definitions(test_static_pal PRIVATE COACT_RTT_STUB)
+target_include_directories(test_static_pal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# Negative compile contracts: RtThread::Profile is only valid on a real
+# single-core RT-Thread build. Each target compiles with a minimal synthetic
+# RT-Thread configuration and CTest inverts the expected compiler failure.
+add_library(test_rtt_smp_gate EXCLUDE_FROM_ALL STATIC rtt_compile_gate.cpp)
+target_link_libraries(test_rtt_smp_gate PRIVATE coact_core)
+target_include_directories(test_rtt_smp_gate BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../test/rtthread_gate_smp)
+add_test(NAME test_rtt_smp_gate
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_rtt_smp_gate)
+set_tests_properties(test_rtt_smp_gate PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_rtt_multicore_gate EXCLUDE_FROM_ALL STATIC rtt_compile_gate.cpp)
+target_link_libraries(test_rtt_multicore_gate PRIVATE coact_core)
+target_include_directories(test_rtt_multicore_gate BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../test/rtthread_gate_multicore)
+add_test(NAME test_rtt_multicore_gate
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_rtt_multicore_gate)
+set_tests_properties(test_rtt_multicore_gate PROPERTIES WILL_FAIL TRUE)
+
 # Hot-path benchmark with a built-in "poor man's" sampler (no perf/root needed).
 # --sample writes a folded-stacks file for tools/flamegraph_svg.py.
 add_executable(bench_hotpath bench_hotpath.cpp pal_posix.cpp)
@@ -62,4 +95,3 @@ target_link_libraries(bench_hotpath PRIVATE coact_core Threads::Threads)
 target_compile_options(bench_hotpath PRIVATE -O2 -g -fno-omit-frame-pointer)
 target_link_options(bench_hotpath PRIVATE -rdynamic)
 target_include_directories(bench_hotpath PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-

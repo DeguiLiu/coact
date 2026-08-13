@@ -356,10 +356,10 @@ COACT_TEST(registry_lookup_unknown_or_invalid_target_is_null)
     reg.bind(&aoa, 10U);
 
     CHECK(nullptr == reg.lookup(coact::kInvalidTarget));
-    CHECK(nullptr == reg.lookup(static_cast<coact::TargetId>(
+    CHECK(nullptr == reg.lookup(coact::TargetId(
                      coact::AoRegistry<>::kCapacity + 1U)));  // out of range
     const coact::TargetId id_a = reg.target_of(&aoa);
-    CHECK(nullptr == reg.lookup(static_cast<coact::TargetId>(id_a + 1U)));
+    CHECK(nullptr == reg.lookup(coact::TargetId(id_a.raw() + 1U)));
 }
 
 COACT_TEST(registry_duplicate_priority_rejected)
@@ -385,6 +385,33 @@ COACT_TEST(registry_null_and_invalid_prio_rejected)
     CHECK(!reg.bind(&aoa, coact::kInvalidPrio));           // dummy priority
     CHECK(reg.bind(&aoa, 10U));                            // then valid
     CHECK(!reg.bind(&aoa, 10U));                           // same AO re-bind
+}
+
+COACT_TEST(registry_bind_at_preserves_explicit_target)
+{
+    coact::AoRegistry reg;
+    AoA aoa(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,
+            kAoInitialState, kAoMaxDepth);
+    AoB aob(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,
+            kAoInitialState, kAoMaxDepth);
+
+    constexpr coact::TargetId kControlTarget(5U);
+    constexpr coact::TargetId kSafetyTarget(2U);
+
+    CHECK(reg.bind_at(kControlTarget, aoa, aoa.logical_prio()));
+    CHECK(reg.bind_at(kSafetyTarget, aob, aob.logical_prio()));
+    CHECK(reg.lookup(kControlTarget) == &aoa);
+    CHECK(reg.lookup(kSafetyTarget) == &aob);
+    CHECK_EQ(reg.target_of(&aoa), kControlTarget);
+    CHECK_EQ(reg.target_of(&aob), kSafetyTarget);
+
+    CHECK(!reg.bind_at(coact::kInvalidTarget, aoa, aoa.logical_prio()));
+    CHECK(!reg.bind_at(coact::TargetId(
+                           coact::AoRegistry<>::kCapacity + 1U),
+                       aoa, aoa.logical_prio()));
+    CHECK(!reg.bind_at(kControlTarget, aob, aob.logical_prio()));
+    CHECK(!reg.bind_at(coact::TargetId(3U), aob, aoa.logical_prio()));
+    CHECK(!reg.bind_at(coact::TargetId(3U), aob, 21U));
 }
 
 }  // namespace

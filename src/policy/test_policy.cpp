@@ -93,13 +93,13 @@ const PolicyOps g_ops = {&demo_evaluate, &demo_merge};
 COACT_TEST(policy_evaluate_accept)
 {
     DemoCtx ctx{};
-    ctx.blocked_target = 0xFFU;
+    ctx.blocked_target = TargetId(0xFFU);
     ctx.blocked_signal = 0xFEFEU;
     ctx.limiter.init(RateLimitRule{4U, 4U, 1U, true}, 0U);
 
     Event ev = make_static(0x100U);
     EventQos qos{false, false};
-    PolicyResult r = g_ops.evaluate(&ctx, 1U, ev, qos, 0U);
+    PolicyResult r = g_ops.evaluate(&ctx, TargetId(1U), ev, qos, 0U);
     CHECK(r.accept);
     CHECK(!r.try_merge);
     CHECK_EQ(r.reason, coact::PolicyReason::kReasonOk);
@@ -108,13 +108,13 @@ COACT_TEST(policy_evaluate_accept)
 COACT_TEST(policy_evaluate_merge_hint)
 {
     DemoCtx ctx{};
-    ctx.blocked_target = 0xFFU;
+    ctx.blocked_target = TargetId(0xFFU);
     ctx.blocked_signal = 0xFEFEU;
     ctx.limiter.init(RateLimitRule{4U, 4U, 1U, true}, 0U);
 
     Event ev = make_static(0x101U);
     EventQos qos{false, true};
-    PolicyResult r = g_ops.evaluate(&ctx, 1U, ev, qos, 0U);
+    PolicyResult r = g_ops.evaluate(&ctx, TargetId(1U), ev, qos, 0U);
     CHECK(r.accept);
     CHECK(r.try_merge);
     CHECK_EQ(r.reason, coact::PolicyReason::kReasonOk);
@@ -123,13 +123,13 @@ COACT_TEST(policy_evaluate_merge_hint)
 COACT_TEST(policy_evaluate_filter_target)
 {
     DemoCtx ctx{};
-    ctx.blocked_target = 7U;
+    ctx.blocked_target = TargetId(7U);
     ctx.blocked_signal = 0xFEFEU;
     ctx.limiter.init(RateLimitRule{4U, 4U, 1U, true}, 0U);
 
     Event ev = make_static(0x102U);
     EventQos qos{false, true};
-    PolicyResult r = g_ops.evaluate(&ctx, 7U, ev, qos, 0U);
+    PolicyResult r = g_ops.evaluate(&ctx, TargetId(7U), ev, qos, 0U);
     CHECK(!r.accept);
     CHECK(!r.try_merge);
     CHECK_EQ(r.reason, coact::PolicyReason::kReasonFiltered);
@@ -138,13 +138,13 @@ COACT_TEST(policy_evaluate_filter_target)
 COACT_TEST(policy_evaluate_filter_signal)
 {
     DemoCtx ctx{};
-    ctx.blocked_target = 0xFFU;
+    ctx.blocked_target = TargetId(0xFFU);
     ctx.blocked_signal = 0xFEFEU;
     ctx.limiter.init(RateLimitRule{4U, 4U, 1U, true}, 0U);
 
     Event ev = make_static(0xFEFEU);
     EventQos qos{false, true};
-    PolicyResult r = g_ops.evaluate(&ctx, 1U, ev, qos, 0U);
+    PolicyResult r = g_ops.evaluate(&ctx, TargetId(1U), ev, qos, 0U);
     CHECK(!r.accept);
     CHECK(!r.try_merge);
     CHECK_EQ(r.reason, coact::PolicyReason::kReasonFiltered);
@@ -156,7 +156,7 @@ COACT_TEST(policy_evaluate_filter_signal)
 COACT_TEST(policy_evaluate_rate_limit)
 {
     DemoCtx ctx{};
-    ctx.blocked_target = 0xFFU;
+    ctx.blocked_target = TargetId(0xFFU);
     ctx.blocked_signal = 0xFEFEU;
     ctx.limiter.init(RateLimitRule{1U, 1U, 100U, true}, 0U);
 
@@ -164,11 +164,11 @@ COACT_TEST(policy_evaluate_rate_limit)
     EventQos qos{false, false};
 
     // first call consumes the single token
-    PolicyResult r1 = g_ops.evaluate(&ctx, 1U, ev, qos, 0U);
+    PolicyResult r1 = g_ops.evaluate(&ctx, TargetId(1U), ev, qos, 0U);
     CHECK(r1.accept);
 
     // second call within the window is rate-limited
-    PolicyResult r2 = g_ops.evaluate(&ctx, 1U, ev, qos, 1U);
+    PolicyResult r2 = g_ops.evaluate(&ctx, TargetId(1U), ev, qos, 1U);
     CHECK(!r2.accept);
     CHECK(!r2.try_merge);
     CHECK_EQ(r2.reason, coact::PolicyReason::kReasonRateLimit);
@@ -224,7 +224,7 @@ COACT_TEST(policy_rate_limiter_capacity_clamp)
 COACT_TEST(policy_mergecell_publish_merge_release)
 {
     MergeCell cell;
-    cell.init(1U, 0x200U);
+    cell.init(TargetId(1U), 0x200U);
     CHECK_EQ(cell.state(), MergeCellState::Empty);
 
     Event e1 = make_static(0x200U);
@@ -256,7 +256,7 @@ COACT_TEST(policy_mergecell_publish_merge_release)
 COACT_TEST(policy_mergecell_publish_failure_when_occupied)
 {
     MergeCell cell;
-    cell.init(3U, 0x300U);
+    cell.init(TargetId(3U), 0x300U);
     Event e1 = make_static(0x300U);
     Event e2 = make_static(0x301U);
     CHECK(cell.try_publish(&e1));
@@ -274,7 +274,7 @@ COACT_TEST(policy_mergecell_publish_failure_when_occupied)
 COACT_TEST(policy_mergecell_no_merge_while_consuming)
 {
     MergeCell cell;
-    cell.init(4U, 0x400U);
+    cell.init(TargetId(4U), 0x400U);
     Event e1 = make_static(0x400U);
     CHECK(cell.try_publish(&e1));
 
@@ -295,7 +295,7 @@ COACT_TEST(policy_mergecell_no_merge_while_consuming)
 COACT_TEST(policy_mergecell_take_failure_while_merging)
 {
     MergeCell cell;
-    cell.init(5U, 0x500U);
+    cell.init(TargetId(5U), 0x500U);
     Event e1 = make_static(0x500U);
     CHECK(cell.try_publish(&e1));
 
@@ -320,13 +320,13 @@ COACT_TEST(policy_mergecell_merge_gated_by_qos)
     // the evaluate table does. Here we prove a real signal match still yields
     // no merge hint without the flag.
     DemoCtx ctx{};
-    ctx.blocked_target = 0xFFU;
+    ctx.blocked_target = TargetId(0xFFU);
     ctx.blocked_signal = 0xFEFEU;
     ctx.limiter.init(RateLimitRule{8U, 8U, 1U, true}, 0U);
 
     Event ev = make_static(0x600U);
     EventQos qos{false, false};
-    PolicyResult r = g_ops.evaluate(&ctx, 1U, ev, qos, 0U);
+    PolicyResult r = g_ops.evaluate(&ctx, TargetId(1U), ev, qos, 0U);
     CHECK(r.accept);
     CHECK(!r.try_merge);   // not mergeable -> no merge suggestion
 }
@@ -341,7 +341,7 @@ COACT_TEST(policy_mergecell_concurrent_producers)
     constexpr int kAttempts = 2000;
 
     MergeCell cell;
-    cell.init(9U, 0x900U);
+    cell.init(TargetId(9U), 0x900U);
 
     // the cell owns this single test event; ref_ctr lives on the test only
     Event owned_event = make_static(0x900U);
@@ -410,7 +410,7 @@ COACT_TEST(policy_mergecell_concurrent_producers)
 COACT_TEST(policy_mergecell_no_double_owning)
 {
     MergeCell cell;
-    cell.init(10U, 0xA00U);
+    cell.init(TargetId(10U), 0xA00U);
     Event e1 = make_static(0xA00U);
     CHECK(cell.try_publish(&e1));
 

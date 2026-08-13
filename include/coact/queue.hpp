@@ -7,6 +7,7 @@
 #include <new>
 #include <utility>
 
+#include "coact/config.hpp"
 #include "coact/pal.hpp"
 
 namespace coact {
@@ -57,6 +58,10 @@ public:
         for (uint32_t i = 0U; i < static_cast<uint32_t>(Capacity); ++i) {
             cells_[i].seq.store(i, std::memory_order_relaxed);
         }
+    }
+
+    explicit BoundedMpscQueue(CriticalSection) noexcept
+        : BoundedMpscQueue() {
     }
 
     BoundedMpscQueue(const BoundedMpscQueue&) = delete;
@@ -138,7 +143,7 @@ private:
                 pos = head_.value.load(std::memory_order_relaxed);
             }
         }
-        T* slot = reinterpret_cast<T*>(&cells_[pos % Capacity].storage);
+        T* slot = static_cast<T*>(static_cast<void*>(&cells_[pos % Capacity].storage));
         new (static_cast<void*>(slot)) T(std::forward<U>(v));
         cells_[pos % Capacity].seq.store(pos + 1U, std::memory_order_release);
         return true;
@@ -151,7 +156,7 @@ private:
         if (seq != pos + 1U) {
             return false;   // empty: slot not yet published
         }
-        T* slot = reinterpret_cast<T*>(&cell.storage);
+        T* slot = static_cast<T*>(static_cast<void*>(&cell.storage));
         out = std::move(*slot);
         slot->~T();
         cell.seq.store(pos + static_cast<uint32_t>(Capacity), std::memory_order_release);
@@ -167,7 +172,7 @@ private:
                 std::memory_order_acq_rel, std::memory_order_relaxed)) {
             return false;   // single slot busy (reserved or published) -> full
         }
-        T* slot = reinterpret_cast<T*>(&cells_[0].storage);
+        T* slot = static_cast<T*>(static_cast<void*>(&cells_[0].storage));
         new (static_cast<void*>(slot)) T(std::forward<U>(v));
         cells_[0].seq.store(kSinglePublished, std::memory_order_release);
         return true;
@@ -177,7 +182,7 @@ private:
         if (cells_[0].seq.load(std::memory_order_acquire) != kSinglePublished) {
             return false;   // empty
         }
-        T* slot = reinterpret_cast<T*>(&cells_[0].storage);
+        T* slot = static_cast<T*>(static_cast<void*>(&cells_[0].storage));
         out = std::move(*slot);
         slot->~T();
         cells_[0].seq.store(kSingleEmpty, std::memory_order_release);
@@ -208,25 +213,38 @@ public:
     SingleCoreCriticalRing& operator=(const SingleCoreCriticalRing&) = delete;
 
     bool try_push(T&& v) noexcept {
+        return try_push_observed(std::move(v)).success;
+    }
+
+    // Fused push + size-after (design 5.4): capacity check, payload move and
+    // fill-level read all happen inside ONE irq-mask critical section, so the
+    // caller (e.g. the cmdfw DeliveryTx) no longer needs a separate
+    // size_locked() + try_push() pair that enters the critical section twice.
+    // On success size_after is the fill level right after the push; on a full
+    // failure it equals the current (full) level. A failed push does NOT
+    // consume the caller's value: the payload is only moved once capacity is
+    // known to be available.
+    [[nodiscard]] QueueResult try_push_observed(T&& v) noexcept {
         const CriticalSection::Token token = cs_.save(cs_.ctx);
         bool ok = false;
         if (count_ < Capacity) {
             const uint32_t index = static_cast<uint32_t>(write_index_)
                                  + static_cast<uint32_t>(count_);
-            T* slot = reinterpret_cast<T*>(&cells_[index % Capacity]);
+            T* slot = static_cast<T*>(static_cast<void*>(&cells_[index % Capacity]));
             new (static_cast<void*>(slot)) T(std::move(v));
             ++count_;
             ok = true;
         }
+        const uint16_t size_after = count_;
         cs_.restore(cs_.ctx, token);
-        return ok;
+        return QueueResult{ok, size_after};
     }
 
     bool try_pop(T& out) noexcept {
         const CriticalSection::Token token = cs_.save(cs_.ctx);
         bool ok = false;
         if (count_ > 0U) {
-            T* slot = reinterpret_cast<T*>(&cells_[write_index_]);
+            T* slot = static_cast<T*>(static_cast<void*>(&cells_[write_index_]));
             out = std::move(*slot);
             slot->~T();
             write_index_ = static_cast<uint16_t>(
@@ -244,6 +262,12 @@ public:
         cs_.restore(cs_.ctx, token);
         return n;
     }
+
+    // Caller must already hold the exact CriticalSection injected at
+    // construction. This avoids a non-reentrant nested irq-mask/spin lock in
+    // compound queue-state transitions; it never exposes storage or permits a
+    // mutation outside try_push()/try_pop().
+    uint16_t size_locked() const noexcept { return count_; }
 
 private:
     CriticalSection cs_;

@@ -113,14 +113,14 @@ COACT_TEST(coordinator_signals_only_when_dispatcher_idle)
 
     /* Dispatcher mid-batch (active): no wakeup. */
     staging.mark_dispatcher_active();
-    coact::SubmitResult r1 = coord.submit_from_task(1U, &e, qos);
+    coact::SubmitResult r1 = coord.submit_from_task(coact::TargetId(1U), &e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
              static_cast<int>(r1.disposition));
     CHECK_EQ(0, pal.signals);
 
     /* Dispatcher idle: exactly one wakeup. */
     staging.mark_dispatcher_idle();
-    coact::SubmitResult r2 = coord.submit_from_task(1U, &e, qos);
+    coact::SubmitResult r2 = coord.submit_from_task(coact::TargetId(1U), &e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
              static_cast<int>(r2.disposition));
     CHECK_EQ(1, pal.signals);

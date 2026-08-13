@@ -18,8 +18,8 @@ using coact::RejectReason;
 using coact::SubmitDisposition;
 using coact::TargetId;
 
-constexpr TargetId kSlowAo = 1U;
-constexpr TargetId kOtherAo = 2U;
+constexpr TargetId kSlowAo(1U);
+constexpr TargetId kOtherAo(2U);
 
 // Drive a breaker into Recovering via the L1 -> cooldown -> low-water path.
 void drive_to_recovering(Breaker<>& b, const DefaultConfig& cfg) {

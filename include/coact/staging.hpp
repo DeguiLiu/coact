@@ -19,8 +19,6 @@
 
 #include <atomic>
 #include <cstdint>
-#include <optional>
-#include <type_traits>
 #include <utility>
 
 #include "coact/config.hpp"
@@ -135,14 +133,9 @@ public:
     using LowQueue = QueueBackend<StagingSlot, Config::kLowCapacity>;
 
     explicit Staging(CriticalSection cs) noexcept
-        : high_q_(),
-          normal_q_(),
-          low_q_()
-    {
-        construct_queue(high_q_, cs);
-        construct_queue(normal_q_, cs);
-        construct_queue(low_q_, cs);
-    }
+        : high_q_(cs),
+          normal_q_(cs),
+          low_q_(cs) {}
 
     Staging(const Staging&) = delete;
     Staging& operator=(const Staging&) = delete;
@@ -156,11 +149,8 @@ public:
         StagingSlot slot{target, e, now_ns};
 
         if (cls == PriorityClass::Low) {
-            if (!low_q_.has_value()) {
-                return false;
-            }
-            const bool was_empty = (low_q_->size() == 0U);
-            if (!low_q_->try_push(std::move(slot))) {
+            const bool was_empty = (low_q_.size() == 0U);
+            if (!low_q_.try_push(std::move(slot))) {
                 return false;
             }
             if (was_empty) {
@@ -170,17 +160,11 @@ public:
         }
 
         if (cls == PriorityClass::Normal) {
-            if (normal_q_.has_value()) {
-                return normal_q_->try_push(std::move(slot));
-            }
-            return false;
+            return normal_q_.try_push(std::move(slot));
         }
 
         if (cls == PriorityClass::High) {
-            if (high_q_.has_value()) {
-                return high_q_->try_push(std::move(slot));
-            }
-            return false;
+            return high_q_.try_push(std::move(slot));
         }
         return false;   // unreachable: explicit default
     }
@@ -212,14 +196,14 @@ public:
         bool ok = false;
         switch (part) {
         case Partition::High:
-            ok = high_q_.has_value() && high_q_->try_pop(out);
+            ok = high_q_.try_pop(out);
             break;
         case Partition::Normal:
-            ok = normal_q_.has_value() && normal_q_->try_pop(out);
+            ok = normal_q_.try_pop(out);
             break;
         case Partition::Low:
-            ok = low_q_.has_value() && low_q_->try_pop(out);
-            if (low_q_.has_value() && low_q_->size() == 0U) {
+            ok = low_q_.try_pop(out);
+            if (low_q_.size() == 0U) {
                 low_head_arrival_ns_.store(0U, std::memory_order_relaxed);   // Low drained
             }
             break;
@@ -302,15 +286,15 @@ public:
         uint16_t cap = 1U;
         switch (p) {
         case Partition::High:
-            used = high_q_.has_value() ? high_q_->size() : 0U;
+            used = high_q_.size();
             cap = Config::kHighCapacity;
             break;
         case Partition::Normal:
-            used = normal_q_.has_value() ? normal_q_->size() : 0U;
+            used = normal_q_.size();
             cap = Config::kNormalCapacity;
             break;
         case Partition::Low:
-            used = low_q_.has_value() ? low_q_->size() : 0U;
+            used = low_q_.size();
             cap = Config::kLowCapacity;
             break;
         default:
@@ -332,34 +316,27 @@ public:
     {
         switch (p) {
         case Partition::High:
-            return high_q_.has_value() ? high_q_->size() : 0U;
+            return high_q_.size();
         case Partition::Normal:
-            return normal_q_.has_value() ? normal_q_->size() : 0U;
+            return normal_q_.size();
         case Partition::Low:
-            return low_q_.has_value() ? low_q_->size() : 0U;
+            return low_q_.size();
         default:
             return 0U;   // unreachable: explicit default
         }
     }
 
 private:
-    // Instantiate a partition queue behind its optional. The Mpsc backend is
-    // default-constructible and ignores CriticalSection; the single-core ring
-    // requires the injected CriticalSection for its save/restore.
-    template <typename Q>
-    void construct_queue(std::optional<Q>& q, CriticalSection cs) noexcept
-    {
-        if constexpr (std::is_default_constructible<Q>::value) {
-            q.emplace();
-        }
-        else {
-            q.emplace(cs);
-        }
-    }
-
     // True when the Low partition has an outstanding timeout: a low event has
     // been waiting at the Low head for at least LowMaxWaitMs (unsigned
     // wrap-safe comparison). Only meaningful while Low is non-empty.
+    //
+    // The low head's arrival may be LATER than the cached now_ns_ when the
+    // Dispatcher samples the clock once at batch start and a producer enqueues
+    // the Low mid-batch. A bare now - arrival would then underflow and spuriously
+    // age the event, force-serving it ahead of higher-priority events. Guard the
+    // subtraction with now >= arrival so a mid-batch arrival counts as not yet
+    // aged (regression: coact dispatcher underflow gap).
     bool aging_expired() const noexcept
     {
         if (!now_valid_) {
@@ -367,14 +344,18 @@ private:
         }
         const uint64_t wait_ns =
             static_cast<uint64_t>(Config::kLowMaxWaitMs) * 1000000ULL;
-        const uint64_t waited =
-            now_ns_ - low_head_arrival_ns_.load(std::memory_order_relaxed);
+        const uint64_t arrival =
+            low_head_arrival_ns_.load(std::memory_order_relaxed);
+        if (now_ns_ < arrival) {
+            return false;   // mid-batch arrival: now is stale before the Low came in
+        }
+        const uint64_t waited = now_ns_ - arrival;
         return (waited >= wait_ns);
     }
 
-    std::optional<HighQueue> high_q_;
-    std::optional<NormalQueue> normal_q_;
-    std::optional<LowQueue> low_q_;
+    HighQueue high_q_;
+    NormalQueue normal_q_;
+    LowQueue low_q_;
 
     BatchSelector selector_;
     std::atomic<bool> dispatcher_active_{false};

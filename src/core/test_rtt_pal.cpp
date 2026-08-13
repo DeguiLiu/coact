@@ -146,7 +146,7 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
     for (int i = 0; i < kN; ++i) {
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
-        rt.coordinator().submit_from_task(1U, e, qos);
+        rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
 
     for (int w = 0; w < 200; ++w) {
@@ -235,7 +235,7 @@ COACT_TEST(rtthread_pal_isr_submit_end_to_end)
     for (int i = 0; i < kN; ++i) {
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
-        coact::SubmitResult r = rt.coordinator().try_submit_from_isr(1U, e, qos);
+        coact::SubmitResult r = rt.coordinator().try_submit_from_isr(coact::TargetId(1U), e, qos);
         CHECK(coact::SubmitDisposition::RejectedFull != r.disposition);
     }
 

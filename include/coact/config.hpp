@@ -10,7 +10,7 @@ namespace coact {
 // Logical priority: higher value == higher priority. Native priorities never
 // leave the PAL. See design 3.2.
 // ---------------------------------------------------------------------------
-typedef uint8_t LogicalPrio;
+using LogicalPrio = uint8_t;
 
 enum : LogicalPrio {
     kInvalidPrio = 0U,
@@ -50,12 +50,22 @@ struct EventQos {
     bool mergeable;
 };
 
-typedef uint8_t TargetId;
-enum : TargetId {
-    kInvalidTarget = 0U
+// TargetId: 1-based fixed AO identity (strong-typed struct, R5). explicit
+// construction keeps arbitrary integers from silently becoming a target;
+// wire/array-index/printf sites use raw(). Zero-overhead proven by the
+// static_assert below. kInvalidTarget is the sole zero (never bound).
+struct TargetId {
+    uint8_t value = 0U;
+    constexpr TargetId() noexcept = default;
+    constexpr explicit TargetId(uint8_t v) noexcept : value(v) {}
+    constexpr uint8_t raw() const noexcept { return value; }
+    constexpr bool operator==(TargetId o) const noexcept { return value == o.value; }
+    constexpr bool operator!=(TargetId o) const noexcept { return value != o.value; }
 };
+inline constexpr TargetId kInvalidTarget(0U);
+static_assert(sizeof(TargetId) == 1U, "coact: TargetId must be zero-overhead");
 
-typedef uint16_t Signal;
+using Signal = uint16_t;
 
 // ---------------------------------------------------------------------------
 // Submit disposition. See design 8.2.
@@ -74,6 +84,17 @@ enum class SubmitDisposition : uint8_t {
 struct SubmitResult {
     SubmitDisposition disposition;
     uint16_t reason;
+};
+
+// ---------------------------------------------------------------------------
+// QueueResult (design 5.4): fused push result carrying the size after the
+// operation, so watermark / min-free / full-reject accounting does not enter
+// the queue a second time. Shared by the lock-free SpscRing and the single-core
+// irq-mask SingleCoreCriticalRing.
+// ---------------------------------------------------------------------------
+struct QueueResult final {
+    bool success;
+    uint16_t size_after;
 };
 
 // ---------------------------------------------------------------------------

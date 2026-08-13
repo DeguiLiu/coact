@@ -126,9 +126,9 @@ COACT_TEST(staging_partition_routing)
 {
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
-    CHECK(s.enqueue(1U, seq_event(0), coact::PriorityClass::High, 0U));
-    CHECK(s.enqueue(2U, seq_event(1), coact::PriorityClass::Normal, 0U));
-    CHECK(s.enqueue(3U, seq_event(2), coact::PriorityClass::Low, 0U));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(0), coact::PriorityClass::High, 0U));
+    CHECK(s.enqueue(coact::TargetId(2U), seq_event(1), coact::PriorityClass::Normal, 0U));
+    CHECK(s.enqueue(coact::TargetId(3U), seq_event(2), coact::PriorityClass::Low, 0U));
 
     CHECK_EQ(s.size(coact::Partition::High), 1U);
     CHECK_EQ(s.size(coact::Partition::Normal), 1U);
@@ -140,9 +140,9 @@ COACT_TEST(staging_partition_routing)
     CHECK_EQ(out[0].event, static_events + 0);
     CHECK_EQ(out[1].event, static_events + 1);
     CHECK_EQ(out[2].event, static_events + 2);
-    CHECK_EQ(out[0].target, 1U);
-    CHECK_EQ(out[1].target, 2U);
-    CHECK_EQ(out[2].target, 3U);
+    CHECK_EQ(out[0].target, coact::TargetId(1U));
+    CHECK_EQ(out[1].target, coact::TargetId(2U));
+    CHECK_EQ(out[2].target, coact::TargetId(3U));
     CHECK_EQ(s.size(coact::Partition::High), 0U);
     CHECK_EQ(s.size(coact::Partition::Normal), 0U);
     CHECK_EQ(s.size(coact::Partition::Low), 0U);
@@ -157,14 +157,14 @@ COACT_TEST(staging_full_returns_false)
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     for (uint16_t i = 0U; i < TestConfig::kHighCapacity; ++i) {
-        CHECK(s.enqueue(1U, seq_event(static_cast<uint8_t>(i)),
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
                        coact::PriorityClass::Normal, 0U));
     }
     CHECK_EQ(s.size(coact::Partition::Normal),
              static_cast<uint16_t>(TestConfig::kNormalCapacity));
 
     // the partition is full: the next enqueue returns false
-    CHECK(!s.enqueue(1U, seq_event(9), coact::PriorityClass::Normal, 0U));
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(9), coact::PriorityClass::Normal, 0U));
     // no write happened and no reference was consumed
     CHECK_EQ(s.size(coact::Partition::Normal),
              static_cast<uint16_t>(TestConfig::kNormalCapacity));
@@ -182,9 +182,9 @@ COACT_TEST(staging_high_priority_first)
 {
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
-    s.enqueue(1U, seq_event(10), coact::PriorityClass::Low, 0U);
-    s.enqueue(1U, seq_event(11), coact::PriorityClass::Normal, 0U);
-    s.enqueue(1U, seq_event(12), coact::PriorityClass::High, 0U);
+    s.enqueue(coact::TargetId(1U), seq_event(10), coact::PriorityClass::Low, 0U);
+    s.enqueue(coact::TargetId(1U), seq_event(11), coact::PriorityClass::Normal, 0U);
+    s.enqueue(coact::TargetId(1U), seq_event(12), coact::PriorityClass::High, 0U);
 
     std::vector<coact::StagingSlot> out;
     REQUIRE_EQ(drain_all(s, out), 3);
@@ -205,9 +205,9 @@ COACT_TEST(staging_low_aging_exception)
         static_cast<uint64_t>(TestConfig::kLowMaxWaitMs) * 1000000ULL;
 
     // buffer a Low head at t0, then a High and a Normal at t0
-    s.enqueue(3U, seq_event(20), coact::PriorityClass::Low, 0U);
-    s.enqueue(1U, seq_event(21), coact::PriorityClass::High, 0U);
-    s.enqueue(2U, seq_event(22), coact::PriorityClass::Normal, 0U);
+    s.enqueue(coact::TargetId(3U), seq_event(20), coact::PriorityClass::Low, 0U);
+    s.enqueue(coact::TargetId(1U), seq_event(21), coact::PriorityClass::High, 0U);
+    s.enqueue(coact::TargetId(2U), seq_event(22), coact::PriorityClass::Normal, 0U);
 
     coact::StagingSlot slot;
 
@@ -238,8 +238,8 @@ COACT_TEST(staging_low_aging_within_budget_no_force)
 {
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
-    s.enqueue(3U, seq_event(30), coact::PriorityClass::Low, 0U);
-    s.enqueue(2U, seq_event(31), coact::PriorityClass::Normal, 0U);
+    s.enqueue(coact::TargetId(3U), seq_event(30), coact::PriorityClass::Low, 0U);
+    s.enqueue(coact::TargetId(2U), seq_event(31), coact::PriorityClass::Normal, 0U);
 
     coact::StagingSlot slot;
     s.begin_batch();
@@ -251,15 +251,43 @@ COACT_TEST(staging_low_aging_within_budget_no_force)
 }
 
 // ---------------------------------------------------------------------------
-// BatchSizeMax bound: a batch never draws more than Config-derived
-// BatchSizeMax slots before begin_batch() opens a new batch.
+// Mid-batch Low arrival must NOT be force-served by unsigned underflow.
+//
+// The Dispatcher samples `now_ns` ONCE at batch start, then feeds that same
+// value to every dequeue_one() in the batch. A Low event enqueued DURING the
+// batch carries enqueue_ns LATER than the batch-start now; aging computes
+// (batch_start_now - late_arrival) and underflows, spuriously aging the Low
+// head and force-serving it ahead of higher-priority events that were queued
+// first. Regression for the coact dispatcher underflow gap (T3 finding).
 // ---------------------------------------------------------------------------
+COACT_TEST(staging_low_late_arrival_no_underflow_force_serve)
+{
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+
+    // Batch-start now = 1000. An older High arrives at 1000 (before batch start).
+    s.enqueue(coact::TargetId(1U), seq_event(40), coact::PriorityClass::High, 1000U);
+    s.begin_batch();
+    s.tick(1000U);
+
+    // Mid-batch: a Low arrives with enqueue_ns = 5000, LATER than the
+    // batch-start now (1000). This can happen when a producer enqueues while
+    // the Dispatcher is already draining the batch.
+    CHECK(s.enqueue(coact::TargetId(3U), seq_event(41), coact::PriorityClass::Low, 5000U));
+
+    coact::StagingSlot slot;
+    // The Low has only just arrived relative to real time; it is NOT aged.
+    // Underflow would make batch_now - arrival wrap to a huge value and
+    // force-serve Low ahead of the earlier High. Correct behavior: serve High.
+    CHECK(s.dequeue_one(slot));
+    CHECK_EQ(slot.event->signal, 40U);
+}
+
 COACT_TEST(staging_batch_size_max)
 {
     BatchStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
 
     for (uint16_t i = 0U; i < 8U; ++i) {
-        CHECK(s.enqueue(1U, seq_event(static_cast<uint8_t>(i)),
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
                        coact::PriorityClass::Normal, 0U));
     }
 
@@ -292,16 +320,16 @@ COACT_TEST(staging_watermark_bands)
 
     CHECK_EQ(s.watermark(coact::Partition::Normal), 0U);
 
-    CHECK(s.enqueue(1U, seq_event(0), coact::PriorityClass::Normal, 0U));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(0), coact::PriorityClass::Normal, 0U));
     CHECK_EQ(s.watermark(coact::Partition::Normal), 25U);   // 1/4
 
-    CHECK(s.enqueue(1U, seq_event(1), coact::PriorityClass::Normal, 0U));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(1), coact::PriorityClass::Normal, 0U));
     CHECK_EQ(s.watermark(coact::Partition::Normal), 50U);   // 2/4
 
-    CHECK(s.enqueue(1U, seq_event(2), coact::PriorityClass::Normal, 0U));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(2), coact::PriorityClass::Normal, 0U));
     CHECK_EQ(s.watermark(coact::Partition::Normal), 75U);   // 3/4
 
-    CHECK(s.enqueue(1U, seq_event(3), coact::PriorityClass::Normal, 0U));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(3), coact::PriorityClass::Normal, 0U));
     CHECK_EQ(s.watermark(coact::Partition::Normal), 100U);  // 4/4
 
     // the other partitions remain independent
@@ -326,7 +354,7 @@ COACT_TEST(staging_never_changes_refcount)
     REQUIRE_EQ(e->ref_ctr, 0U);
 
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
-    REQUIRE(s.enqueue(9U, e, coact::PriorityClass::High, 0U));
+    REQUIRE(s.enqueue(coact::TargetId(9U), e, coact::PriorityClass::High, 0U));
 
     // enqueue must not have inc'ed the event
     CHECK_EQ(e->ref_ctr, 0U);
@@ -336,7 +364,7 @@ COACT_TEST(staging_never_changes_refcount)
     REQUIRE(s.dequeue_one(slot));
     // staging hands the same pointer back without touching the count
     CHECK_EQ(slot.event, e);
-    CHECK_EQ(slot.target, 9U);
+    CHECK_EQ(slot.target, coact::TargetId(9U));
     CHECK_EQ(e->ref_ctr, 0U);
 
     // the consumer does the lifecycle: one inc for the post, one gc to recycle
@@ -373,10 +401,10 @@ COACT_TEST(staging_ring_backend)
     RingStaging s(counting_cs());
 
     for (uint16_t i = 0U; i < TestConfig::kLowCapacity; ++i) {
-        CHECK(s.enqueue(1U, seq_event(static_cast<uint8_t>(i + 40U)),
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i + 40U)),
                        coact::PriorityClass::Low, 0U));
     }
-    CHECK(!s.enqueue(1U, seq_event(60), coact::PriorityClass::Low, 0U));
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(60), coact::PriorityClass::Low, 0U));
     CHECK_EQ(s.size(coact::Partition::Low),
              static_cast<uint16_t>(TestConfig::kLowCapacity));
     CHECK_EQ(g_cs.saves, g_cs.restores);   // balanced save/restore
@@ -412,7 +440,7 @@ COACT_TEST(staging_concurrent_no_loss)
         threads.emplace_back([&s, p, &done]() {
             const int base = p * kPerProducer;
             for (int i = 0; i < kPerProducer; ++i) {
-                while (!s.enqueue(1U, seq_event(static_cast<uint8_t>(base + i)),
+                while (!s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(base + i)),
                                   coact::PriorityClass::Normal, 0U)) {
                     std::this_thread::yield();
                 }

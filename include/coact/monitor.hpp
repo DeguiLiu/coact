@@ -454,18 +454,18 @@ private:
 
 template <typename Config>
 inline AoCounters* Monitor<Config>::slot(TargetId ao) noexcept {
-    if ((kInvalidTarget == ao) || (ao > kMaxAo)) {
+    if ((kInvalidTarget == ao) || (ao.raw() > kMaxAo)) {
         return nullptr;
     }
-    return &ao_[static_cast<size_t>(ao)];
+    return &ao_[static_cast<size_t>(ao.raw())];
 }
 
 template <typename Config>
 inline const AoCounters* Monitor<Config>::slot(TargetId ao) const noexcept {
-    if ((kInvalidTarget == ao) || (ao > kMaxAo)) {
+    if ((kInvalidTarget == ao) || (ao.raw() > kMaxAo)) {
         return nullptr;
     }
-    return &ao_[static_cast<size_t>(ao)];
+    return &ao_[static_cast<size_t>(ao.raw())];
 }
 
 template <typename Config>

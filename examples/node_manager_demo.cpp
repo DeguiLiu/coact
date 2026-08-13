@@ -223,25 +223,25 @@ int main()
     };
     const Step script[] = {
         /* Node 101: normal operation, stays Connected */
-        { 1U, kHeartbeatOk }, { 1U, kHeartbeatOk },
-        { 1U, kHeartbeatOk }, { 1U, kHeartbeatOk },
+        { coact::TargetId(1U), kHeartbeatOk }, { coact::TargetId(1U), kHeartbeatOk },
+        { coact::TargetId(1U), kHeartbeatOk }, { coact::TargetId(1U), kHeartbeatOk },
         /* Node 102: two misses -> Suspect -> recovery */
-        { 2U, kHeartbeatOk }, { 2U, kHeartbeatMiss }, { 2U, kHeartbeatMiss },
-        { 2U, kHeartbeatMiss }, { 2U, kHeartbeatOk }, { 2U, kHeartbeatOk },
+        { coact::TargetId(2U), kHeartbeatOk }, { coact::TargetId(2U), kHeartbeatMiss }, { coact::TargetId(2U), kHeartbeatMiss },
+        { coact::TargetId(2U), kHeartbeatMiss }, { coact::TargetId(2U), kHeartbeatOk }, { coact::TargetId(2U), kHeartbeatOk },
         /* Node 103: five misses -> Disconnected -> reconnect */
-        { 3U, kHeartbeatOk }, { 3U, kHeartbeatMiss }, { 3U, kHeartbeatMiss },
-        { 3U, kHeartbeatMiss }, { 3U, kHeartbeatMiss }, { 3U, kHeartbeatMiss },
-        { 3U, kHeartbeatMiss }, { 3U, kReconnect }, { 3U, kHeartbeatOk },
+        { coact::TargetId(3U), kHeartbeatOk }, { coact::TargetId(3U), kHeartbeatMiss }, { coact::TargetId(3U), kHeartbeatMiss },
+        { coact::TargetId(3U), kHeartbeatMiss }, { coact::TargetId(3U), kHeartbeatMiss }, { coact::TargetId(3U), kHeartbeatMiss },
+        { coact::TargetId(3U), kHeartbeatMiss }, { coact::TargetId(3U), kReconnect }, { coact::TargetId(3U), kHeartbeatOk },
         /* Node 104: immediate disconnect then reconnect */
-        { 4U, kHeartbeatOk }, { 4U, kHeartbeatOk }, { 4U, kDisconnect },
-        { 4U, kReconnect }, { 4U, kHeartbeatOk },
+        { coact::TargetId(4U), kHeartbeatOk }, { coact::TargetId(4U), kHeartbeatOk }, { coact::TargetId(4U), kDisconnect },
+        { coact::TargetId(4U), kReconnect }, { coact::TargetId(4U), kHeartbeatOk },
     };
 
     std::printf("=== coact node-manager demo: %d events, 4 node AOs ===\n",
                 static_cast<int>(sizeof(script) / sizeof(script[0])));
     coact::EventQos qos{false, false};
     for (const Step& st : script) {
-        std::printf(">> node %u <- %s\n", st.target, signal_name(st.signal));
+        std::printf(">> node %u <- %s\n", st.target.raw(), signal_name(st.signal));
         coact::Event* e = pool.alloc(st.signal);
         if (nullptr == e) {
             std::printf("pool exhausted\n");

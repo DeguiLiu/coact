@@ -80,6 +80,43 @@ dispatcher runs as a normal RT-Thread thread; producers call
 `coordinator().submit_from_task(...)` and ISRs call `try_submit_from_isr(...)`.
 See [`examples/README.md`](examples/README.md) for running AOs.
 
+### Static PAL (design §7.5)
+
+The RT-Thread PAL is backed by caller-provided static resources
+`coact::pal::RtThreadResources<StackBytes, ContextSlots>` (static `struct
+rt_thread`, an `RT_ALIGN_SIZE`-aligned dispatcher stack, two static `struct
+rt_semaphore`, and a fixed `ContextSlot[N]` table). The constructor only saves
+references and never calls the kernel API; explicit `initialize()` runs
+`rt_sem_init` + `rt_thread_init` in task context and returns a definite
+`coact::pal::InitError` on any failure (no dynamic create/malloc fallback).
+`start_dispatcher()` returns a status: only `rt_thread_startup()==RT_EOK`
+advances `Runtime` to started. Lifecycle is one init / one start / one stop;
+a stop-then-start is rejected. The fixed `ContextSlot` table does not occupy
+RT-Thread's single `user_data` field and is frozen after start.
+
+```cpp
+#include "coact/pal_rtthread.hpp"
+#include "coact/runtime.hpp"
+
+static coact::pal::RtThreadResources<4096, 8> g_res;
+static coact::pal::RtThread g_pal(g_res);          // saves references only
+static coact::Runtime<coact::DefaultConfig,
+                      coact::pal::RtThread,
+                      coact::pal::RtThread::Profile> g_rt(g_pal);  // single-core
+
+// in task context:
+g_pal.initialize();                 // rt_sem_init + rt_thread_init
+g_pal.register_current_task(20U);   // fixed producer registration
+g_rt.bind(&my_ao);
+g_rt.initialize();
+g_rt.start();                       // set stack -> initialize -> startup
+// ... g_rt.stop();  // request_stop + join_dispatcher
+```
+
+Single-core products (`RttSingleCoreProfile`) require `RT_CPUS_NR==1` and no
+`RT_USING_SMP`. `Runtime`'s third template parameter forwards the profile to
+the Dispatcher (single-core → immediate reclaim; host default → batched).
+
 ## Examples
 
 - `examples/hsm_protocol_demo.cpp` — hierarchical protocol HSM (parent-state

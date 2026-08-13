@@ -353,11 +353,11 @@ int main(int argc, char** argv)
 
     std::vector<std::thread> producers;
     if (mode == "staged") {
-        producers.emplace_back([&]() { producer_loop(stop, pool, coord, 1U, qos); });
-        producers.emplace_back([&]() { producer_loop(stop, pool, coord, 2U, qos); });
+        producers.emplace_back([&]() { producer_loop(stop, pool, coord, coact::TargetId(1U), qos); });
+        producers.emplace_back([&]() { producer_loop(stop, pool, coord, coact::TargetId(2U), qos); });
     }
     else {
-        producers.emplace_back([&]() { producer_loop(stop, pool, coord, 1U, qos); });
+        producers.emplace_back([&]() { producer_loop(stop, pool, coord, coact::TargetId(1U), qos); });
     }
 
     if (nullptr != sample_file) { prof::start(hz); }

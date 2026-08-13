@@ -56,8 +56,8 @@ COACT_TEST(config_registry_capacity)
 {
     coact::AoRegistry<TestConfig> reg;
     /* With kMaxAo=4, TargetId 5+ is out of range. */
-    CHECK(nullptr == reg.lookup(static_cast<coact::TargetId>(5U)));
-    CHECK(nullptr == reg.lookup(static_cast<coact::TargetId>(4U)));  // not bound
+    CHECK(nullptr == reg.lookup(coact::TargetId(5U)));
+    CHECK(nullptr == reg.lookup(coact::TargetId(4U)));  // not bound
 }
 
 /* =========================================================================
@@ -103,11 +103,11 @@ COACT_TEST(config_monitor_bounded_by_max_ao)
 {
     coact::Monitor<TestConfig> monitor;
     /* TargetId up to kMaxAo (4) is a valid slot. */
-    coact::AoCounters const& c = monitor.ao(static_cast<coact::TargetId>(4U));
+    coact::AoCounters const& c = monitor.ao(coact::TargetId(4U));
     (void)c;
     /* Out-of-range access (5 > kMaxAo) must be safely guarded, not UB. */
     coact::AoCounters const& oob =
-        monitor.ao(static_cast<coact::TargetId>(5U));
+        monitor.ao(coact::TargetId(5U));
     CHECK_EQ(0U, coact_test::relaxed(oob.direct_timeouts));  /* zeroed unused slot */
 }
 

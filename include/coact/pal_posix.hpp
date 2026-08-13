@@ -36,6 +36,16 @@ public:
     // dispatcher thread). direct_depth tracks nested direct dispatches.
     ExecutionContext current_context() const noexcept;
 
+    // Real thread identity: true only on the coact Dispatcher thread. Backed by
+    // a thread_local set solely in dispatcher_entry(), so no other thread can
+    // forge it (an RAII "dispatch guard" on a non-Dispatcher thread still sees
+    // false). Static so cmdfw can bind it as a gate callback without an
+    // instance.
+    static bool in_dispatcher_thread() noexcept
+    {
+        return ContextKind::Dispatcher == tls_ctx_.kind;
+    }
+
     uint64_t monotonic_ns() const noexcept;
     uint64_t clock_resolution_ns() const noexcept;
 

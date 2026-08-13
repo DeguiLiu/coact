@@ -105,7 +105,7 @@ COACT_TEST(coordinator_unknown_target_rejected)
 
     coact::Event e = static_evt(1U);
     coact::EventQos qos{false, false};
-    coact::SubmitResult r = coord.submit_from_task(1U, &e, qos);
+    coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::RejectedState),
              static_cast<int>(r.disposition));
 }
@@ -137,7 +137,7 @@ COACT_TEST(coordinator_normal_submit_queued)
     CHECK_EQ(0U, e->ref_ctr);
 
     coact::EventQos qos{false, false};
-    coact::SubmitResult r = coord.submit_from_task(1U, e, qos);
+    coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
              static_cast<int>(r.disposition));
     CHECK_EQ(1U, static_cast<unsigned>(e->ref_ctr));
@@ -164,7 +164,7 @@ COACT_TEST(coordinator_direct_dispatch)
 
     coact::Event e = static_evt(1U);
     coact::EventQos qos{false, false};
-    coact::SubmitResult r = coord.submit_from_task(1U, &e, qos);
+    coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
              static_cast<int>(r.disposition));
     CHECK_EQ(static_cast<int>(coact::AoRunState::Idle),
@@ -215,6 +215,26 @@ COACT_TEST(runtime_lifecycle)
     CHECK(true);
 }
 
+COACT_TEST(runtime_bind_at_keeps_static_target_before_initialization)
+{
+    coact::pal::Posix pal;
+    coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
+    AoDirect ao(kStates, 3U, kTrans, 2U, 1, 4U);
+    coact::Event init_e = static_evt(0U);
+    ao.init(init_e);
+
+    constexpr coact::TargetId kControlTarget(6U);
+    CHECK(rt.bind_at(kControlTarget, ao));
+    CHECK(rt.initialize());
+    CHECK(!rt.bind_at(coact::TargetId(7U), ao));
+
+    coact::Event event = static_evt(1U);
+    const coact::SubmitResult result = rt.coordinator().submit_from_task(
+        kControlTarget, &event, coact::EventQos{false, false});
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
+             static_cast<int>(result.disposition));
+}
+
 /* =========================================================================
  * coordinator_breaker_l2_drops_noncritical
  * ========================================================================= */
@@ -237,7 +257,7 @@ COACT_TEST(coordinator_breaker_l2_drops_noncritical)
 
     coact::Event e = static_evt(1U);
     coact::EventQos qos{false, false};
-    coact::SubmitResult r = coord.submit_from_task(1U, &e, qos);
+    coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::DroppedOverload),
              static_cast<int>(r.disposition));
 }

@@ -33,6 +33,10 @@ typedef intptr_t  rt_base_t;
 #define RT_IPC_FLAG_PRIO   0x01
 #define RT_TICK_PER_SECOND 1000
 
+#ifndef RT_ALIGN_SIZE
+#define RT_ALIGN_SIZE 8
+#endif
+
 /* --- Interrupt masking: emulate single-core exclusivity on host -------- */
 /* A single-core irq mask prevents both ISR and thread preemption. On the SMP
    host we emulate that with one global mutex acquired in irq_save and released
@@ -72,8 +76,37 @@ struct rt_semaphore {
     pthread_mutex_t mtx;
     pthread_cond_t  cond;
     uint32_t        count;
+    bool            init_done;   /* host-only: guard against double pthread init */
 };
 typedef struct rt_semaphore *rt_sem_t;
+
+/* --- Fault injection (host-only) ----------------------------------------- */
+/* Static PAL tests inject definite kernel failures (design §7.5: init/start
+   errors must be propagated, never silently swallowed). Each hook returns the
+   injected rt_err_t instead of RT_EOK. rt_sem_init/rt_thread_init return the
+   fault WITHOUT side effects; rt_thread_startup returns the fault WITHOUT
+   spawning the pthread. Reset with stub_reset_faults() between tests. */
+inline rt_err_t& stub_sem_init_fault() noexcept
+{
+    static rt_err_t v = RT_EOK;
+    return v;
+}
+inline rt_err_t& stub_thread_init_fault() noexcept
+{
+    static rt_err_t v = RT_EOK;
+    return v;
+}
+inline rt_err_t& stub_thread_startup_fault() noexcept
+{
+    static rt_err_t v = RT_EOK;
+    return v;
+}
+inline void stub_reset_faults() noexcept
+{
+    stub_sem_init_fault()      = RT_EOK;
+    stub_thread_init_fault()   = RT_EOK;
+    stub_thread_startup_fault() = RT_EOK;
+}
 
 inline rt_sem_t rt_sem_create(const char*, rt_uint32_t val, rt_uint8_t) noexcept
 {
@@ -82,7 +115,28 @@ inline rt_sem_t rt_sem_create(const char*, rt_uint32_t val, rt_uint8_t) noexcept
     pthread_mutex_init(&s->mtx, nullptr);
     pthread_cond_init(&s->cond, nullptr);
     s->count = val;
+    s->init_done = true;
     return s;
+}
+inline rt_err_t rt_sem_init(rt_sem_t s, const char*, rt_uint32_t val, rt_uint8_t) noexcept
+{
+    if (nullptr == s) { return -RT_EINVAL; }
+    if (RT_EOK != stub_sem_init_fault()) { return stub_sem_init_fault(); }
+    if (!s->init_done) {
+        pthread_mutex_init(&s->mtx, nullptr);
+        pthread_cond_init(&s->cond, nullptr);
+        s->init_done = true;
+    }
+    s->count = val;
+    return RT_EOK;
+}
+inline rt_err_t rt_sem_detach(rt_sem_t s) noexcept
+{
+    if (nullptr == s) { return -RT_EINVAL; }
+    pthread_mutex_destroy(&s->mtx);
+    pthread_cond_destroy(&s->cond);
+    s->init_done = false;
+    return RT_EOK;
 }
 inline rt_err_t rt_sem_delete(rt_sem_t s) noexcept
 {
@@ -141,7 +195,12 @@ struct rt_thread {
 };
 typedef struct rt_thread *rt_thread_t;
 
-static thread_local rt_thread_t tls_rtt_self = nullptr;
+/* thread_local rt_thread_self storage. MUST be inline (external linkage) so the
+   test TU and the PAL TU share ONE per-thread copy: a `static thread_local`
+   would give each TU its own variable, so a thread created from the test TU
+   (run_in_thread) would set a self pointer that RtThread::register_current_task
+   (compiled in pal_rtthread.cpp) never sees. See g_isr_nest above. */
+inline thread_local rt_thread_t tls_rtt_self = nullptr;
 
 inline void* rtt_stub_run(void* arg) noexcept
 {
@@ -158,9 +217,26 @@ inline rt_thread_t rt_thread_create(const char*, void(*entry)(void*), void* p,
     t->entry = entry; t->param = p; t->user_data = 0U; t->tid = {};
     return t;
 }
+/* Static thread init: the PAL (pal_rtthread.cpp) uses rt_thread_init for the
+   Dispatcher. The stub stores entry/param; the fixed stack array is ignored
+   (the pthread gets the default stack). */
+inline rt_err_t rt_thread_init(struct rt_thread *thread, const char* /*name*/,
+                               void(*entry)(void*), void* parameter,
+                               void* /*stack_start*/, rt_uint32_t /*stack_size*/,
+                               rt_uint8_t /*priority*/, rt_uint32_t /*tick*/) noexcept
+{
+    if (nullptr == thread) { return -RT_EINVAL; }
+    if (RT_EOK != stub_thread_init_fault()) { return stub_thread_init_fault(); }
+    thread->entry = entry;
+    thread->param = parameter;
+    thread->user_data = 0U;
+    thread->tid = {};
+    return RT_EOK;
+}
 inline rt_err_t rt_thread_startup(rt_thread_t t) noexcept
 {
     if (nullptr == t) { return -RT_EINVAL; }
+    if (RT_EOK != stub_thread_startup_fault()) { return stub_thread_startup_fault(); }
     return (0 == pthread_create(&t->tid, nullptr, rtt_stub_run, t)) ? RT_EOK : -RT_ENOMEM;
 }
 inline rt_err_t rt_thread_delete(rt_thread_t t) noexcept
@@ -187,5 +263,13 @@ inline int   rt_kprintf(const char* fmt, ...) noexcept
 {
     va_list ap; va_start(ap, fmt);
     const int n = std::vfprintf(stderr, fmt, ap);
+    va_end(ap); return n;
+}
+/* rt_snprintf mirrors the real RT-Thread kstdio API (included via rtthread.h
+   -> rtklibc.h); the log adapter's writer renders into a fixed line buffer. */
+inline int rt_snprintf(char* buf, rt_size_t size, const char* fmt, ...) noexcept
+{
+    va_list ap; va_start(ap, fmt);
+    const int n = std::vsnprintf(buf, static_cast<size_t>(size), fmt, ap);
     va_end(ap); return n;
 }

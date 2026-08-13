@@ -115,11 +115,11 @@ COACT_TEST(integration_two_ao_fifty_events_each)
     for (int i = 0; i < kN; ++i) {
         coact::Event* ea = pool.alloc(1U);
         REQUIRE(ea != nullptr);
-        rt.coordinator().submit_from_task(1U, ea, qos);
+        rt.coordinator().submit_from_task(coact::TargetId(1U), ea, qos);
 
         coact::Event* eb = pool.alloc(2U);
         REQUIRE(eb != nullptr);
-        rt.coordinator().submit_from_task(2U, eb, qos);
+        rt.coordinator().submit_from_task(coact::TargetId(2U), eb, qos);
     }
 
     /* Wait up to 1 s for dispatcher to drain. */

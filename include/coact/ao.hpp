@@ -9,6 +9,7 @@
 #pragma once
 
 #include <atomic>
+#include <array>
 #include <cstdint>
 
 #include "coact/assert.hpp"
@@ -105,8 +106,18 @@ private:
 // ---------------------------------------------------------------------------
 class AoBase {
 public:
-    virtual ~AoBase() {}
-
+    // Type-erased interface: dispatch/priority accessors stay virtual so the
+    // registry and dispatcher can drive any concrete Ao through AoBase*.
+    //
+    // Destructor policy: Ao objects live at automatic/static storage duration;
+    // the AoRegistry and Runtime keep only NON-OWNING AoBase* and never delete
+    // them. The destructor is therefore protected and non-virtual:
+    //   - deleting through a base pointer is a compile-time contract violation
+    //     (negative guard: src/ao/ao_base_delete_neg.cpp);
+    //   - a non-virtual destructor emits no deleting-destructor, so no
+    //     operator delete reference leaks into the symbol table (symbol-level
+    //     zero-heap closure gate, contract 4.6 / elfaudit_strict.py).
+    //
     // Dispatcher-path RTC dispatch (M5): acquires RunningDispatcher lease
     // internally, runs the HSM to completion, releases. Re-entry is a fault.
     virtual void dispatch(const Event& event) noexcept = 0;
@@ -130,6 +141,12 @@ public:
     virtual bool isr_direct_safe() const noexcept = 0;
     virtual ExecutionLease& lease() noexcept = 0;
     virtual PendingCounter& pending() noexcept = 0;
+
+protected:
+    // Non-owning base: see class comment for the destructor policy. Derived
+    // Ao (and the static-lifetime Runtime) destroy objects at their own
+    // storage duration; no one may `delete` through this pointer.
+    ~AoBase() noexcept = default;
 };
 
 // ---------------------------------------------------------------------------
@@ -146,21 +163,16 @@ class AoRegistry {
 public:
     static constexpr uint8_t kCapacity = Config::kMaxAo;
 
-    AoRegistry() noexcept
-    {
-        for (uint8_t i = 0U; i < kCapacity; ++i) {
-            slots_[i] = nullptr;
-        }
-    }
+    AoRegistry() noexcept = default;
 
     // 1-based TargetId lookup; returns nullptr for kInvalidTarget, for ids
     // past capacity, and for never-bound slots.
     AoBase* lookup(TargetId target) const noexcept
     {
-        if (target == kInvalidTarget || target > kCapacity) {
+        if (target == kInvalidTarget || target.raw() > kCapacity) {
             return nullptr;
         }
-        return slots_[target - 1U];
+        return slots_[target.raw() - 1U];
     }
 
     // Bind an AO at the lowest free slot. Rejects null AOs, invalid/dummy
@@ -185,6 +197,26 @@ public:
         return false;  // registry full
     }
 
+    // Bind an AO to an explicit 1-based TargetId. This is intended for a
+    // board's constexpr domain table: target identity remains stable even if
+    // the registration order changes. It applies the same priority uniqueness
+    // rule as bind() and never replaces an occupied slot.
+    bool bind_at(TargetId target, AoBase& ao, LogicalPrio prio) noexcept
+    {
+        if (target == kInvalidTarget || target.raw() > kCapacity
+            || prio == kInvalidPrio || prio != ao.logical_prio()
+            || slots_[target.raw() - 1U] != nullptr) {
+            return false;
+        }
+        for (uint8_t i = 0U; i < kCapacity; ++i) {
+            if (slots_[i] != nullptr && slots_[i]->logical_prio() == prio) {
+                return false;
+            }
+        }
+        slots_[target.raw() - 1U] = &ao;
+        return true;
+    }
+
     // Reverse lookup: the 1-based TargetId of a bound AO, or kInvalidTarget.
     TargetId target_of(const AoBase* ao) const noexcept
     {
@@ -193,14 +225,14 @@ public:
         }
         for (uint8_t i = 0U; i < kCapacity; ++i) {
             if (slots_[i] == ao) {
-                return static_cast<TargetId>(i + 1U);
+                return TargetId(static_cast<uint8_t>(i + 1U));
             }
         }
         return kInvalidTarget;
     }
 
 private:
-    AoBase* slots_[kCapacity];
+    std::array<AoBase*, kCapacity> slots_{};
 };
 
 // ---------------------------------------------------------------------------

@@ -19,14 +19,17 @@
 // --- global allocator hook (host only): counts every heap allocation --------
 namespace {
 
-std::uint64_t g_alloc_count = 0U;
-std::uint64_t g_free_count = 0U;
+// Atomic: the multi-producer pool test runs worker threads whose std::thread
+// setup allocates, so these counters are touched from more than one thread
+// (TSan would otherwise flag a harness race, masking pool results).
+std::atomic<std::uint64_t> g_alloc_count{0U};
+std::atomic<std::uint64_t> g_free_count{0U};
 
 }  // namespace
 
 void* operator new(std::size_t n)
 {
-    ++g_alloc_count;
+    g_alloc_count.fetch_add(1U, std::memory_order_relaxed);
     if (void* p = std::malloc(n)) {
         return p;
     }
@@ -35,7 +38,7 @@ void* operator new(std::size_t n)
 
 void* operator new[](std::size_t n)
 {
-    ++g_alloc_count;
+    g_alloc_count.fetch_add(1U, std::memory_order_relaxed);
     if (void* p = std::malloc(n)) {
         return p;
     }
@@ -44,49 +47,49 @@ void* operator new[](std::size_t n)
 
 void* operator new(std::size_t n, const std::nothrow_t&) noexcept
 {
-    ++g_alloc_count;
+    g_alloc_count.fetch_add(1U, std::memory_order_relaxed);
     return std::malloc(n);
 }
 
 void* operator new[](std::size_t n, const std::nothrow_t&) noexcept
 {
-    ++g_alloc_count;
+    g_alloc_count.fetch_add(1U, std::memory_order_relaxed);
     return std::malloc(n);
 }
 
 void operator delete(void* p) noexcept
 {
-    ++g_free_count;
+    g_free_count.fetch_add(1U, std::memory_order_relaxed);
     std::free(p);
 }
 
 void operator delete[](void* p) noexcept
 {
-    ++g_free_count;
+    g_free_count.fetch_add(1U, std::memory_order_relaxed);
     std::free(p);
 }
 
 void operator delete(void* p, std::size_t) noexcept
 {
-    ++g_free_count;
+    g_free_count.fetch_add(1U, std::memory_order_relaxed);
     std::free(p);
 }
 
 void operator delete[](void* p, std::size_t) noexcept
 {
-    ++g_free_count;
+    g_free_count.fetch_add(1U, std::memory_order_relaxed);
     std::free(p);
 }
 
 void operator delete(void* p, const std::nothrow_t&) noexcept
 {
-    ++g_free_count;
+    g_free_count.fetch_add(1U, std::memory_order_relaxed);
     std::free(p);
 }
 
 void operator delete[](void* p, const std::nothrow_t&) noexcept
 {
-    ++g_free_count;
+    g_free_count.fetch_add(1U, std::memory_order_relaxed);
     std::free(p);
 }
 
@@ -322,10 +325,12 @@ COACT_TEST(event_zero_heap)
 {
     // prove the hook is live: the harness registry allocated during static
     // initialization, before main() runs
-    CHECK(g_alloc_count > 0U);
+    CHECK(g_alloc_count.load(std::memory_order_relaxed) > 0U);
 
-    const std::uint64_t alloc_before = g_alloc_count;
-    const std::uint64_t free_before = g_free_count;
+    const std::uint64_t alloc_before =
+        g_alloc_count.load(std::memory_order_relaxed);
+    const std::uint64_t free_before =
+        g_free_count.load(std::memory_order_relaxed);
 
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
@@ -345,20 +350,25 @@ COACT_TEST(event_zero_heap)
     }
 
     // the whole alloc/inc/gc/reclaim loop never touched the heap
-    CHECK_EQ(g_alloc_count, alloc_before);
-    CHECK_EQ(g_free_count, free_before);
+    CHECK_EQ(g_alloc_count.load(std::memory_order_relaxed), alloc_before);
+    CHECK_EQ(g_free_count.load(std::memory_order_relaxed), free_before);
 }
 
 COACT_TEST(event_pool_mp_alloc_sc_reclaim_lockfree)
 {
-    // Any EventPool is now lock-free (index-based tagged-CAS free list). Under
-    // concurrent multi-producer alloc + single-consumer-ish reclaim the free
-    // list must not lose or duplicate blocks: after the storm every block is
-    // accounted for, the pool drains to used()==0, and a full re-alloc succeeds.
+    // A shared pool under multi-producer alloc + single-reclaimer-ish reclaim
+    // must not lose or duplicate blocks. The pool head is a tagged CAS free
+    // list (HostSmpProfile), and per design §7.3 an SMP host binds a real
+    // serializing CriticalSection (make_spin_critical_section) so the plain
+    // `next`-field accesses serialize. After the storm every block is
+    // accounted for, the pool drains to used()==0, and a full re-alloc
+    // succeeds.
     constexpr std::uint16_t kPoolCap = 32U;
     PoolStorage<16U, kPoolCap> storage;
-    coact::EventPool<16U, kPoolCap> pool;   // no LockT: always lock-free
-    pool.init(storage.data, sizeof(storage.data));
+    coact::SpinCriticalSection spin;
+    coact::EventPool<16U, kPoolCap> pool;
+    pool.init(storage.data, sizeof(storage.data),
+              coact::make_spin_critical_section(spin));
 
     constexpr int kThreads = 8;
     constexpr int kRounds = 5000;

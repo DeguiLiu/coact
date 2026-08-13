@@ -220,7 +220,7 @@ int main()
             std::printf("pool exhausted\n");
             break;
         }
-        rt.coordinator().submit_from_task(1U, e, qos);
+        rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
 
     /* Drain: pending()==0 after all submits. The acquire-order counter load

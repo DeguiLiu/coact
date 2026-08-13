@@ -123,7 +123,7 @@ COACT_TEST(static_runtime_end_to_end)
     for (int i = 0; i < kN; ++i) {
         coact::Event* e = g_pool.alloc(1U);
         REQUIRE(e != nullptr);
-        g_rt.coordinator().submit_from_task(1U, e, qos);
+        g_rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
     for (int w = 0; w < 200; ++w) {
         if (g_counter.load() >= kN) { break; }

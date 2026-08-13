@@ -55,6 +55,31 @@ rt.start();
 
 包含同一组头文件，改用 `coact/pal_rtthread.hpp`，并把 `src/core/pal_rtthread.cpp` 编进 BSP（它只用内核 API：信号量、线程、`rt_hw_interrupt_disable/enable`、`rt_tick_get`）。Dispatcher 以普通 RT-Thread 线程运行；producer 调 `coordinator().submit_from_task(...)`，ISR 调 `try_submit_from_isr(...)`。运行示例见 [`examples/README.md`](examples/README.md)。
 
+### 静态 PAL（design §7.5）
+
+RT-Thread PAL 使用调用方显式提供的静态资源 `coact::pal::RtThreadResources<StackBytes, ContextSlots>`（静态 `struct rt_thread`、按 `RT_ALIGN_SIZE` 对齐的 Dispatcher stack、两个静态 `struct rt_semaphore`、固定 `ContextSlot[N]`）。PAL 构造函数只保存引用、不调用内核 API；显式 `initialize()` 在任务上下文做 `rt_sem_init` + `rt_thread_init`，任一步失败返回确定的 `coact::pal::InitError`（不回退动态 create/malloc）。`start_dispatcher()` 返回状态，只有 `rt_thread_startup()==RT_EOK` 后 `Runtime` 才进入 started；一次初始化、一次启动、一次停止，stop 后再次 start 返回拒绝。固定 `ContextSlot` 表不占用 RT-Thread 唯一的 `user_data`，启动后冻结。
+
+```cpp
+#include "coact/pal_rtthread.hpp"
+#include "coact/runtime.hpp"
+
+static coact::pal::RtThreadResources<4096, 8> g_res;
+static coact::pal::RtThread g_pal(g_res);          // 只保存引用
+static coact::Runtime<coact::DefaultConfig,
+                      coact::pal::RtThread,
+                      coact::pal::RtThread::Profile> g_rt(g_pal);  // 单核 profile
+
+// 任务上下文：
+g_pal.initialize();                                  // rt_sem_init + rt_thread_init
+g_pal.register_current_task(20U);                    // 生产线程固定注册
+g_rt.bind(&my_ao);
+g_rt.initialize();
+g_rt.start();                                        // 内部 set stack -> initialize -> startup
+// ... g_rt.stop();  // request_stop + join_dispatcher
+```
+
+单核产品（`RttSingleCoreProfile`）要求 `RT_CPUS_NR==1` 且未启用 `RT_USING_SMP`；`Runtime` 第三模板参把 profile 传导到 Dispatcher（单核→immediate reclaim，Host 默认→batched）。
+
 ## 示例
 
 - `examples/hsm_protocol_demo.cpp` — 层次协议状态机（父状态事件继承），完整走 pool → submit → 队列 → dispatch。

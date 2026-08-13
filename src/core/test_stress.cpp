@@ -136,7 +136,7 @@ COACT_TEST(stress_multiproducer_concurrent)
                 /* Submit may drop on overload; we only count successful
                    dispatches below via counter, so a rejected submit is
                    fine. */
-                rt.coordinator().submit_from_task(1U, e, qos);
+                rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
             }
         });
     }
@@ -194,7 +194,7 @@ COACT_TEST(stress_overload_drops_noncritical)
     coact::Event e{};
     e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
     coact::EventQos qos{false, false};
-    coact::SubmitResult r = coord.submit_from_task(1U, &e, qos);
+    coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::DroppedOverload),
              static_cast<int>(r.disposition));
 }
@@ -241,7 +241,7 @@ COACT_TEST(stress_zero_heap_hot_path)
     for (int i = 0; i < kIters; ++i) {
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
-        rt.coordinator().submit_from_task(1U, e, qos);
+        rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
     rt.stop();
 
