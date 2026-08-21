@@ -5,7 +5,9 @@
 #include <unistd.h>
 
 /* Pull in stub BEFORE pal_rtthread.hpp so RT-Thread types resolve. */
+#ifndef COACT_RTT_STUB
 #define COACT_RTT_STUB
+#endif
 #include "test/rtthread_stub.h"
 
 #include "coact/ao.hpp"
@@ -25,6 +27,15 @@ namespace {
 
 /* ---- PAL unit tests ------------------------------------------------------- */
 
+struct ClockCounter {
+    uint64_t value;
+};
+
+uint64_t read_clock_counter(void* ctx) noexcept
+{
+    return static_cast<ClockCounter*>(ctx)->value;
+}
+
 COACT_TEST(rtthread_pal_irq_save_restore)
 {
     coact::pal::RtThread pal;
@@ -40,6 +51,52 @@ COACT_TEST(rtthread_pal_monotonic_ns_increases)
     usleep(2000);  /* 2 ms */
     uint64_t t1 = pal.monotonic_ns();
     CHECK(t1 > t0);
+}
+
+COACT_TEST(rtthread_pal_clock_exact_scale)
+{
+    coact::pal::RtThread pal;
+    ClockCounter counter{123456789ULL};
+    coact::pal::ClockOps ops;
+    ops.read_counter = &read_clock_counter;
+    ops.frequency_hz = 10000000U;
+    ops.ctx = &counter;
+    pal.set_clock_ops(ops);
+
+    CHECK_EQ(12345678900ULL, pal.monotonic_ns());
+}
+
+COACT_TEST(rtthread_pal_clock_non_divisible_fallback)
+{
+    coact::pal::RtThread pal;
+    ClockCounter counter{10U};
+    coact::pal::ClockOps ops;
+    ops.read_counter = &read_clock_counter;
+    ops.frequency_hz = 3000000U;
+    ops.ctx = &counter;
+    pal.set_clock_ops(ops);
+
+    CHECK_EQ(3333ULL, pal.monotonic_ns());
+}
+
+COACT_TEST(rtthread_pal_clock_wrap_state_resets_on_rebind)
+{
+    coact::pal::RtThread pal;
+    ClockCounter counter{250U};
+    coact::pal::ClockOps ops;
+    ops.read_counter = &read_clock_counter;
+    ops.frequency_hz = 250000000U;
+    ops.ctx = &counter;
+    ops.counter_bits = 8U;
+    pal.set_clock_ops(ops);
+
+    CHECK_EQ(1000ULL, pal.monotonic_ns());
+    counter.value = 5U;
+    CHECK_EQ(1044ULL, pal.monotonic_ns());
+
+    counter.value = 7U;
+    pal.set_clock_ops(ops);
+    CHECK_EQ(28ULL, pal.monotonic_ns());
 }
 
 COACT_TEST(rtthread_pal_current_context_task)
@@ -161,9 +218,8 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
 
 /* ---- RT-Thread 5.2.x single-core semantics ------------------------------- */
 
-/* A pool wired to a counting CriticalSection must call save/restore exactly
-   once per alloc and once per reclaim: this is the O(1) irq-mask guard the
-   single-core 100 MHz MCU relies on (rt_hw_interrupt_disable/enable). */
+/* A pool wired to a counting CriticalSection must guard allocation, event
+   reference updates, and reclaim with O(1) irq-mask sections. */
 struct PoolCsCounters { int saves = 0; int restores = 0; };
 PoolCsCounters g_pool_cs;
 uintptr_t pool_cs_save(void*) { ++g_pool_cs.saves; return 0xABABABABu; }
@@ -186,10 +242,9 @@ COACT_TEST(rtthread_pool_cs_guards_alloc_reclaim)
     CHECK_EQ(1, g_pool_cs.saves);
     CHECK_EQ(1, g_pool_cs.restores);
 
-    coact::event_ref_inc(e);
-    coact::event_gc(e);   /* ref 1->0 -> reclaim -> another save/restore */
-    CHECK_EQ(2, g_pool_cs.saves);
-    CHECK_EQ(2, g_pool_cs.restores);
+    coact::event_gc(e);   /* allocation ref 1->0, then reclaim */
+    CHECK_EQ(3, g_pool_cs.saves);
+    CHECK_EQ(3, g_pool_cs.restores);
     CHECK_EQ(0U, pool.used());
 }
 

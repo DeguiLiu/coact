@@ -7,6 +7,7 @@
 // specialization, fixed inline storage, no exceptions, no heap.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <new>
 #include <type_traits>
@@ -29,14 +30,14 @@ public:
                       "Expected copied value must be nothrow copy constructible");
         Expected e;
         e.has_value_ = true;
-        ::new (&e.storage_) V(val);
+        ::new (static_cast<void*>(e.storage_.bytes)) V(val);
         return e;
     }
 
     static Expected success(V&& val) noexcept {
         Expected e;
         e.has_value_ = true;
-        ::new (&e.storage_) V(std::move(val));
+        ::new (static_cast<void*>(e.storage_.bytes)) V(std::move(val));
         return e;
     }
 
@@ -52,7 +53,7 @@ public:
     Expected(Expected&& other) noexcept
         : storage_{}, err_(other.err_), has_value_(false) {
         if (other.has_value_) {
-            ::new (&storage_) V(std::move(other.value()));
+            ::new (static_cast<void*>(storage_.bytes)) V(std::move(other.value()));
             has_value_ = true;
             other.destroy_value();
         }
@@ -65,7 +66,7 @@ public:
             }
             err_ = other.err_;
             if (other.has_value_) {
-                ::new (&storage_) V(std::move(other.value()));
+                ::new (static_cast<void*>(storage_.bytes)) V(std::move(other.value()));
                 has_value_ = true;
                 other.destroy_value();
             }
@@ -87,12 +88,12 @@ public:
 
     V& value() & noexcept {
         COACT_ASSERT(has_value_);
-        return *static_cast<V*>(static_cast<void*>(&storage_));
+        return *value_ptr();
     }
 
     const V& value() const& noexcept {
         COACT_ASSERT(has_value_);
-        return *static_cast<const V*>(static_cast<const void*>(&storage_));
+        return *value_ptr();
     }
 
     E error() const noexcept {
@@ -103,12 +104,25 @@ public:
 private:
     Expected() noexcept : storage_{}, err_{}, has_value_(false) {}
 
-    typename std::aligned_storage<sizeof(V), alignof(V)>::type storage_{};
+    struct alignas(alignof(V)) Storage {
+        std::byte bytes[sizeof(V)];
+    };
+    Storage storage_{};
     E err_{};
     bool has_value_{false};
 
+    V* value_ptr() noexcept
+    {
+        return std::launder(reinterpret_cast<V*>(storage_.bytes));
+    }
+
+    const V* value_ptr() const noexcept
+    {
+        return std::launder(reinterpret_cast<const V*>(storage_.bytes));
+    }
+
     void destroy_value() noexcept {
-        static_cast<V*>(static_cast<void*>(&storage_))->~V();
+        value_ptr()->~V();
         (void)std::exchange(has_value_, false);
     }
 };

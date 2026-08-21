@@ -118,7 +118,7 @@ COACT_TEST(single_core_claim_reclaim_stats_in_cs)
     REQUIRE(e0 != nullptr);
     CHECK_EQ(e0->signal, 0x1000U);
     CHECK(e0->pool_id != 0U);
-    CHECK_EQ(e0->ref_ctr, 0U);
+    CHECK_EQ(e0->ref_ctr, 1U);
     CHECK_EQ(pool.used(), 1U);
     CHECK_EQ(pool.high_watermark(), 1U);
 
@@ -162,7 +162,7 @@ COACT_TEST(single_core_lifo_reuse_after_reclaim)
     CHECK(second == first);
     CHECK_EQ(second->signal, 0x2222U);
     CHECK_EQ(second->pool_id, first->pool_id);
-    CHECK_EQ(second->ref_ctr, 0U);
+    CHECK_EQ(second->ref_ctr, 1U);
 
     coact::event_gc(second);
     mock.check_balanced();
@@ -187,8 +187,7 @@ COACT_TEST(single_core_exhaustion_and_refcnt_roundtrip)
     CHECK(pool.alloc(0xFFU) == nullptr);
     CHECK_EQ(pool.used(), kCap);
 
-    // ref-count roundtrip: post (inc) then consume (gc) -> recycled.
-    coact::event_ref_inc(blocks[0]);
+    // allocation reference is consumed by the receiving path.
     CHECK_EQ(blocks[0]->ref_ctr, 1U);
     coact::event_gc(blocks[0]);   // 1 -> 0 -> reclaim
     CHECK_EQ(pool.used(), kCap - 1U);
@@ -264,6 +263,30 @@ COACT_TEST(single_core_stats_reads_travel_through_cs)
     mock.check_balanced();
 }
 
+COACT_TEST(single_core_event_references_travel_through_cs)
+{
+    PoolStorage<kBlock, kCap> storage;
+    MockIrqMask mock;
+    CorePool pool;
+    pool.init(storage.data, sizeof(storage.data), mock.cs());
+
+    coact::Event* e = pool.alloc(0x4455U);
+    REQUIRE(e != nullptr);
+    const std::uint64_t saves_after_alloc =
+        mock.save_count.load(std::memory_order_relaxed);
+
+    coact::event_ref_inc(e);
+    CHECK_EQ(mock.save_count.load(std::memory_order_relaxed),
+             saves_after_alloc + 1U);
+    CHECK_EQ(e->ref_ctr, 2U);
+
+    coact::event_gc(e);
+    CHECK_EQ(pool.used(), 1U);
+    coact::event_gc(e);
+    CHECK_EQ(pool.used(), 0U);
+    mock.check_balanced();
+}
+
 COACT_TEST(single_core_is_distinct_compiled_backend)
 {
     // One EventPool template, two compile-time backend selections: the two
@@ -326,7 +349,7 @@ COACT_TEST(single_core_configurable_block_alignment)
     REQUIRE(l != nullptr);
     CHECK(reinterpret_cast<std::uintptr_t>(l) % 32U == 0U);
     CHECK_EQ(l->event.signal, 0x42U);
-    CHECK_EQ(l->event.ref_ctr, 0U);
+    CHECK_EQ(l->event.ref_ctr, 1U);
     Align32Payload* p = reinterpret_cast<Align32Payload*>(&l->payload[0]);
     CHECK_EQ(p->x, 0U);
 

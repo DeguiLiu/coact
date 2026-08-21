@@ -40,6 +40,12 @@ constexpr size_t kPayloadAlign = 8U;
 
 using Layout = coact::EventBlockLayout<TestMeta, kPayloadBytes, kPayloadAlign>;
 
+struct LayoutWithoutMeta {
+    coact::Event event;
+    std::uint32_t header;
+    alignas(kPayloadAlign) std::byte payload[kPayloadBytes];
+};
+
 constexpr std::uint16_t kBlockSize =
     static_cast<std::uint16_t>(sizeof(Layout));
 
@@ -66,6 +72,10 @@ static_assert(alignof(Layout) >= kPayloadAlign,
 static_assert(coact::detail::event_layout_complies_v<
                   Layout, TestPayload, kPayloadAlign, kBlockSize>,
               "a valid layout + trivial payload must comply");
+static_assert(coact::detail::event_layout_complies_v<
+                  LayoutWithoutMeta, TestPayload, kPayloadAlign,
+                  static_cast<std::uint16_t>(sizeof(LayoutWithoutMeta))>,
+              "a trivial custom layout does not require a named meta member");
 
 // ---------------------------------------------------------------------------
 // Compile-time contract: violating payloads / layouts must be reported false
@@ -85,6 +95,53 @@ struct OverAlignedPayload {
 static_assert(!coact::detail::event_layout_complies_v<
                   Layout, OverAlignedPayload, kPayloadAlign, kBlockSize>,
               "over-aligned payload must be rejected");
+
+struct OversizedTrivialPayload {
+    std::byte bytes[kPayloadBytes + 1U];
+};
+static_assert(coact::detail::is_trivially_poolable_v<OversizedTrivialPayload>,
+              "oversized payload must otherwise remain trivially poolable");
+static_assert(!coact::detail::event_layout_complies_v<
+                  Layout, OversizedTrivialPayload, kPayloadAlign, kBlockSize>,
+              "payload larger than the layout payload region must be rejected");
+
+struct CustomDefaultPayload {
+    std::uint32_t value;
+    CustomDefaultPayload() noexcept : value(0x13579BDFU) {}
+};
+static_assert(coact::detail::is_trivially_poolable_v<CustomDefaultPayload>,
+              "custom-default payload must otherwise remain trivially poolable");
+static_assert(!std::is_trivially_default_constructible<
+                  CustomDefaultPayload>::value,
+              "custom-default payload must not be trivially default constructible");
+static_assert(std::is_nothrow_default_constructible<
+                  CustomDefaultPayload>::value,
+              "custom-default payload construction must be noexcept");
+static_assert(coact::detail::event_layout_complies_v<
+                  Layout, CustomDefaultPayload, kPayloadAlign, kBlockSize>,
+              "noexcept custom-default payload must comply");
+
+struct CustomDefaultLayout {
+    coact::Event event;
+    TestMeta meta;
+    alignas(kPayloadAlign) std::byte payload[kPayloadBytes];
+
+    CustomDefaultLayout() noexcept
+        : event{}, meta{0x12345678U, 0x87654321U, 0x55AAU, 0xAA55U},
+          payload{} {}
+};
+static_assert(coact::detail::is_trivially_poolable_v<CustomDefaultLayout>,
+              "custom-default layout must otherwise remain trivially poolable");
+static_assert(!std::is_trivially_default_constructible<
+                  CustomDefaultLayout>::value,
+              "custom-default layout must not be trivially default constructible");
+static_assert(std::is_nothrow_default_constructible<
+                  CustomDefaultLayout>::value,
+              "custom-default layout construction must be noexcept");
+static_assert(coact::detail::event_layout_complies_v<
+                  CustomDefaultLayout, TestPayload, kPayloadAlign,
+                  static_cast<std::uint16_t>(sizeof(CustomDefaultLayout))>,
+              "noexcept custom-default layout must comply");
 
 using BigLayout = coact::EventBlockLayout<TestMeta, 128, kPayloadAlign>;
 static_assert(!coact::detail::event_layout_complies_v<
@@ -121,7 +178,7 @@ COACT_TEST(pool_lifecycle_alloc_placement_new)
     REQUIRE(e != nullptr);
     CHECK_EQ(e->signal, 0x1234U);
     CHECK(e->pool_id != 0U);
-    CHECK_EQ(e->ref_ctr, 0U);
+    CHECK_EQ(e->ref_ctr, 1U);
 
     coact::event_gc(e);
     CHECK_EQ(pool.used(), 0U);
@@ -133,7 +190,7 @@ COACT_TEST(pool_lifecycle_alloc_placement_new)
     CHECK(e2 == e);
     CHECK_EQ(e2->signal, 0x7777U);
     CHECK(e2->pool_id != 0U);
-    CHECK_EQ(e2->ref_ctr, 0U);
+    CHECK_EQ(e2->ref_ctr, 1U);
 
     coact::event_gc(e2);
 }
@@ -146,6 +203,7 @@ COACT_TEST(pool_lifecycle_alloc_placement_new)
 COACT_TEST(pool_lifecycle_typed_alloc_basic)
 {
     PoolStorage<kBlockSize, kCap> storage;
+    std::memset(storage.data, 0xA5, sizeof(storage.data));
     coact::EventPool<kBlockSize, kCap> pool;
     pool.init(storage.data, sizeof(storage.data));
 
@@ -154,8 +212,12 @@ COACT_TEST(pool_lifecycle_typed_alloc_basic)
     REQUIRE(layout != nullptr);
     CHECK_EQ(layout->event.signal, 0x11U);
     CHECK(layout->event.pool_id != 0U);
-    CHECK_EQ(layout->event.ref_ctr, 0U);
+    CHECK_EQ(layout->event.ref_ctr, 1U);
     CHECK_EQ(pool.used(), 1U);
+    CHECK_EQ(layout->meta.request_id, 0U);
+    CHECK_EQ(layout->meta.deadline_tick, 0U);
+    CHECK_EQ(layout->meta.descriptor_index, 0U);
+    CHECK_EQ(layout->meta.payload_size, 0U);
 
     // payload was placement-newed and zero-initialized (nanopb init_zero
     // semantics for a trivial POD).
@@ -168,7 +230,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_basic)
     layout->meta.request_id = 0xDEADU;
     layout->meta.payload_size = 4U;
     CHECK_EQ(layout->event.signal, 0x11U);
-    CHECK_EQ(layout->event.ref_ctr, 0U);
+    CHECK_EQ(layout->event.ref_ctr, 1U);
     CHECK_EQ(p->a, 0U);
 
     coact::event_gc(&layout->event);
@@ -200,7 +262,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_reuse)
     REQUIRE(l2 != nullptr);
     CHECK(l2 == l1);                       // LIFO reuse of the same block
     CHECK_EQ(l2->event.signal, 0xBBU);
-    CHECK_EQ(l2->event.ref_ctr, 0U);
+    CHECK_EQ(l2->event.ref_ctr, 1U);
 
     TestPayload* p2 = reinterpret_cast<TestPayload*>(&l2->payload[0]);
     CHECK_EQ(p2->a, 0U);                   // payload re-zeroed
@@ -208,6 +270,40 @@ COACT_TEST(pool_lifecycle_typed_alloc_reuse)
     CHECK_EQ(p2->flags, 0U);
 
     coact::event_gc(&l2->event);
+}
+
+COACT_TEST(pool_lifecycle_typed_alloc_runs_noexcept_default_constructors)
+{
+    PoolStorage<kBlockSize, kCap> payload_storage;
+    std::memset(payload_storage.data, 0xA5, sizeof(payload_storage.data));
+    coact::EventPool<kBlockSize, kCap> payload_pool;
+    payload_pool.init(payload_storage.data, sizeof(payload_storage.data));
+
+    Layout* payload_layout =
+        payload_pool.alloc_typed<Layout, CustomDefaultPayload, kPayloadAlign>(
+            0x31U);
+    REQUIRE(payload_layout != nullptr);
+    const auto* const payload = reinterpret_cast<const CustomDefaultPayload*>(
+        &payload_layout->payload[0]);
+    CHECK_EQ(payload->value, 0x13579BDFU);
+    coact::event_gc(&payload_layout->event);
+
+    constexpr std::uint16_t kCustomBlockSize =
+        static_cast<std::uint16_t>(sizeof(CustomDefaultLayout));
+    PoolStorage<kCustomBlockSize, kCap> layout_storage;
+    std::memset(layout_storage.data, 0xA5, sizeof(layout_storage.data));
+    coact::EventPool<kCustomBlockSize, kCap> layout_pool;
+    layout_pool.init(layout_storage.data, sizeof(layout_storage.data));
+
+    CustomDefaultLayout* custom_layout =
+        layout_pool.alloc_typed<CustomDefaultLayout, TestPayload,
+                                kPayloadAlign>(0x32U);
+    REQUIRE(custom_layout != nullptr);
+    CHECK_EQ(custom_layout->meta.request_id, 0x12345678U);
+    CHECK_EQ(custom_layout->meta.deadline_tick, 0x87654321U);
+    CHECK_EQ(custom_layout->meta.descriptor_index, 0x55AAU);
+    CHECK_EQ(custom_layout->meta.payload_size, 0xAA55U);
+    coact::event_gc(&custom_layout->event);
 }
 
 // ---------------------------------------------------------------------------
@@ -269,7 +365,7 @@ COACT_TEST(pool_lifecycle_layout_geometry)
     CHECK(reinterpret_cast<std::uintptr_t>(ev) ==
           reinterpret_cast<std::uintptr_t>(l));
     CHECK_EQ(ev->signal, 0x5AU);
-    CHECK_EQ(ev->ref_ctr, 0U);
+    CHECK_EQ(ev->ref_ctr, 1U);
 
     coact::event_gc(ev);
     CHECK_EQ(pool.used(), 0U);

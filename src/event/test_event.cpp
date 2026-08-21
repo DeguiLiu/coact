@@ -123,7 +123,7 @@ COACT_TEST(event_alloc_basic)
     REQUIRE(e != nullptr);
     CHECK_EQ(e->signal, 0x1234U);
     CHECK(e->pool_id != 0U);
-    CHECK_EQ(e->ref_ctr, 0U);
+    CHECK_EQ(e->ref_ctr, 1U);
     CHECK_EQ(pool.used(), 1U);
     CHECK_EQ(pool.high_watermark(), 1U);
 
@@ -138,6 +138,39 @@ COACT_TEST(event_alloc_basic)
     CHECK_EQ(pool.high_watermark(), 1U);
 }
 
+COACT_TEST(event_pool_failed_init_is_observable_and_closed)
+{
+    PoolStorage<16U, kCap> storage;
+    coact::EventPool<16U, kCap> pool;
+
+    CHECK(!pool.init(nullptr, 0U));
+    CHECK(pool.alloc(0x1235U) == nullptr);
+
+    CHECK(pool.init(storage.data, sizeof(storage.data)));
+    coact::Event* event = pool.alloc(0x1235U);
+    REQUIRE(event != nullptr);
+    coact::event_gc(event);
+}
+
+COACT_TEST(event_gc_zero_reference_does_not_reclaim)
+{
+    PoolStorage<16U, kCap> storage;
+    coact::EventPool<16U, kCap> pool;
+    pool.init(storage.data, sizeof(storage.data));
+
+    coact::Event* e = pool.alloc(0x1235U);
+    REQUIRE(e != nullptr);
+    CHECK_EQ(e->ref_ctr, 1U);
+
+    e->ref_ctr = 0U;
+    coact::event_gc(e);
+    CHECK_EQ(pool.used(), 1U);
+
+    e->ref_ctr = 1U;
+    coact::event_gc(e);
+    CHECK_EQ(pool.used(), 0U);
+}
+
 COACT_TEST(event_single_consumer)
 {
     PoolStorage<16U, kCap> storage;
@@ -147,7 +180,6 @@ COACT_TEST(event_single_consumer)
     coact::Event* e = pool.alloc(0x0001U);
     REQUIRE(e != nullptr);
 
-    coact::event_ref_inc(e);   // one post
     CHECK_EQ(e->ref_ctr, 1U);
     CHECK_EQ(pool.used(), 1U);
 
@@ -163,10 +195,9 @@ COACT_TEST(event_multicast_refcnt)
 
     coact::Event* e = pool.alloc(0x7777U);
     REQUIRE(e != nullptr);
-    CHECK_EQ(e->ref_ctr, 0U);
+    CHECK_EQ(e->ref_ctr, 1U);
 
-    // post the same event to two consumers: two incs
-    coact::event_ref_inc(e);
+    // transfer the allocation reference plus one additional post.
     coact::event_ref_inc(e);
     CHECK_EQ(e->ref_ctr, 2U);
     CHECK_EQ(pool.used(), 1U);
@@ -220,7 +251,7 @@ COACT_TEST(event_pool_exhausted)
     coact::Event* fresh = pool.alloc(0xEEU);
     REQUIRE(fresh != nullptr);
     CHECK_EQ(pool.used(), kCap);
-    CHECK_EQ(fresh->ref_ctr, 0U);
+    CHECK_EQ(fresh->ref_ctr, 1U);
 
     // drain everything
     coact::event_gc(fresh);
@@ -283,7 +314,7 @@ COACT_TEST(event_block_reuse_after_gc)
     REQUIRE(second != nullptr);
     CHECK(reinterpret_cast<std::uintptr_t>(second) == first_addr);
     CHECK_EQ(second->signal, 0x2222U);
-    CHECK_EQ(second->ref_ctr, 0U);
+    CHECK_EQ(second->ref_ctr, 1U);
     CHECK_EQ(pool.used(), 1U);
 
     coact::event_gc(second);
@@ -343,7 +374,6 @@ COACT_TEST(event_zero_heap)
             REQUIRE(blocks[i] != nullptr);
         }
         for (std::uint16_t i = 0U; i < kCap; ++i) {
-            coact::event_ref_inc(blocks[i]);
             coact::event_gc(blocks[i]);
         }
         REQUIRE_EQ(pool.used(), 0U);
@@ -384,8 +414,7 @@ COACT_TEST(event_pool_mp_alloc_sc_reclaim_lockfree)
                     continue;       // transiently empty: retry the round
                 }
                 ++disp;
-                coact::event_ref_inc(e);
-                coact::event_gc(e); // ref 1->0 -> reclaim back to the pool
+            coact::event_gc(e); // ref 1->0 -> reclaim back to the pool
             }
         });
     }

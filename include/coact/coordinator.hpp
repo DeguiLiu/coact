@@ -24,22 +24,22 @@ namespace coact {
 //
 // Event reference-count contract (QF semantics):
 //   submit_from_task / try_submit_from_isr own the reference passed in.
-//   - Staged:       event_ref_inc called before enqueue; Dispatcher calls
-//                   event_gc after dispatch.
-//   - Direct:       event_ref_inc / dispatch / event_gc done inside submit.
-//   - Drop / Merge: event_gc called immediately.
+//   - Staged:       allocation reference transfers to staging; Dispatcher
+//                   calls event_gc after dispatch.
+//   - Direct:       allocation reference is consumed after dispatch.
+//   - Drop / Merge: allocation reference is consumed immediately.
 //   The caller MUST NOT access the event after submit returns.
 // ---------------------------------------------------------------------------
-template <typename StagingT, typename PalT>
+template <typename StagingT, typename PalT,
+          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>>
 class DispatchCoordinator
 {
 public:
     using RegistryT = AoRegistry<typename StagingT::ConfigType>;
     using MonitorT  = Monitor<typename StagingT::ConfigType>;
-    using BreakerT  = Breaker<typename StagingT::ConfigType>;
 
     DispatchCoordinator(StagingT& staging, RegistryT& registry,
-                        MonitorT& monitor, BreakerT& breaker, PalT& pal,
+                        MonitorT& monitor, BreakerRouterT& breaker, PalT& pal,
                         const PolicyOps* policy_ops = nullptr,
                         void* policy_ctx = nullptr) noexcept
         : staging_(staging),
@@ -67,13 +67,44 @@ public:
     }
 
 private:
+    class SubmissionLease {
+    public:
+        SubmissionLease(StagingT& staging, PalT& pal, bool from_isr) noexcept
+            : staging_(staging.acquire_submission() ? &staging : nullptr),
+              pal_(pal),
+              from_isr_(from_isr)
+        {
+        }
+
+        ~SubmissionLease()
+        {
+            if ((nullptr != staging_) && staging_->release_submission()) {
+                if (from_isr_) {
+                    pal_.signal_dispatcher_from_isr();
+                }
+                else {
+                    pal_.signal_dispatcher_from_task();
+                }
+            }
+        }
+
+        bool admitted() const noexcept
+        {
+            return nullptr != staging_;
+        }
+
+    private:
+        StagingT* staging_;
+        PalT& pal_;
+        bool from_isr_;
+    };
+
     SubmitResult submit_internal(TargetId target, Event* e,
                                  const EventQos& qos, bool from_isr) noexcept
     {
-        /* Monotonic clock is sampled once per submit: the M4 policy and the
-           Low-aging staging paths both need a timestamp, but the clock must not
-           be read twice for the same instant (the #2 host hot spot in the flame
-           profile). Cached here so the two call sites share one sample. */
+        /* Monotonic clock is sampled only when the M4 policy or Low-aging
+           staging path needs it. Cached here so those two paths share one
+           sample; High/Normal staged events carry an unused zero timestamp. */
         uint64_t now_ns = 0U;
         bool now_init = false;
 
@@ -84,8 +115,17 @@ private:
             return {SubmitDisposition::RejectedState, 0U};
         }
 
+        SubmissionLease lease(staging_, pal_, from_isr);
+        if (!lease.admitted()) {
+            event_gc(e);
+            monitor_.record_disposition(SubmitDisposition::RejectedState);
+            return {SubmitDisposition::RejectedState, 0U};
+        }
+
         /* --- M6 overload guard ------------------------------------------ */
-        const BreakerLevel lvl = breaker_.level();
+        Breaker<typename StagingT::ConfigType>& target_breaker =
+            detail::target_breaker(breaker_, target);
+        const BreakerLevel lvl = target_breaker.level();
         if (BreakerLevel::BrokenL2 <= lvl) {
             if (!qos.critical) {
                 monitor_.record_disposition(SubmitDisposition::DroppedOverload);
@@ -117,34 +157,43 @@ private:
         }
 
         /* --- M1 direct dispatch (Task path only) ------------------------ */
-        /* A successful direct path consumes the event's single counted
-           reference in-place. On a lost cross-thread race the direct attempt
-           leaves that reference held and ownership passes to the staging path
-           below, which must NOT re-increment. The event is handed by pointer
-           (zero-copy); nothing is copied or reclaimed between paths. */
-        bool direct_ref_held = false;
+        /* The allocation reference transfers directly to the successful
+           dispatch or, after a lost race, to the staging path below. */
         if (!from_isr
             && ao->direct_eligible()
-            && breaker_.direct_allowed(target))
+            && target_breaker.direct_allowed(target))
         {
             /* dispatch_direct() owns the acquire internally with a RunningDirect
                state (distinct from RunningDispatcher, so C5 monitoring can tell
                the two paths apart). */
             if (AoRunState::Idle == ao->lease().state()) {
-                event_ref_inc(e);
-                direct_ref_held = true;
                 pal_.enter_direct();
+                const uint64_t t0 = pal_.monotonic_ns();
                 const bool taken = ao->dispatch_direct(*e);
+                const uint64_t elapsed = pal_.monotonic_ns() - t0;
                 pal_.leave_direct();
                 if (taken) {
-                    /* direct completed: the fetched reference was consumed */
+                    if (elapsed > ao->rtc_budget_ns()) {
+                        target_breaker.on_direct_timeout();
+                    } else {
+                        target_breaker.on_rtc_ok();
+                    }
+                    /* A queued event may already be retained by the Dispatcher
+                       after losing this AO's lease. Publish the wake only after
+                       dispatch_direct() released RunningDirect. The pending
+                       acquire load plus the Dispatcher's arm-then-CAS retry
+                       closes the release-before-wait window without polling. */
+                    if ((ao->pending().load() > 0U)
+                        && staging_.request_dispatcher_wake()) {
+                        pal_.signal_dispatcher_from_task();
+                    }
+                    /* direct completed: consume the allocation reference */
                     event_gc(e);
-                    direct_ref_held = false;
                     monitor_.record_disposition(SubmitDisposition::Direct);
                     return {SubmitDisposition::Direct, 0U};
                 }
-                /* Lost the direct race: keep the counted reference for the
-                   staging path and fall through. Do NOT reclaim the block. */
+                /* Lost the direct race: transfer the allocation reference to
+                   staging below. Do NOT reclaim the block. */
                 monitor_.record_lease_contention(target);
             }
             else {
@@ -154,30 +203,27 @@ private:
         }
 
         /* --- staging (queued) ------------------------------------------- */
-        if (!now_init) {
+        const PriorityClass priority_class = ao->priority_class();
+        if (!now_init && PriorityClass::Low == priority_class) {
             now_ns = pal_.monotonic_ns();
             now_init = true;
         }
-        if (!direct_ref_held) {
-            event_ref_inc(e);
-        }
-        ao->pending().increment();
-        if (!staging_.enqueue(target, e, ao->priority_class(), now_ns)) {
-            ao->pending().decrement();
-            /* The event is dropped: reclaim it whether its counted ref was
-               taken by the direct attempt (direct_ref_held) or just now. */
+        PendingCounter& pending = ao->pending();
+        pending.increment();
+        if (!staging_.enqueue(target, e, priority_class, now_ns)) {
+            pending.decrement();
+            /* The event is dropped: consume the allocation reference. */
             event_gc(e);
             monitor_.record_overflow();
+            target_breaker.on_overflow();
             monitor_.record_disposition(SubmitDisposition::RejectedFull);
             return {SubmitDisposition::RejectedFull, 0U};
         }
 
-        /* Wake the Dispatcher only while it is idle. While it is actively
-           draining it picks this event up in the same batch; the draining flag
-           plus the Dispatcher's re-check-before-sleep close the missed-wakeup
-           window. Removes the per-submit condvar/semaphore signal that was the
-           #1 single-core hot cost in the flame profile. */
-        if (!staging_.dispatcher_active()) {
+        /* Coalesce wakeups behind one latch. Queue publication happens before
+           this acq_rel exchange; once the Dispatcher arms its wait, exactly the
+           first producer owns the PAL signal. */
+        if (staging_.request_dispatcher_wake()) {
             if (!from_isr) {
                 pal_.signal_dispatcher_from_task();
             }
@@ -186,14 +232,14 @@ private:
             }
         }
         monitor_.record_disposition(SubmitDisposition::Queued);
-        monitor_.record_pending(target, ao->pending().load());
+        monitor_.record_pending(target, pending.load());
         return {SubmitDisposition::Queued, 0U};
     }
 
     StagingT&          staging_;
     RegistryT&         registry_;
     MonitorT&          monitor_;
-    BreakerT&          breaker_;
+    BreakerRouterT&    breaker_;
     PalT&              pal_;
     const PolicyOps*   policy_ops_;
     void*              policy_ctx_;

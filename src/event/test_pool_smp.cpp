@@ -207,9 +207,8 @@ COACT_TEST(smp_mp_alloc_single_reclaimer_stress)
                 const std::uint32_t serial = next_serial.fetch_add(1U,
                                                                    std::memory_order_relaxed);
                 write_probe(e, serial);
-                // Hold the event (ref 1) BEFORE it becomes visible to the
-                // reclaimer: the producer must never touch it after the push.
-                coact::event_ref_inc(e);
+                // Transfer the allocation reference before the producer stops
+                // touching the event.
                 if (!inbox.push(e, serial)) {
                     failures.fetch_add(1, std::memory_order_relaxed);
                     // a duplicate was detected; still release so the pool drains
@@ -290,7 +289,6 @@ COACT_TEST(smp_reclaim_all_after_stress)
                     continue;
                 }
                 write_probe(e, next_serial.fetch_add(1U, std::memory_order_relaxed));
-                coact::event_ref_inc(e);          // hold before visible to reclaimer
                 inbox.push(e, probe_of(e)->serial);
             }
         });

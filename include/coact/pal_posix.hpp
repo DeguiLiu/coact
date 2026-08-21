@@ -61,6 +61,9 @@ public:
     // Block up to timeout_ms for a dispatcher signal (0 = wait forever).
     void wait_dispatcher(uint32_t timeout_ms) noexcept;
     void signal_dispatcher_from_task() noexcept;
+    // Host-side ISR simulation only: acquires a pthread mutex and may block.
+    // Callers must be normal pthread contexts, not POSIX signal handlers or
+    // strict non-blocking ISR paths.
     void signal_dispatcher_from_isr() noexcept;
 
     void start_dispatcher(ThreadEntry entry, void* context) noexcept;
@@ -71,7 +74,7 @@ public:
     void enter_direct() noexcept;
     void leave_direct() noexcept;
 
-    // SMP POSIX backend: lock-free bounded multi-producer single-consumer.
+    // POSIX backend: ready-set bounded MPSC; requires lock-free 64-bit atomics.
     template <typename T, uint16_t Cap>
     using QueueBackend = coact::BoundedMpscQueue<T, Cap>;
 

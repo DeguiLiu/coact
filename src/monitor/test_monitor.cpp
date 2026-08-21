@@ -2,13 +2,17 @@
 // SPDX-License-Identifier: MIT
 #include "coact/monitor.hpp"
 
+#include <atomic>
 #include <cstdint>
+#include <memory>
+#include <thread>
 
 #include "test/test_harness.hpp"
 
 namespace {
 
 using coact::Breaker;
+using coact::BreakerBank;
 using coact::BreakerLevel;
 using coact::DefaultConfig;
 using coact::kInvalidTarget;
@@ -20,6 +24,15 @@ using coact::TargetId;
 
 constexpr TargetId kSlowAo(1U);
 constexpr TargetId kOtherAo(2U);
+
+struct DefaultBreaker final : Breaker<> {
+    DefaultBreaker() noexcept : Breaker<>(DefaultConfig{}) {}
+};
+
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+              "Breaker state requires lock-free 32-bit atomics");
+static_assert(sizeof(Breaker<>) <= 8U,
+              "Breaker mutable state must fit in one packed 32-bit word");
 
 // Drive a breaker into Recovering via the L1 -> cooldown -> low-water path.
 void drive_to_recovering(Breaker<>& b, const DefaultConfig& cfg) {
@@ -279,19 +292,54 @@ COACT_TEST(breaker_recovery_hysteresis_low_watermark) {
 
 COACT_TEST(breaker_direct_allowed_per_ao) {
     DefaultConfig cfg;
-    Breaker<> slow(cfg);
-    Breaker<> other(cfg);
+    BreakerBank<> breakers(cfg);
 
     // The offending AO's breaker enters L1 and revokes its direct...
-    slow.on_direct_timeout();
-    slow.on_direct_timeout();
-    slow.on_direct_timeout();
-    REQUIRE_EQ(slow.level(), BreakerLevel::BrokenL1);
-    CHECK(!slow.direct_allowed(kSlowAo));
+    breakers.on_direct_timeout(kSlowAo);
+    breakers.on_direct_timeout(kSlowAo);
+    breakers.on_direct_timeout(kSlowAo);
+    REQUIRE_EQ(breakers.level(kSlowAo), BreakerLevel::BrokenL1);
+    CHECK(!breakers.direct_allowed(kSlowAo));
 
     // ...while another AO's breaker stays Normal and keeps its direct.
-    CHECK_EQ(other.level(), BreakerLevel::Normal);
-    CHECK(other.direct_allowed(kOtherAo));
+    CHECK_EQ(breakers.level(kOtherAo), BreakerLevel::Normal);
+    CHECK(breakers.direct_allowed(kOtherAo));
+}
+
+COACT_TEST(breaker_bank_global_watchdog_is_explicit_broadcast) {
+    BreakerBank<> breakers(DefaultConfig{});
+
+    breakers.broadcast_watchdog();
+
+    CHECK_EQ(breakers.level(kSlowAo), BreakerLevel::Safe);
+    CHECK_EQ(breakers.level(kOtherAo), BreakerLevel::Safe);
+}
+
+COACT_TEST(breaker_bank_invalid_targets_are_fail_safe) {
+    BreakerBank<> breakers(DefaultConfig{});
+    constexpr TargetId kOutOfRange(
+        static_cast<uint8_t>(DefaultConfig::kMaxAo + 1U));
+
+    const auto exercise_invalid_target = [&breakers](TargetId target) {
+        breakers.on_direct_timeout(target);
+        breakers.on_dispatcher_rtc_timeout(target);
+        breakers.on_overflow(target);
+        breakers.on_dispatch_cycle(target);
+        breakers.on_probe_success(target);
+        breakers.on_probe_failure(target);
+        breakers.on_rtc_ok(target);
+
+        CHECK_EQ(breakers.level(target), BreakerLevel::Safe);
+        CHECK(!breakers.direct_allowed(target));
+        CHECK(breakers.drop_non_critical(target));
+        CHECK(breakers.safe_events_only(target));
+    };
+
+    exercise_invalid_target(kInvalidTarget);
+    exercise_invalid_target(kOutOfRange);
+
+    CHECK_EQ(breakers.level(kSlowAo), BreakerLevel::Normal);
+    CHECK(breakers.direct_allowed(kSlowAo));
 }
 
 COACT_TEST(breaker_l2_drops_non_critical_keeps_safety) {
@@ -312,6 +360,39 @@ COACT_TEST(breaker_safe_allows_only_safety_events) {
     CHECK(b.safe_events_only());
     CHECK(b.drop_non_critical());
     CHECK(!b.direct_allowed(kSlowAo));
+}
+
+COACT_TEST(breaker_concurrent_safe_and_overflow_stays_safe) {
+    constexpr uint32_t kRounds = 20000U;
+    std::unique_ptr<DefaultBreaker[]> breakers(new DefaultBreaker[kRounds]);
+    std::atomic<uint32_t> round{0U};
+    std::atomic<uint32_t> completed{0U};
+
+    std::thread watchdog([&]() {
+        for (uint32_t i = 0U; i < kRounds; ++i) {
+            while (round.load(std::memory_order_acquire) <= i) {
+            }
+            breakers[i].on_watchdog();
+            completed.fetch_add(1U, std::memory_order_release);
+        }
+    });
+    std::thread overflow([&]() {
+        for (uint32_t i = 0U; i < kRounds; ++i) {
+            while (round.load(std::memory_order_acquire) <= i) {
+            }
+            breakers[i].on_overflow();
+            completed.fetch_add(1U, std::memory_order_release);
+        }
+    });
+
+    for (uint32_t i = 0U; i < kRounds; ++i) {
+        round.store(i + 1U, std::memory_order_release);
+        while (completed.load(std::memory_order_acquire) < ((i + 1U) * 2U)) {
+        }
+        CHECK_EQ(breakers[i].level(), BreakerLevel::Safe);
+    }
+    watchdog.join();
+    overflow.join();
 }
 
 // ---------------------------------------------------------------------------

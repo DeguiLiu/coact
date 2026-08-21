@@ -9,8 +9,8 @@
 // ahead of the priority order. Both ideas follow design 10 (M3/M5: staged
 // partitioning, batching, watermark feedback and low-priority aging) from
 // design_coact_zh.md; the reference-counted Ownership of each slot is left to
-// the coordinator/dispatcher - staging only stores an already-inc'ed Event*,
-// it never calls event_ref_inc/event_gc nor allocates.
+// the coordinator/dispatcher - staging only stores the reference transferred
+// by the coordinator; it never changes reference counts nor allocates.
 //
 // Queue backend is a template-template parameter (BoundedMpscQueue for SMP or
 // SingleCoreCriticalRing for a single core); it is instantiated once per
@@ -54,21 +54,21 @@ inline Partition partition_from_class(PriorityClass cls) noexcept
 }
 
 // ---------------------------------------------------------------------------
-// One buffered event. The wrapped Event* is already ref-inc'ed by the
-// producer; the consumer (dispatcher) is responsible for event_gc after it
-// finishes dispatch. enqueue_ns drives the Low aging deadline for batch
-// ordering (unsigned wrap-safe comparison).
+// One buffered event. The wrapped Event* carries the allocation reference
+// transferred by the producer; the consumer (dispatcher) is responsible for
+// event_gc after it finishes dispatch. enqueue_ns drives the Low aging
+// deadline for batch ordering (unsigned wrap-safe comparison).
 // ---------------------------------------------------------------------------
 struct StagingSlot {
     TargetId target;
-    Event* event;           // already-inc'ed reference; dispatcher event_gc
+    Event* event;           // transferred owned reference; dispatcher event_gc
     uint64_t enqueue_ns;    // publish time, used for Low aging
 };
 
 // ---------------------------------------------------------------------------
 // Pure batch-order selection (no queue storage, fully testable). Inputs are
-// the per-partition sizes plus the aging signal; the output is the next
-// partition a dequeue should serve.
+// the per-partition published-head counts plus the aging signal; the output is
+// the next partition a dequeue should serve.
 //
 // Ordering (design 10.3/10.4):
 //   1. If Low is non-empty and has aged past LowMaxWaitMs, force-serve Low.
@@ -119,15 +119,20 @@ public:
 // CriticalSection is used only by the SingleCoreCriticalRing backend; the
 // Mpsc backend ignores it (it is default-constructible).
 //
-// Lifetime note: enqueue stores an already-ref-inc'ed Event* and never changes
-// the reference count; dequeue hands ownership of the slot's Event* back to
-// the consumer. The dispatcher must event_gc each dequeued slot.
+// Lifetime note: enqueue stores a transferred Event* reference and never
+// changes its count; dequeue hands ownership of that reference to the
+// consumer. The dispatcher must event_gc each dequeued slot.
 // ---------------------------------------------------------------------------
 template <typename Config,
           template <typename, uint16_t> class QueueBackend>
 class Staging {
 public:
     using ConfigType = Config;
+
+    static_assert(std::atomic<bool>::is_always_lock_free,
+                  "Dispatcher wake latch requires lock-free atomic<bool>");
+    static_assert(std::atomic<uint32_t>::is_always_lock_free,
+                  "Submission admission requires lock-free atomic<uint32_t>");
     using HighQueue = QueueBackend<StagingSlot, Config::kHighCapacity>;
     using NormalQueue = QueueBackend<StagingSlot, Config::kNormalCapacity>;
     using LowQueue = QueueBackend<StagingSlot, Config::kLowCapacity>;
@@ -149,14 +154,7 @@ public:
         StagingSlot slot{target, e, now_ns};
 
         if (cls == PriorityClass::Low) {
-            const bool was_empty = (low_q_.size() == 0U);
-            if (!low_q_.try_push(std::move(slot))) {
-                return false;
-            }
-            if (was_empty) {
-                low_head_arrival_ns_.store(now_ns, std::memory_order_relaxed);
-            }
-            return true;
+            return low_q_.try_push(std::move(slot));
         }
 
         if (cls == PriorityClass::Normal) {
@@ -181,12 +179,20 @@ public:
         now_ns_ = now_ns;
         now_valid_ = true;
 
+        /* A Writing MPSC cell counts toward shutdown occupancy before it
+           publishes its payload, so `size() > 0` does not imply try_pop()
+           succeeds. Refuse a dequeue early unless some partition has a Ready
+           cell, otherwise the caller would loop while every cell is Writing. */
+        if (!any_ready()) {
+            return false;
+        }
+
         Partition part;
         const uint16_t bmax = static_cast<uint16_t>(Config::kBatchSizeMax);
         if (!selector_.select(part,
-                              size(Partition::High),
-                              size(Partition::Normal),
-                              size(Partition::Low),
+                              ready_count(Partition::High),
+                              ready_count(Partition::Normal),
+                              ready_count(Partition::Low),
                               aging_expired(),
                               batch_used_,
                               bmax)) {
@@ -203,9 +209,6 @@ public:
             break;
         case Partition::Low:
             ok = low_q_.try_pop(out);
-            if (low_q_.size() == 0U) {
-                low_head_arrival_ns_.store(0U, std::memory_order_relaxed);   // Low drained
-            }
             break;
         default:
             ok = false;   // unreachable: explicit default
@@ -246,27 +249,60 @@ public:
         now_valid_ = true;
     }
 
-    /* ---- Dispatcher-activity flag --------------------------------------
-       Producers signal the Dispatcher only when it is idle; while it is
-       actively draining it picks up newly enqueued events in the same batch.
-       The Dispatcher clears the flag (release) immediately before sleeping,
-       AFTER a final queue re-check, so an enqueue that raced with the clear is
-       observed by the producer (which then signals) or by the re-check (which
-       then continues). Closing the missed-wakeup window this way removes the
-       per-submit condvar/semaphore wakeup (flame #1 on single-core). */
-    void mark_dispatcher_active() noexcept
+    /* ---- Coalesced Dispatcher wake latch -------------------------------
+       The latch starts set while the Dispatcher is active, suppressing
+       redundant signals. Immediately before an idle wait the Dispatcher clears
+       it with an acq_rel exchange, then re-checks Ready payloads. A producer
+       publishes first and sets the latch afterwards: if it observes false it
+       owns the wake signal; if it observes true, the Dispatcher's acquire side
+       observes the publication before deciding whether to sleep. */
+    void arm_dispatcher_wait() noexcept
     {
-        dispatcher_active_.store(true, std::memory_order_release);
+        wake_pending_.exchange(false, std::memory_order_acq_rel);
     }
 
-    void mark_dispatcher_idle() noexcept
+    bool request_dispatcher_wake() noexcept
     {
-        dispatcher_active_.store(false, std::memory_order_release);
+        return !wake_pending_.exchange(true, std::memory_order_acq_rel);
     }
 
-    bool dispatcher_active() const noexcept
+    // A submission lease linearizes Coordinator ingress with shutdown. Closing
+    // admission rejects new submissions, while already admitted producers keep
+    // their lease until direct dispatch or queue publication is complete.
+    bool acquire_submission() noexcept
     {
-        return dispatcher_active_.load(std::memory_order_acquire);
+        uint32_t state = admission_.load(std::memory_order_acquire);
+        for (;;) {
+            if (0U != (state & kAdmissionClosed)) {
+                return false;
+            }
+            if ((state & kAdmissionCountMask) == kAdmissionCountMask) {
+                return false;
+            }
+            if (admission_.compare_exchange_weak(
+                    state, state + 1U,
+                    std::memory_order_acq_rel, std::memory_order_acquire)) {
+                return true;
+            }
+        }
+    }
+
+    // Returns true exactly when this was the last accepted submission after
+    // admission closed, so its caller can wake a shutdown drain.
+    bool release_submission() noexcept
+    {
+        const uint32_t before = admission_.fetch_sub(1U, std::memory_order_acq_rel);
+        return (kAdmissionClosed | 1U) == before;
+    }
+
+    void close_admission() noexcept
+    {
+        admission_.fetch_or(kAdmissionClosed, std::memory_order_acq_rel);
+    }
+
+    bool submissions_idle() const noexcept
+    {
+        return 0U == (admission_.load(std::memory_order_acquire) & kAdmissionCountMask);
     }
 
     // True when at least one partition is non-empty (re-check before sleep).
@@ -275,6 +311,13 @@ public:
         return (0U != size(Partition::High))
             || (0U != size(Partition::Normal))
             || (0U != size(Partition::Low));
+    }
+
+    bool any_ready() const noexcept
+    {
+        return high_q_.has_ready()
+            || normal_q_.has_ready()
+            || low_q_.has_ready();
     }
 
     // Usage as a 0-100 percentage: used / capacity * 100. The dispatcher maps
@@ -327,6 +370,23 @@ public:
     }
 
 private:
+    static constexpr uint32_t kAdmissionClosed = 0x80000000U;
+    static constexpr uint32_t kAdmissionCountMask = ~kAdmissionClosed;
+
+    uint16_t ready_count(Partition p) const noexcept
+    {
+        switch (p) {
+        case Partition::High:
+            return high_q_.has_ready() ? 1U : 0U;
+        case Partition::Normal:
+            return normal_q_.has_ready() ? 1U : 0U;
+        case Partition::Low:
+            return low_q_.has_ready() ? 1U : 0U;
+        default:
+            return 0U;
+        }
+    }
+
     // True when the Low partition has an outstanding timeout: a low event has
     // been waiting at the Low head for at least LowMaxWaitMs (unsigned
     // wrap-safe comparison). Only meaningful while Low is non-empty.
@@ -344,8 +404,11 @@ private:
         }
         const uint64_t wait_ns =
             static_cast<uint64_t>(Config::kLowMaxWaitMs) * 1000000ULL;
-        const uint64_t arrival =
-            low_head_arrival_ns_.load(std::memory_order_relaxed);
+        StagingSlot head;
+        if (!low_q_.front(head)) {
+            return false;
+        }
+        const uint64_t arrival = head.enqueue_ns;
         if (now_ns_ < arrival) {
             return false;   // mid-batch arrival: now is stale before the Low came in
         }
@@ -358,8 +421,8 @@ private:
     LowQueue low_q_;
 
     BatchSelector selector_;
-    std::atomic<bool> dispatcher_active_{false};
-    std::atomic<uint64_t> low_head_arrival_ns_{0U};   // Low head publish time (relaxed)
+    std::atomic<bool> wake_pending_{true};
+    std::atomic<uint32_t> admission_{0U};
     uint64_t now_ns_ = 0U;                // cached aging clock base
     bool now_valid_ = false;
     uint8_t batch_used_ = 0U;

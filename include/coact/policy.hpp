@@ -124,13 +124,14 @@ private:
 // event_gc() it exactly once before the cell returns to Empty.
 //
 // State transitions (std::atomic, all compare_exchange on the strong path):
-//   Empty     --(try_publish)--> Published
+//   Empty     --(try_publish claim)--> Publishing --(pointer release)--> Published
 //   Published --(try_acquire_merge)--> Merging --(release_merge)--> Published
 //   Published --(take_owning)--> Consuming --(release_empty)--> Empty
 // Failed CAS returns false and never spins.
 // ---------------------------------------------------------------------------
 enum class MergeCellState : uint8_t {
     Empty,
+    Publishing,
     Published,
     Merging,
     Consuming
@@ -142,8 +143,8 @@ public:
     {
         target_ = target;
         signal_ = signal;
-        state_.store(MergeCellState::Empty, std::memory_order_relaxed);
         event_ = nullptr;
+        state_.store(MergeCellState::Empty, std::memory_order_relaxed);
     }
 
     TargetId target() const noexcept { return target_; }
@@ -160,11 +161,12 @@ public:
             return false;
         }
         MergeCellState expected = MergeCellState::Empty;
-        if (!state_.compare_exchange_strong(expected, MergeCellState::Published,
+        if (!state_.compare_exchange_strong(expected, MergeCellState::Publishing,
                                             std::memory_order_acq_rel)) {
             return false;
         }
-        event_ = e;  // relaxed: the acq_rel border orders the publish
+        event_ = e;
+        state_.store(MergeCellState::Published, std::memory_order_release);
         return true;
     }
 
@@ -206,9 +208,9 @@ public:
     void release_empty() noexcept
     {
         MergeCellState expected = MergeCellState::Consuming;
+        event_ = nullptr;
         state_.compare_exchange_strong(expected, MergeCellState::Empty,
                                        std::memory_order_release);
-        event_ = nullptr;
     }
 
 private:

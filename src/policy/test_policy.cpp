@@ -11,6 +11,7 @@
 #include "coact/config.hpp"
 #include "coact/event.hpp"
 #include "coact/policy.hpp"
+#include "coact/pool.hpp"
 
 #include "test/test_harness.hpp"
 
@@ -253,6 +254,32 @@ COACT_TEST(policy_mergecell_publish_merge_release)
     CHECK_EQ(cell.state(), MergeCellState::Empty);
 }
 
+COACT_TEST(policy_mergecell_merged_event_releases_allocated_reference)
+{
+    alignas(16) std::uint8_t storage[32U * 2U];
+    coact::EventPool<32U, 2U> pool;
+    pool.init(storage, sizeof(storage));
+    coact::Event* owned = pool.alloc(0x202U);
+    REQUIRE(owned != nullptr);
+    CHECK_EQ(owned->ref_ctr, 1U);
+
+    MergeCell cell;
+    cell.init(TargetId(2U), 0x202U);
+    CHECK(cell.try_publish(owned));
+    Event* queued = nullptr;
+    CHECK(cell.try_acquire_merge(queued));
+    Event incoming = make_static(0x203U);
+    CHECK(g_ops.merge(nullptr, *queued, incoming));
+    cell.release_merge();
+
+    Event* out = nullptr;
+    CHECK(cell.take_owning(out));
+    CHECK(out == owned);
+    coact::event_gc(out);
+    cell.release_empty();
+    CHECK_EQ(pool.used(), 0U);
+}
+
 COACT_TEST(policy_mergecell_publish_failure_when_occupied)
 {
     MergeCell cell;
@@ -402,6 +429,44 @@ COACT_TEST(policy_mergecell_concurrent_producers)
        reaching the merge CAS, so merge_wins == 0 is legal here. Deterministic
        merge behavior is covered by the single-threaded merge tests above. */
     (void)merge_wins;
+}
+
+COACT_TEST(policy_mergecell_published_event_is_visible_to_consumer)
+{
+    constexpr int kRounds = 100000;
+
+    MergeCell cell;
+    cell.init(TargetId(11U), 0xB00U);
+    Event owned_event = make_static(0xB00U);
+    std::atomic<bool> producer_done{false};
+    std::atomic<int> invalid_take{0};
+
+    std::thread consumer([&]() {
+        while (!producer_done.load(std::memory_order_acquire)
+               || cell.state() != MergeCellState::Empty) {
+            Event* out = nullptr;
+            if (cell.take_owning(out)) {
+                if (out != &owned_event) {
+                    invalid_take.fetch_add(1, std::memory_order_relaxed);
+                }
+                cell.release_empty();
+            }
+            else {
+                std::this_thread::yield();
+            }
+        }
+    });
+
+    for (int round = 0; round < kRounds; ++round) {
+        while (!cell.try_publish(&owned_event)) {
+            std::this_thread::yield();
+        }
+    }
+    producer_done.store(true, std::memory_order_release);
+    consumer.join();
+
+    CHECK_EQ(invalid_take.load(std::memory_order_relaxed), 0);
+    CHECK_EQ(cell.state(), MergeCellState::Empty);
 }
 
 // Double-consume guard: after release_empty the cell is Empty; a stale

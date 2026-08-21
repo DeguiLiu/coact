@@ -262,13 +262,17 @@ template <typename Layout, typename Payload, size_t PayloadAlign,
           size_t BlockSize, size_t BlockAlign = alignof(std::max_align_t)>
 inline constexpr bool event_layout_complies_v =
     std::is_standard_layout<Layout>::value &&
+    std::is_nothrow_default_constructible<Layout>::value &&
+    std::is_nothrow_default_constructible<Payload>::value &&
     layout_event_at_zero<Layout>() &&
     std::is_same<decltype(Layout::event), Event>::value &&
     (sizeof(Layout) <= BlockSize) &&
+    (sizeof(Payload) <= sizeof(Layout::payload)) &&
     (alignof(Layout) <= BlockAlign) &&
     (alignof(Layout) >= PayloadAlign) &&
     (alignof(Payload) <= PayloadAlign) &&
     layout_payload_aligned<Layout>(alignof(Payload)) &&
+    is_trivially_poolable_v<Layout> &&
     is_trivially_poolable_v<Payload>;
 
 }  // namespace detail
@@ -302,16 +306,19 @@ inline constexpr size_t event_block_payload_offset() noexcept
 }
 
 // Reference-count helpers (QP QF semantics, see contract 4.1). Call
-// event_ref_inc before every post (queue/direct) and event_gc after a
-// consumer finishes dispatch. The last gc (ref_ctr reaching 0) returns a
-// pool event to its original pool; static events (pool_id == 0) are never
-// touched.
+// event_ref_inc for every additional post and event_gc when an owner releases
+// its reference. The last gc (a decrement reaching 0) returns a pool event to
+// its original pool; static events (pool_id == 0) are never touched.
 inline void event_ref_inc(Event* e) noexcept
 {
     COACT_ASSERT(e != nullptr);
     if (e->pool_id != 0U) {
+        PoolRecord* const record = pool_record(e->pool_id);
+        COACT_ASSERT(record != nullptr);
+        const CriticalSection::Token token = record->cs.save(record->cs.ctx);
         COACT_ASSERT(e->ref_ctr < 0xFFU);
         ++e->ref_ctr;
+        record->cs.restore(record->cs.ctx, token);
     }
 }
 
@@ -321,13 +328,17 @@ inline void event_gc(Event* e) noexcept
     if (COACT_UNLIKELY(e->pool_id == 0U)) {
         return;  // static event: never recycled
     }
+    PoolRecord* const record = pool_record(e->pool_id);
+    COACT_ASSERT(record != nullptr);
+    const CriticalSection::Token token = record->cs.save(record->cs.ctx);
+    bool reclaim = false;
     if (COACT_LIKELY(e->ref_ctr > 0U)) {
         --e->ref_ctr;
+        reclaim = (e->ref_ctr == 0U);
     }
-    if (COACT_LIKELY(e->ref_ctr == 0U)) {
-        PoolRecord* rec = pool_record(e->pool_id);
-        COACT_ASSERT(rec != nullptr);
-        rec->reclaim(e);
+    record->cs.restore(record->cs.ctx, token);
+    if (COACT_LIKELY(reclaim)) {
+        record->reclaim(e);
     }
 }
 
@@ -362,6 +373,12 @@ public:
                   "EventPool capacity must fit the 16-bit free-list index");
     static_assert(BlockSize >= sizeof(Event),
                   "EventPool block must fit an Event");
+    static_assert(BlockAlign != 0U,
+                  "EventPool block alignment must be non-zero");
+    static_assert((BlockAlign & (BlockAlign - 1U)) == 0U,
+                  "EventPool block alignment must be a power of two");
+    static_assert(BlockAlign >= alignof(Event),
+                  "EventPool block alignment must cover Event alignment");
     static_assert(detail::pool_block_align<BlockAlign>(BlockSize) <= 0xFFFFU,
                   "aligned block stride must fit uint16_t");
 
@@ -374,9 +391,13 @@ public:
     // the platform critical-section hook, and register this pool. The injected
     // CriticalSection is the same hook the single-core queue backend uses:
     // RT-Thread maps it to irq mask, POSIX tests inject no-ops.
-    void init(void* storage, size_t bytes,
+    bool init(void* storage, size_t bytes,
               CriticalSection cs = detail::noop_cs()) noexcept
     {
+        if (pool_id_ != 0U || storage == nullptr || cs.save == nullptr ||
+            cs.restore == nullptr) {
+            return false;
+        }
         const size_t stride = detail::pool_block_align<BlockAlign>(BlockSize);
         const size_t align = BlockAlign;
 
@@ -385,14 +406,14 @@ public:
         const uintptr_t end = raw_base + bytes;
 
         size_t count = 0U;
-        if (storage != nullptr && end >= begin) {
+        if (end >= begin) {
             count = static_cast<size_t>(end - begin) / stride;
             if (count > Capacity) {
                 count = Capacity;
             }
         }
         if (count == 0U) {
-            return;  // storage too small: leave the pool empty
+            return false;
         }
         const uint32_t n = static_cast<uint32_t>(count);
 
@@ -418,7 +439,7 @@ public:
         record_.cs = cs;
 
         pool_id_ = register_pool(&record_);
-        COACT_ASSERT(pool_id_ != 0U);  // registry full: configuration error
+        return pool_id_ != 0U;
     }
 
     // Take a free block and begin the coact::Event lifetime via placement-new,
@@ -437,6 +458,23 @@ public:
     // A margin greater than or equal to capacity rejects every allocation.
     Event* alloc_with_margin(uint16_t signal, uint16_t margin) noexcept
     {
+        void* block = claim_raw_block(margin);
+        if (nullptr == block) {
+            return nullptr;
+        }
+        return ::new (block) Event{signal, pool_id_, 1U};
+    }
+
+private:
+    // Pop one fixed block and update pool accounting without starting any
+    // object lifetime. The public allocation entries construct the object that
+    // owns the claimed storage: Event for alloc, complete Layout for typed alloc.
+    void* claim_raw_block(uint16_t margin) noexcept
+    {
+        if (pool_id_ == 0U || record_.capacity == 0U || cs_.save == nullptr ||
+            cs_.restore == nullptr) {
+            return nullptr;
+        }
         uint32_t claimed = detail::pool_index_invalid;
         uint16_t used_after_claim = 0U;
 
@@ -514,29 +552,28 @@ public:
         }
 
         if (detail::pool_index_invalid != claimed) {
-            return ::new (reinterpret_cast<void*>(detail::pool_block_base(  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) uintptr_t block address -> void* (recorded allocator deviation)
-                             record_.base, claimed, record_.block_size)))
-                Event{signal, pool_id_, 0U};
+            return reinterpret_cast<void*>(detail::pool_block_base(  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) uintptr_t block address -> void* (recorded allocator deviation)
+                record_.base, claimed, record_.block_size));
         }
         return nullptr;
     }
 
+public:
+
     // Typed allocation over a composed event-block layout (design §7.2 /
-    // interfaces §5.3): claims a block (placement-news coact::Event + fields),
-    // then placement-news `Payload` into the layout's payload region with
-    // value-initialization (zero bytes - the nanopb `*_init_zero` semantics for
-    // a trivial POD). Returns a view over the block, or nullptr when the pool
-    // is exhausted (the caller distinguishes alloc failure from decode).
-    //
-    // The caller owns the meta region: it must placement-new the application
-    // meta before reading it, then run pb_decode over the constructed payload.
+    // interfaces §5.3): claims raw storage, placement-news the complete Layout
+    // with value-initialization, initializes its Event header, then starts the
+    // Payload lifetime in the layout's payload region. Returns nullptr when the
+    // pool is exhausted (the caller distinguishes alloc failure from decode).
     //
     // Compile-time contract enforced here (via detail::event_layout_complies_v):
     //   - Layout is standard-layout, first member exactly coact::Event (offset 0)
     //     - derived-event / down-cast views are rejected
     //   - sizeof(Layout) <= BlockSize and the pool stride covers alignof(Layout)
     //   - alignof(Payload) <= PayloadAlign and the payload region is aligned
-    //   - Payload is trivially copyable + trivially destructible
+    //   - Payload fits the layout's payload region
+    //   - Layout and Payload are nothrow default constructible, trivially
+    //     copyable and trivially destructible
     template <typename Layout, typename Payload, size_t PayloadAlign>
     Layout* alloc_typed(uint16_t signal) noexcept
     {
@@ -553,15 +590,18 @@ public:
                           Layout, Payload, PayloadAlign, BlockSize, BlockAlign>,
                       "coact: event-block layout violates the pool lifecycle "
                       "contract (standard-layout, exact coact::Event at offset "
-                      "0, fits BlockSize, alignment covered, trivial payload)");
-        Event* e = alloc_with_margin(signal, margin);
-        if (nullptr == e) {
+                      "0, fits BlockSize/payload region, alignment covered, "
+                      "nothrow construction and trivial copy/destruction)");
+        void* block = claim_raw_block(margin);
+        if (nullptr == block) {
             return nullptr;
         }
+        Layout* layout = ::new (block) Layout{};
+        layout->event = Event{signal, pool_id_, 1U};
         void* payload_slot = static_cast<std::byte*>(
-            static_cast<void*>(e)) + offsetof(Layout, payload);
+            block) + offsetof(Layout, payload);
         ::new (payload_slot) Payload{};
-        return static_cast<Layout*>(static_cast<void*>(e));
+        return layout;
     }
 
     uint16_t used() const noexcept
@@ -740,18 +780,21 @@ public:
         if (COACT_UNLIKELY(e->pool_id == 0U)) {
             return;  // static event: never recycled
         }
-        if (COACT_LIKELY(e->ref_ctr > 0U)) {
-            --e->ref_ctr;
-        }
-        if (COACT_UNLIKELY(e->ref_ctr != 0U)) {
-            return;  // a reference is still held: not yet recyclable
-        }
         PoolRecord* rec = pool_record(e->pool_id);
         COACT_ASSERT(rec != nullptr);
         if (nullptr == rec) {
             return;
         }
         const CriticalSection::Token tok = rec->cs.save(rec->cs.ctx);
+        bool reclaim = false;
+        if (COACT_LIKELY(e->ref_ctr > 0U)) {
+            --e->ref_ctr;
+            reclaim = (e->ref_ctr == 0U);
+        }
+        if (!reclaim) {
+            rec->cs.restore(rec->cs.ctx, tok);
+            return;
+        }
 
         const uintptr_t addr = reinterpret_cast<uintptr_t>(e);  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) object -> integer for block index (recorded allocator deviation)
         COACT_ASSERT(addr >= rec->base);

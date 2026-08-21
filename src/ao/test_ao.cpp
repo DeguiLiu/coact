@@ -314,8 +314,8 @@ COACT_TEST(ao_traits_injected_through_interface)
     CHECK(!base_b.direct_eligible());
     CHECK(base_b.isr_direct_safe());
 
-    CHECK_EQ(AoA::rtc_budget_ns(), coact::DefaultConfig::kRtcBudgetNs);
-    CHECK_EQ(AoB::rtc_budget_ns(), 5000ULL);
+    CHECK_EQ(base_a.rtc_budget_ns(), coact::DefaultConfig::kRtcBudgetNs);
+    CHECK_EQ(base_b.rtc_budget_ns(), 5000ULL);
 
     // lease()/pending() accessors are reachable through the erased base.
     CHECK(coact::AoRunState::Idle == base_a.lease().state());

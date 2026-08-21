@@ -45,7 +45,7 @@ AOs safely.
 | Target | Default queue backend | Synchronization | Note |
 |---|---|---|---|
 | **RT-Thread 5.2.x, single-core** (primary) | `SingleCoreCriticalRing` (irq-mask, no atomics) | `rt_hw_interrupt_disable/enable` | Cortex-M native 32-bit CAS, zero heap |
-| Linux host (compat) | `BoundedMpscQueue` (Vyukov) | native CAS | for dev / tests / SMP reference |
+| Linux host (compat) | `BoundedMpscQueue` (ready-set) | lock-free 64-bit atomics | for dev / tests / SMP reference |
 
 Choose the PAL: `coact/pal_rtthread.hpp` for RT-Thread, `coact/pal_posix.hpp`
 for host. The rest of the framework is identical.

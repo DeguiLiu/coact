@@ -247,11 +247,9 @@ static void write_folded(FILE* out, bool verbose)
 /* ============================ runners ============================ */
 
 // Produce into a pool/submit loop until stop is set. Waits on pool exhaustion.
+template <typename CoordinatorT>
 static void producer_loop(std::atomic<bool>& stop, coact::EventPool<kBlk, kCap>& pool,
-                          coact::DispatchCoordinator<coact::Staging<
-                              coact::DefaultConfig,
-                              coact::pal::Posix::QueueBackend>,
-                              coact::pal::Posix>& coord,
+                          CoordinatorT& coord,
                           coact::TargetId target, const coact::EventQos& qos)
 {
     while (!stop.load(std::memory_order_relaxed)) {
@@ -346,9 +344,8 @@ int main(int argc, char** argv)
 
     std::atomic<bool> stop{false};
     const coact::EventQos qos{false, false};
-    using CoordT = coact::DispatchCoordinator<coact::Staging<
-        coact::DefaultConfig, coact::pal::Posix::QueueBackend>,
-        coact::pal::Posix>;
+    using CoordT = coact::Runtime<coact::DefaultConfig,
+                                  coact::pal::Posix>::CoordinatorType;
     CoordT& coord = rt.coordinator();
 
     std::vector<std::thread> producers;

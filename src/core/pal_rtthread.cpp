@@ -39,7 +39,9 @@ RtThread::RtThread() noexcept
       state_(Lifecycle::kUninitialized),
       last_error_(InitError::kOk),
       dispatcher_stack_bytes_(4096U),
-      clock_ops_(tick_clock_ops())
+      clock_ops_(tick_clock_ops()),
+      ns_per_counter_(detail::exact_ns_per_counter(
+          static_cast<uint32_t>(RT_TICK_PER_SECOND)))
 {
 }
 
@@ -56,6 +58,10 @@ uint32_t RtThread::dispatcher_stack_bytes() const noexcept
 void RtThread::set_clock_ops(ClockOps ops) noexcept
 {
     clock_ops_ = ops;
+    ns_per_counter_ = detail::exact_ns_per_counter(ops.frequency_hz);
+    counter_epoch_ = 0U;
+    last_counter_ = 0U;
+    counter_seen_ = false;
 }
 
 CriticalToken RtThread::irq_save() noexcept
@@ -276,16 +282,41 @@ ExecutionContext RtThread::current_context() const noexcept
     return ctx;
 }
 
+uint64_t RtThread::read_extended_counter() const noexcept
+{
+    const uint8_t bits = clock_ops_.counter_bits;
+    if (bits == 0U || bits >= 64U) {
+        return clock_ops_.read_counter(clock_ops_.ctx);
+    }
+
+    RtThread* const self = const_cast<RtThread*>(this);
+    const CriticalToken token = self->irq_save();
+    const uint64_t modulus = uint64_t{1U} << bits;
+    const uint64_t counter = clock_ops_.read_counter(clock_ops_.ctx) & (modulus - 1U);
+    if (counter_seen_ && counter < last_counter_) {
+        counter_epoch_ += modulus;
+    }
+    last_counter_ = counter;
+    counter_seen_ = true;
+    const uint64_t extended = counter_epoch_ + counter;
+    self->irq_restore(token);
+    return extended;
+}
+
 uint64_t RtThread::monotonic_ns() const noexcept
 {
     const uint64_t hz = clock_ops_.frequency_hz;
     if (0U == hz) {
         return 0U;
     }
-    const uint64_t counter = clock_ops_.read_counter(clock_ops_.ctx);
-    /* 32-bit counter @ 10 MHz wraps at ~4.29e9 ticks -> product ~4.29e18,
-       which fits uint64; the caller extends the high word across wraps. */
-    return (counter * 1000000000ULL) / hz;
+    const uint64_t counter = read_extended_counter();
+    if (0U != ns_per_counter_) {
+        return counter * ns_per_counter_;
+    }
+    const uint64_t seconds = counter / hz;
+    const uint64_t remainder = counter % hz;
+    return (seconds * 1000000000ULL)
+         + ((remainder * 1000000000ULL) / hz);
 }
 
 uint64_t RtThread::clock_resolution_ns() const noexcept
@@ -299,17 +330,7 @@ void RtThread::wait_dispatcher(uint32_t timeout_ms) noexcept
     if (InitError::kOk != ensure_initialized()) {
         return;   /* never initialized: nothing to wait on */
     }
-    /* Convert ms -> ticks (ceiling). RT_TICK_PER_SECOND ticks per second. */
-    rt_int32_t ticks;
-    if (0U == timeout_ms) {
-        ticks = static_cast<rt_int32_t>(RT_WAITING_FOREVER);
-    }
-    else {
-        const uint64_t t = (static_cast<uint64_t>(timeout_ms)
-                            * RT_TICK_PER_SECOND + 999U) / 1000U;
-        ticks = (t > 0x7FFFFFFFU) ? 0x7FFFFFFF : static_cast<rt_int32_t>(t);
-    }
-    rt_sem_take(res_->wake_sem_obj, ticks);
+    rt_sem_take(res_->wake_sem_obj, detail::dispatcher_wait_ticks(timeout_ms));
 }
 
 void RtThread::signal_dispatcher_from_task() noexcept

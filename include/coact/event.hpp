@@ -15,13 +15,14 @@
 namespace coact {
 
 // Base of every dynamic event. pool_id == 0 marks a non-pool (static) event,
-// which event_gc() never recycles. ref_ctr is the reference count: 0 right
-// after alloc, +1 per post (event_ref_inc), -1 per consumer (event_gc);
-// reaching 0 returns the block to its pool.
+// which event_gc() never recycles. ref_ctr is the reference count: 1 right
+// after alloc for the caller's owning reference, +1 per additional post
+// (event_ref_inc), -1 per consumer or owner release (event_gc); reaching 0
+// returns the block to its pool.
 struct Event {
     uint16_t signal;
     uint8_t pool_id;   // 0 = static event; otherwise a 1-based registry index
-    uint8_t ref_ctr;   // 0 after alloc; +1 per post; 0 again => recycle
+    uint8_t ref_ctr;   // 1 after alloc; +1 per additional post; 0 => recycle
 };
 
 // Packing for the pool free-list head.

@@ -18,3 +18,47 @@ target_link_libraries(test_pool_lifecycle_neg PRIVATE coact_core)
 add_test(NAME test_pool_lifecycle_neg
          COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_lifecycle_neg)
 set_tests_properties(test_pool_lifecycle_neg PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_pool_meta_lifecycle_neg EXCLUDE_FROM_ALL STATIC
+            pool_meta_lifecycle_neg.cpp)
+target_link_libraries(test_pool_meta_lifecycle_neg PRIVATE coact_core)
+add_test(NAME test_pool_meta_lifecycle_neg
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_meta_lifecycle_neg)
+set_tests_properties(test_pool_meta_lifecycle_neg PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_pool_oversized_payload_neg EXCLUDE_FROM_ALL STATIC
+            pool_oversized_payload_neg.cpp)
+target_link_libraries(test_pool_oversized_payload_neg PRIVATE coact_core)
+add_test(NAME test_pool_oversized_payload_neg
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_oversized_payload_neg)
+set_tests_properties(test_pool_oversized_payload_neg PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_pool_payload_throwing_ctor_neg EXCLUDE_FROM_ALL STATIC
+            pool_default_ctor_neg.cpp)
+target_link_libraries(test_pool_payload_throwing_ctor_neg PRIVATE coact_core)
+add_test(NAME test_pool_payload_throwing_ctor_neg
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_payload_throwing_ctor_neg)
+set_tests_properties(test_pool_payload_throwing_ctor_neg PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_pool_layout_throwing_ctor_neg EXCLUDE_FROM_ALL STATIC
+            pool_default_ctor_neg.cpp)
+target_compile_definitions(test_pool_layout_throwing_ctor_neg PRIVATE
+                           COACT_TEST_LAYOUT_DEFAULT_CTOR=1)
+target_link_libraries(test_pool_layout_throwing_ctor_neg PRIVATE coact_core)
+add_test(NAME test_pool_layout_throwing_ctor_neg
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_layout_throwing_ctor_neg)
+set_tests_properties(test_pool_layout_throwing_ctor_neg PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_pool_zero_block_align_neg EXCLUDE_FROM_ALL STATIC
+            pool_zero_block_align_neg.cpp)
+target_link_libraries(test_pool_zero_block_align_neg PRIVATE coact_core)
+add_test(NAME test_pool_zero_block_align_neg
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_zero_block_align_neg)
+set_tests_properties(test_pool_zero_block_align_neg PROPERTIES WILL_FAIL TRUE)
+
+add_library(test_pool_small_block_align_neg EXCLUDE_FROM_ALL STATIC
+            pool_small_block_align_neg.cpp)
+target_link_libraries(test_pool_small_block_align_neg PRIVATE coact_core)
+add_test(NAME test_pool_small_block_align_neg
+         COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test_pool_small_block_align_neg)
+set_tests_properties(test_pool_small_block_align_neg PROPERTIES WILL_FAIL TRUE)

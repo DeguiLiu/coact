@@ -37,11 +37,11 @@
 | 维度 | coact `BoundedMpscQueue` | coact `SingleCoreCriticalRing` | newosp `AsyncBus` MPSC | newosp `SpscRingbuffer` |
 |---|---|---|---|---|
 | 并发模式 | MPSC | 单核，irq mask | MPSC | SPSC |
-| 算法 | Vyukov per-slot sequence，head CAS | irq 临界区内 head/tail | Vyukov per-slot sequence | wrap-around，power-of-2 |
+| 算法 | fixed-cell ready-set，Writing/Ready 状态 | irq 临界区内 head/tail | Vyukov per-slot sequence | wrap-around，power-of-2 |
 | 容量 | 编译期模板参数 | 编译期 | 宏 `OSP_BUS_QUEUE_DEPTH`，编译期 | 模板参数，编译期 |
 | 满处理 | `try_push` 返回 false | `try_push` 返回 false | 按优先级水位（60%/80%/99%）丢弃 | `Push` 返回 false |
 | 优先级 | 无（由 Staging 三分区实现） | 无 | 单队列内按 `MessagePriority` 水位 | 无 |
-| cache-line 隔离 | head/tail 各 64 字节 padding | n/a | bus.hpp 未见显式 padding | head/tail `PaddedIndex`，各 cache-line |
+| cache-line 隔离 | producer probe / publication ticket 各 64 字节 padding | n/a | bus.hpp 未见显式 padding | head/tail `PaddedIndex`，各 cache-line |
 
 **结论**：coact 把优先级管理提升到 **Staging 三分区**（High/Normal/Low 独立队列），比 newosp 在单队列内按水位丢弃更精细，Low aging 防饥饿；newosp `SpscRingbuffer` 的 `FakeTSO` 模式可按平台退化全 relaxed，适合单核裸机 SPSC。
 
@@ -70,7 +70,7 @@
 | 主动对象原语 | `Ao<Context, Hsm, Traits>` 明确类型，`ExecutionLease` CAS 保证单执行 | 无独立"主动对象"类型；`Application<Impl>` 最接近，每实例独立 SPSC 队列 + RTC 语义 |
 | 互斥保证 | `ExecutionLease::try_acquire` 原子 CAS（`Idle→RunningDirect/RunningDispatcher`），失败非阻塞 fallback staging | `node.hpp` 注释"Only ONE thread should call SpinOnce at a time"，无硬性原语保证 |
 | 直接调度 | `dispatch_direct`：producer 线程自己跑 HSM，bypass Dispatcher（M1 路径） | 无等价机制，消息必须进 bus ring |
-| Dispatcher | 单线程批处理，`begin_batch`/`mark_active`/`mark_idle`，missed-wakeup-safe | executor 驱动 `ProcessBatch` 循环，无明确 batch 语义 |
+| Dispatcher | 单线程批处理，`begin_batch` + `wake_pending_` 合并唤醒，missed-wakeup-safe | executor 驱动 `ProcessBatch` 循环，无明确 batch 语义 |
 
 ---
 
@@ -108,7 +108,7 @@
 ## 9. 并发内存序纪律
 
 两库均全程显式 memory_order，无 seq_cst 兜底。coact 额外：
-- `dispatcher_active_` release/acquire + Dispatcher 退出前 `any_buffered()` 再检查，文档化 missed-wakeup-safe 证明
+- `wake_pending_` acq_rel exchange 合并唤醒；Dispatcher 清 latch 后复查 Ready，producer publish 后仅在 false→true 时 signal，关闭 missed-wakeup 窗口
 - ReclaimBatcher：批内链写与 flush 的 head CAS 均在注入的 CriticalSection（SMP=spinlock，单核=irq mask）内完成，CAS 用 relaxed，串行性由 CS 提供，保证块 `next` 字段写入与并发 alloc 读互不交错
 
 newosp 额外：

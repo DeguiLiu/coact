@@ -4,6 +4,7 @@
 
 #include <cstdint>
 
+#include "coact/assert.hpp"
 #include "coact/config.hpp"
 #include "coact/event.hpp"
 
@@ -25,7 +26,8 @@ struct StateDef {
     int8_t parent;                 // parent state index; 0 is the root; -1 = no parent
     void (*entry)(Context&);       // entry action, may be null
     void (*exit)(Context&);        // exit action, may be null
-    const char* name;              // debug label; may be null (falls back to null)
+    const char* name = nullptr;    // debug label; may be null
+    int8_t initial_child = -1;     // direct initial child; -1 means this state is a leaf
 };
 
 template <typename Context>
@@ -60,9 +62,10 @@ public:
     const char* current_state_name() const noexcept;
 
 private:
+    void validate_topology() const noexcept;
     int8_t parent_of(int8_t state) const noexcept;
-    int8_t chain_depth(int8_t state) const noexcept;
-    int8_t ancestor_at_depth(int8_t state, int8_t depth) const noexcept;
+    uint16_t chain_depth(int8_t state) const noexcept;
+    int8_t ancestor_at_depth(int8_t state, uint16_t depth) const noexcept;
     int8_t find_lca(int8_t a, int8_t b) const noexcept;
     const TransitionDef<Context>* find_transition(
         Context& ctx, const Event& evt, int8_t source) const noexcept;
@@ -70,6 +73,7 @@ private:
                             const TransitionDef<Context>& tran) noexcept;
     void exit_to_lca(Context& ctx, int8_t lca) noexcept;
     void enter_path(Context& ctx, int8_t lca, int8_t target) noexcept;
+    int8_t enter_initial_descendants(Context& ctx, int8_t state) noexcept;
 
     const StateDef<Context>* states_;
     uint16_t num_states_;
@@ -95,17 +99,43 @@ Hsm<Context>::Hsm(const StateDef<Context>* states, uint16_t num_states,
       num_transitions_(num_transitions),
       initial_state_(initial_state),
       max_depth_(max_depth),
-      current_(-1) {}
+      current_(-1) {
+    validate_topology();
+}
+
+template <typename Context>
+void Hsm<Context>::validate_topology() const noexcept {
+    COACT_ASSERT(num_states_ <= 128U);
+    COACT_ASSERT((0U == num_states_) || (nullptr != states_));
+    for (uint16_t index = 0U; index < num_states_; ++index) {
+        COACT_ASSERT(states_[index].parent >= -1);
+        const int8_t child = states_[index].initial_child;
+        COACT_ASSERT(child >= -1);
+        if (child >= 0) {
+            COACT_ASSERT(static_cast<uint16_t>(child) < num_states_);
+            COACT_ASSERT(states_[child].parent == static_cast<int8_t>(index));
+        }
+        int8_t state = static_cast<int8_t>(index);
+        uint16_t hops = 0U;
+        while (state >= 0) {
+            COACT_ASSERT(static_cast<uint16_t>(state) < num_states_);
+            COACT_ASSERT(hops < num_states_);
+            state = states_[state].parent;
+            ++hops;
+        }
+    }
+}
 
 template <typename Context>
 void Hsm<Context>::init(Context& ctx, const Event& evt) noexcept {
     (void)evt;
-    if (initial_state_ < 0 || initial_state_ >= static_cast<int8_t>(num_states_)) {
+    if (initial_state_ < 0 ||
+        static_cast<uint16_t>(initial_state_) >= num_states_) {
         return;
     }
     // Enter along the parent chain from the root down to the initial state.
     enter_path(ctx, -1, initial_state_);
-    current_ = initial_state_;
+    current_ = enter_initial_descendants(ctx, initial_state_);
 }
 
 template <typename Context>
@@ -140,7 +170,7 @@ int8_t Hsm<Context>::current_state() const noexcept {
 
 template <typename Context>
 const char* Hsm<Context>::current_state_name() const noexcept {
-    if (current_ < 0 || current_ >= static_cast<int8_t>(num_states_)) {
+    if (current_ < 0 || static_cast<uint16_t>(current_) >= num_states_) {
         return nullptr;
     }
     return states_[current_].name;
@@ -152,8 +182,8 @@ int8_t Hsm<Context>::parent_of(int8_t state) const noexcept {
 }
 
 template <typename Context>
-int8_t Hsm<Context>::chain_depth(int8_t state) const noexcept {
-    int8_t depth = 0;
+uint16_t Hsm<Context>::chain_depth(int8_t state) const noexcept {
+    uint16_t depth = 0U;
     while (state >= 0) {
         ++depth;
         state = parent_of(state);
@@ -162,19 +192,19 @@ int8_t Hsm<Context>::chain_depth(int8_t state) const noexcept {
 }
 
 template <typename Context>
-int8_t Hsm<Context>::ancestor_at_depth(int8_t state, int8_t depth) const noexcept {
-    int8_t d = chain_depth(state);
-    while (d > depth) {
+int8_t Hsm<Context>::ancestor_at_depth(int8_t state, uint16_t depth) const noexcept {
+    uint16_t current_depth = chain_depth(state);
+    while (current_depth > depth) {
         state = parent_of(state);
-        --d;
+        --current_depth;
     }
     return state;
 }
 
 template <typename Context>
 int8_t Hsm<Context>::find_lca(int8_t a, int8_t b) const noexcept {
-    int8_t da = chain_depth(a);
-    int8_t db = chain_depth(b);
+    uint16_t da = chain_depth(a);
+    uint16_t db = chain_depth(b);
     while (da > db) {
         a = parent_of(a);
         --da;
@@ -238,19 +268,28 @@ void Hsm<Context>::execute_transition(
             if (states_[source].entry != nullptr) {
                 states_[source].entry(ctx);
             }
-            current_ = source;
+            current_ = enter_initial_descendants(ctx, source);
             break;
         }
 
         case TransitionKind::External: {
             const int8_t target = tran.target;
-            const int8_t lca = find_lca(current_, target);
+            COACT_ASSERT(target >= 0);
+            COACT_ASSERT(static_cast<uint16_t>(target) < num_states_);
+            int8_t lca = find_lca(source, target);
+            // External semantics leave and re-enter a boundary state when it
+            // is the declared source or the target. Use its parent as the
+            // path boundary so composite source -> descendant transitions do
+            // not degrade into local transitions.
+            if ((lca == source) || (lca == target)) {
+                lca = parent_of(lca);
+            }
             exit_to_lca(ctx, lca);              // exit up to (not including) LCA
             if (tran.action != nullptr) {
                 tran.action(ctx, evt);
             }
             enter_path(ctx, lca, target);       // enter LCA's child down to target
-            current_ = target;
+            current_ = enter_initial_descendants(ctx, target);
             break;
         }
 
@@ -272,14 +311,34 @@ void Hsm<Context>::exit_to_lca(Context& ctx, int8_t lca) noexcept {
 
 template <typename Context>
 void Hsm<Context>::enter_path(Context& ctx, int8_t lca, int8_t target) noexcept {
-    const int8_t lca_depth = chain_depth(lca);     // chain_depth(-1) == 0
-    const int8_t target_depth = chain_depth(target);
-    for (int8_t level = lca_depth + 1; level <= target_depth; ++level) {
+    const uint16_t lca_depth = chain_depth(lca);     // chain_depth(-1) == 0
+    const uint16_t target_depth = chain_depth(target);
+    for (uint16_t level = lca_depth + 1U; level <= target_depth; ++level) {
         const int8_t state = ancestor_at_depth(target, level);
         if (states_[state].entry != nullptr) {
             states_[state].entry(ctx);
         }
     }
+}
+
+template <typename Context>
+int8_t Hsm<Context>::enter_initial_descendants(Context& ctx, int8_t state) noexcept {
+    uint8_t hops = 0U;
+    for (;;) {
+        const int8_t child = states_[state].initial_child;
+        if (child < 0) {
+            break;
+        }
+        COACT_ASSERT(static_cast<uint16_t>(child) < num_states_);
+        COACT_ASSERT(states_[child].parent == state);
+        COACT_ASSERT(hops < max_depth_);
+        if (states_[child].entry != nullptr) {
+            states_[child].entry(ctx);
+        }
+        state = child;
+        ++hops;
+    }
+    return state;
 }
 
 }  // namespace coact

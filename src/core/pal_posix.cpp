@@ -30,7 +30,7 @@ Posix::Posix() noexcept
 
 void Posix::set_tick_hz(uint32_t hz) noexcept
 {
-    if (0U == hz) {
+    if (0U == hz || hz > 1000000000U) {
         tick_hz_ = 0U;
         ns_per_tick_ = 0U;
         return;
@@ -128,12 +128,16 @@ void Posix::signal_dispatcher_from_task() noexcept
     pthread_mutex_unlock(&mutex_);
 }
 
+// Thread-simulated ISR only: pthread_mutex_lock / pthread_cond_signal are not
+// async-signal-safe, so this must never run from a real POSIX signal handler.
+// Host tests drive "ISR" producers from ordinary threads under the mutex, which
+// is the sole supported use (P2-11).
 void Posix::signal_dispatcher_from_isr() noexcept
 {
-    /* ISR path: condvar signal without lock (POSIX allows it; the mutex is
-       never held inside a signal handler in this implementation). */
+    pthread_mutex_lock(&mutex_);
     wake_ = true;
     pthread_cond_signal(&cond_);
+    pthread_mutex_unlock(&mutex_);
 }
 
 void* Posix::dispatcher_entry(void* arg) noexcept

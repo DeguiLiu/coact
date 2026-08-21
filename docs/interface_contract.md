@@ -74,7 +74,7 @@ ctest --test-dir build_<mod> -R test_<mod> --output-on-failure
 struct Event {
     uint16_t signal;
     uint8_t pool_id;   // 0 = 非池（静态）事件；否则为全局池注册表索引
-    uint8_t ref_ctr;   // 引用计数：alloc 时 0，每次投递 inc，消费者 gc dec，归 0 回池
+    uint8_t ref_ctr;   // 引用计数：alloc 时 1，额外所有权 inc，gc dec，归 0 回池
 };
 
 // 全局池注册表（受控单例，QP QF_pool_ 式）。初始化后按 pool_id 定位。
@@ -89,26 +89,35 @@ struct PoolRecord {
 PoolRecord* pool_record(uint8_t pool_id) noexcept;    // 未知池返回 nullptr
 uint8_t register_pool(PoolRecord* rec) noexcept;      // 分配 pool_id，注册表满返回 0
 
-// 事件池：定容、块内空闲链表（复用 newosp mem_pool.hpp 思路）、alloc 后 ref_ctr==0
-template <uint16_t BlockSize, uint16_t Capacity>
+// 事件池：定容、块内空闲链表（复用 newosp mem_pool.hpp 思路）、alloc 后 ref_ctr==1
+template <uint16_t BlockSize, uint16_t Capacity,
+          class Profile = HostSmpProfile,
+          size_t BlockAlign = alignof(std::max_align_t)>
 class EventPool {
 public:
-    void init(void* storage, size_t bytes) noexcept;  // 初始化并注册到全局池注册表
-    Event* alloc(uint16_t signal) noexcept;           // 满返回 nullptr；ref_ctr=0
+    bool init(void* storage, size_t bytes,
+              CriticalSection cs = detail::noop_cs()) noexcept;
+    Event* alloc(uint16_t signal) noexcept;           // 满返回 nullptr；ref_ctr=1
+    template <typename Layout, typename Payload, size_t PayloadAlign>
+    Layout* alloc_typed(uint16_t signal) noexcept;
     uint16_t used() const noexcept;
     uint16_t high_watermark() const noexcept;
 };
 
 // 引用计数管理（QP QF 语义）：
-//   投递（入队/direct）前 event_ref_inc(e)；消费者 dispatch 完成后 event_gc(e)
+//   submit 接管 allocation reference；额外投递/自留所有权前 event_ref_inc(e)
 //   event_gc 递减 ref_ctr；归 0 且 pool_id!=0 → 经 pool_record(pool_id) 回原池
 void event_ref_inc(Event* e) noexcept;
 void event_gc(Event* e) noexcept;
 ```
 
+`EventPool::init()` 成功初始化外部存储并完成池注册时返回 `true`；重复初始化、空存储、无效临界区、可用空间不足一个对齐块或注册表已满时返回 `false`，失败实例保持不可分配。`BlockAlign` 必须非零、为 2 的幂且不小于 `alignof(Event)`；对齐后的块步长必须能由 `uint16_t` 表示。
+
+`alloc_typed()` 先取得原始块，再以 placement new 值初始化完整 `Layout`，写入 `Event` 头，最后在 `Layout::payload` 区域以 placement new 启动 `Payload` 生命周期。`Layout` 与 `Payload` 必须可无异常默认构造、可平凡复制且可平凡析构；`Layout` 必须是标准布局且首成员为精确的 `Event`。编译期同时校验 `sizeof(Layout) <= BlockSize`、`sizeof(Payload) <= sizeof(Layout::payload)`、`alignof(Layout) <= BlockAlign` 以及 payload 声明对齐、实际偏移和类型对齐一致。池不提供析构回调，因此回收时不执行应用类型析构函数。
+
 生命周期规则（QP QF 语义，设计 §6.4 改为 refCtr 生命周期）：
-- `alloc` 返回 `ref_ctr==0` 的池事件；生产者持有并配置 payload/signal；
-- 每次投递前 `event_ref_inc(e)`——支持多播：同一事件可投递给多个 AO，各 inc 一次；
+- `alloc` 返回 `ref_ctr==1` 的池事件；生产者持有并配置 payload/signal；
+- 首次 submit 转移 allocation reference，不额外 inc；多播或自留所有权时，每增加一个 owner 先 `event_ref_inc(e)`；
 - 每个消费者在 `dispatch` 完成后 `event_gc(e)`（dec）；最后一个消费者把 `ref_ctr` 减到 0 时经 `pool_id` 回原池；
 - 静态事件（`pool_id==0`）`event_gc` 无操作；
 - 生产者投递后必须放弃访问，除非先 `event_ref_inc` 自留引用；
@@ -126,6 +135,8 @@ struct StateDef {
     int8_t parent;                 // 0 表示根
     void (*entry)(Context&);
     void (*exit)(Context&);
+    const char* name;
+    int8_t initial_child = -1;     // 复合态的直接初始子态
 };
 
 template <typename Context>
@@ -150,7 +161,7 @@ public:
 };
 ```
 
-派发语义（设计 §7.3）：从当前叶按 `(state, signal)` 查转换，未命中沿 parent 上溯（最多 max_depth 次）；guard 失败继续同 source/signal 的下一条；internal 只 action；self 退叶、action、重进叶；external 从实际叶退到 LCA、action、再外层到内层进目标。运行期父链与 LCA，不依赖 constexpr。函数指针不写 noexcept。
+派发语义（设计 §7.3）：从当前叶按 `(state, signal)` 查转换，未命中沿 parent 上溯（最多 max_depth 次）；guard 失败继续同 source/signal 的下一条；internal 只 action；self 从实际叶退出到 source（含 source）、action、重进 source 并沿 `initial_child` 下降；external 按声明 source/target 的外部边界退出、action、进入 target，再沿 `initial_child` 下降。`TransitionKind` 不提供 Local：当 external 的 target 是 source 或当前叶的复合祖先时，仍须退出并重入该边界复合态，再进入其 `initial_child`；不得退化为不退出复合态的 local 转换。运行期父链与 LCA，不依赖 constexpr。函数指针不写 noexcept。
 
 ### 4.3 queue（src/queue）— 见设计 §10.2
 
@@ -158,11 +169,13 @@ public:
 
 ```cpp
 template <typename T, uint16_t Capacity>
-class BoundedMpscQueue {           // SMP：每槽 sequence，生产者 release/消费者 acquire
+class BoundedMpscQueue {           // POSIX：fixed-cell ready-set，生产者 release/消费者 acquire
 public:
     bool try_push(const T& v) noexcept;
     bool try_push(T&& v) noexcept;
     bool try_pop(T& out) noexcept;
+    bool front(T& out) const noexcept;
+    bool has_ready() const noexcept;
     uint16_t size() const noexcept;
     static constexpr uint16_t capacity() noexcept;
 };
@@ -174,12 +187,15 @@ public:
     explicit SingleCoreCriticalRing(CriticalSection cs) noexcept;
     bool try_push(T&& v) noexcept;
     bool try_pop(T& out) noexcept;
+    bool front(T& out) const noexcept;
+    bool has_ready() const noexcept;
     uint16_t size() const noexcept;
 };
 ```
 
-- `CriticalSection` 由本模块定义：`{Token (*save)(); void (*restore)(Token);}`，token 为 `uintptr_t`。单核后端 push/pop 全程包在 save/restore 内，不调用用户代码。
-- `BoundedMpscQueue` 的 sequence 头/尾按 cache line 隔离（可 `alignas(64)`）；push 满返回 false，pop 空返回 false；测试必须覆盖多生产者并发不丢失、不重复、不越界（可断言序号审计）。
+- `CriticalSection` 由本模块定义：`{Token (*save)(); void (*restore)(Token);}`，token 为 `uintptr_t`。单核后端 push/pop 全程包在 save/restore 内；`T` 的移动/析构也位于临界区，因此 MCU payload 必须是有界、`noexcept` 的轻量类型。
+- `BoundedMpscQueue` 使用 fixed-cell ready-set：producer 独占 Writing cell，完成构造后 release 为 Ready；consumer 在固定 cell 集中选当前可见 publication ticket 最小项。Writing 只占一格，不阻塞其他 Ready 项；单线程 push 保持 FIFO，但并发 push 不承诺 per-producer FIFO（后发布且已完成的项可绕过仍在构造的项）。该后端要求无锁 64-bit 原子；push 满返回 false，pop 无 Ready 项返回 false；测试必须覆盖多生产者并发不丢失、不重复、不越界（可断言序号审计）。队列析构要求生产者和消费者已停止，并在析构时销毁仍存活的非平凡 payload。
+- `front()` 只复制当前 Ready 队首，不消费元素；它与 `try_pop()` 同属单消费者操作，禁止并发调用。`size()` 包含 Writing 与 Ready，用于停止排空判断；`has_ready()` 只表示当前存在可安全读取的 Ready payload。
 
 ### 4.4 monitor（src/monitor）— 见设计 §12
 
@@ -207,9 +223,26 @@ public:
     bool direct_allowed(TargetId ao) const noexcept;   // L1 撤销该 AO direct
     bool healthy_window_passed() const noexcept;
 };
+
+template <typename Config = DefaultConfig>
+class BreakerBank {
+public:
+    void on_direct_timeout(TargetId target) noexcept;
+    void on_dispatcher_rtc_timeout(TargetId target) noexcept;
+    void on_overflow(TargetId target) noexcept;
+    BreakerLevel level(TargetId target) const noexcept;
+    bool direct_allowed(TargetId target) const noexcept;
+    bool drop_non_critical(TargetId target) const noexcept;
+    bool safe_events_only(TargetId target) const noexcept;
+    void broadcast_watermark(uint8_t percent) noexcept;
+    void broadcast_watchdog() noexcept;
+    void broadcast_dispatch_cycle() noexcept;
+};
 ```
 
 - 冷却默认 `kCooldownCycles`，恢复需冷却完成 + 低水位 + 无违规窗口 + 连续健康探针（设计 §12.4）。
+- `Runtime` 使用固定容量的 per-AO `BreakerBank`；目标级超时、RTC 超时、overflow 与探针只更新对应 `TargetId`，系统水位、watchdog、调度周期及外部恢复通过显式 `broadcast_*` 广播。
+- `BreakerBank` 对 `kInvalidTarget` 或超出 `Config::kMaxAo` 的目标采用 fail-safe：写操作忽略，`level()` 返回 `Safe`，`direct_allowed()` 返回 `false`，`drop_non_critical()` 与 `safe_events_only()` 返回 `true`，不得越界访问内部数组。
 - `Monitor`：每 AO 与全局固定计数器（direct/dispatcher 时长、C1-C7 拒绝、分区水位、disposition 计数、lease 竞争、pending max）+ watchdog 心跳。热路径只写计数，不格式化。SMP 允许每 CPU 计数后汇总。
 
 ### 4.5 policy（src/policy）— 见设计 §11
@@ -252,6 +285,7 @@ public:
 class AoBase {
 public:
     virtual void dispatch(const Event& event) noexcept = 0;
+    virtual bool try_dispatch_queued(const Event& event) noexcept = 0;
     virtual LogicalPrio logical_prio() const noexcept = 0;
     virtual PriorityClass priority_class() const noexcept = 0;
     virtual bool direct_eligible() const noexcept = 0;
@@ -271,7 +305,7 @@ class Ao : public AoBase {
 
 `AoRegistry`：定长 `AoBase*` 数组（**非拥有**，仅保存指针，永不 `delete`），`TargetId`（1 基）映射，`lookup(TargetId)`、`bind(AoBase*, prio)` 校验优先级唯一。AO 一律静态/自动存储期，生命周期由自身存储期决定，禁止经 `AoBase*` 释放。
 
-**执行权（已定型，S6 落地）**：`Ao<Context,Hsm,Traits>::dispatch()` 是**自包含单执行权**单元——内部自行 `try_acquire(RunningDispatcher)→hsm_.dispatch→release`，非法重入（state 非 Idle）时 `COACT_ASSERT`。core 的 Dispatcher **不要**预占 lease 后再调 `dispatch()`（会二次获取失败触发 assert）；只用 `lease()/state()` 做 C5 监控窥视、`pending()` 做 C4/C6 窥视。Direct 路径如需单执行权，由协调者持有 lease 并直接驱动 AO；Dispatcher 路径一律走 `Ao::dispatch()`。
+**执行权（已定型，S6 落地）**：`Ao<Context,Hsm,Traits>::dispatch()` 是保留非法重入硬断言的自包含单执行权入口；`try_dispatch_queued()` 使用同一 `Idle→RunningDispatcher` CAS，但 lease 忙时返回 false 且不触碰事件。Dispatcher 只走 `try_dispatch_queued()`：失败时最多保留一个 deferred slot，不减 pending、不释放事件；睡眠前执行 `arm→CAS 重试→PAL wait`，direct 在释放 `RunningDirect` 后若 `pending>0` 请求唤醒。stop drain 对 deferred slot 与队列事件分别恰减一次 pending、恰释放一次引用。Direct 路径走 `dispatch_direct()`，同样由 AO 内部持有 lease。
 
 ### 4.7 staging（src/staging）— 见设计 §10
 
@@ -280,7 +314,7 @@ class Ao : public AoBase {
 ```cpp
 struct StagingSlot {
     TargetId target;
-    Event* event;          // 已 inc 的引用；dispatcher 消费完成后 event_gc
+    Event* event;          // 已转移的 owned reference；dispatcher 完成后 event_gc
     uint64_t enqueue_ns;   // 用于 Low 老化计时
 };
 
@@ -303,9 +337,9 @@ public:
 
 ### 4.8 core（集成）— 见设计 §4/8/13
 
-- `dispatcher.hpp`：`Dispatcher`（单线程循环：drain → 取 batch → 对每事件取得 AO lease → dispatch → 释放；空闲调用 PAL wait）。
+- `dispatcher.hpp`：`Dispatcher`（单线程循环：drain → 取 batch → dispatch → 释放；空闲时以 acq_rel exchange 清 wake latch、复查 Ready，再调用 PAL wait）。producer 在 publish 后以 exchange 置 latch，仅 false→true 的首个 producer 发 signal，避免 missed wakeup 与逐 submit 唤醒。停止先关闭 submission admission，再等待已获 lease 的 submit 完成；Writing 槽计入 buffered，排空只读取 Ready 槽，最后一个 submission lease 负责唤醒停止等待。
 - `coordinator.hpp`：`DispatchCoordinator::submit_from_task(TargetId, Event*, const EventQos&) / try_submit_from_isr(...)`（事件引用由 submit 管理：入队则保留 ref 待 dispatcher gc，direct 则处理完 gc，drop/merge 则立即 gc），按设计 §8.1 管线：M4 → M1(C1-C7) → direct | merge | staging。统一入口，禁止绕过。
-- `runtime.hpp`：`Runtime<Config, Pal, Profile=HostSmpProfile>`：`initialize/bind/start/run_dispatcher/stop` 三阶段初始化。`start()` 返回 `bool`，只有 PAL 报告 Dispatcher 启动成功才进入 started（design §7.5）；第三模板参把板级 profile 传导到 Dispatcher（单核 `RttSingleCoreProfile`→immediate reclaim，Host 默认→batched）。
+- `runtime.hpp`：`Runtime<Config, Pal, Profile=HostSmpProfile>`：`initialize/bind/start/run_dispatcher/stop` 三阶段初始化。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；通用 `DispatchCoordinator`/`Dispatcher` 模板默认仍为单 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。默认 16 AO 的 Bank 约占 128 B，相对单 `Breaker` 净增约 120 B。`start()` 返回 `bool`，只有 PAL 报告 Dispatcher 启动成功才进入 started（design §7.5）；第三模板参把板级 profile 传导到 Dispatcher（单核 `RttSingleCoreProfile`→immediate reclaim，Host 默认→batched）。
 - `src/core/pal_posix.cpp`：`pal::Posix`（pthread、condvar、`clock_gettime(CLOCK_MONOTONIC)`）。
 - `src/core/pal_rtthread.cpp`：`pal::RtThread` 静态 PAL（design §7.5）：调用方提供 `RtThreadResources<StackBytes,ContextSlots>`（静态 TCB、对齐 stack、两个静态 semaphore、固定 `ContextSlot[N]`）；构造函数只保存引用；显式 `initialize()` 返回 `pal::InitError`；`start_dispatcher()` 返回 `pal::InitError`（只有 `rt_thread_startup()==RT_EOK` 才 kOk）；一次初始化/一次启动/一次停止，stop 后再次 start 返回 `kAlreadyStarted`；固定 ContextSlot 表不占 `user_data`、启动后冻结、Dispatcher 经静态 TCB 比较识别；`ClockOps` 静态函数表注入时钟（默认 RT tick，真机绑 10 MHz TIM）。
 - `src/core/test_integration.cpp`：端到端测试（生产→submit→dispatcher→AO action）。

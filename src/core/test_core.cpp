@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <thread>
 
 #include "coact/ao.hpp"
 #include "coact/assert.hpp"
@@ -80,6 +81,11 @@ alignas(8) static unsigned char g_pool_storage[kBlk * (kCap + 1U)];
 
 /* Convenience: build a Staging + no-op CriticalSection. */
 using StageT = coact::Staging<coact::DefaultConfig, coact::pal::Posix::QueueBackend>;
+using BreakerBankT = coact::BreakerBank<coact::DefaultConfig>;
+using BankCoordinatorT = coact::DispatchCoordinator<
+    StageT, coact::pal::Posix, BreakerBankT>;
+using BankDispatcherT = coact::Dispatcher<
+    StageT, coact::pal::Posix, coact::HostSmpProfile, BreakerBankT>;
 static StageT make_staging()
 {
     return StageT(coact::CriticalSection{nullptr,
@@ -88,6 +94,34 @@ static StageT make_staging()
 }
 
 namespace {
+
+COACT_TEST(posix_pal_isr_signal_wakes_waiter)
+{
+    coact::pal::Posix pal;
+    std::atomic<bool> waiter_started{false};
+    std::atomic<bool> waiter_returned{false};
+
+    std::thread waiter([&pal, &waiter_started, &waiter_returned]() {
+        waiter_started.store(true, std::memory_order_release);
+        pal.wait_dispatcher(0U);
+        waiter_returned.store(true, std::memory_order_release);
+    });
+
+    while (!waiter_started.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+    pal.signal_dispatcher_from_isr();
+    waiter.join();
+
+    CHECK(waiter_returned.load(std::memory_order_acquire));
+}
+
+COACT_TEST(posix_pal_rejects_subnanosecond_tick_quantization)
+{
+    coact::pal::Posix pal;
+    pal.set_tick_hz(1000000001U);
+    CHECK(pal.monotonic_ns() > 0U);
+}
 
 /* =========================================================================
  * coordinator_unknown_target_rejected
@@ -99,8 +133,8 @@ COACT_TEST(coordinator_unknown_target_rejected)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker<>     breaker(cfg);
-    coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
+    coact::BreakerBank<> breaker(cfg);
+    BankCoordinatorT coord(
         staging, registry, monitor, breaker, pal);
 
     coact::Event e = static_evt(1U);
@@ -120,8 +154,8 @@ COACT_TEST(coordinator_normal_submit_queued)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker<>     breaker(cfg);
-    coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
+    coact::BreakerBank<> breaker(cfg);
+    BankCoordinatorT coord(
         staging, registry, monitor, breaker, pal);
 
     AoStage ao(kStates, 3U, kTrans, 2U, 1, 4U);
@@ -134,7 +168,7 @@ COACT_TEST(coordinator_normal_submit_queued)
 
     coact::Event* e = pool.alloc(1U);
     REQUIRE(e != nullptr);
-    CHECK_EQ(0U, e->ref_ctr);
+    CHECK_EQ(1U, e->ref_ctr);
 
     coact::EventQos qos{false, false};
     coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), e, qos);
@@ -153,8 +187,8 @@ COACT_TEST(coordinator_direct_dispatch)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker<>     breaker(cfg);
-    coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
+    coact::BreakerBank<> breaker(cfg);
+    BankCoordinatorT coord(
         staging, registry, monitor, breaker, pal);
 
     AoDirect ao(kStates, 3U, kTrans, 2U, 1, 4U);
@@ -171,6 +205,43 @@ COACT_TEST(coordinator_direct_dispatch)
              static_cast<int>(ao.lease().state()));
 }
 
+COACT_TEST(coordinator_dynamic_unknown_and_direct_consume_allocated_reference)
+{
+    coact::pal::Posix pal;
+    StageT staging = make_staging();
+    coact::AoRegistry registry;
+    coact::Monitor monitor;
+    coact::DefaultConfig cfg;
+    coact::BreakerBank<> breaker(cfg);
+    BankCoordinatorT coord(
+        staging, registry, monitor, breaker, pal);
+    TestPool pool;
+    pool.init(g_pool_storage, sizeof(g_pool_storage));
+    const coact::EventQos qos{false, false};
+
+    coact::Event* rejected = pool.alloc(1U);
+    REQUIRE(rejected != nullptr);
+    CHECK_EQ(rejected->ref_ctr, 1U);
+    const coact::SubmitResult rejected_result = coord.submit_from_task(
+        coact::TargetId(1U), rejected, qos);
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::RejectedState),
+             static_cast<int>(rejected_result.disposition));
+    CHECK_EQ(pool.used(), 0U);
+
+    AoDirect ao(kStates, 3U, kTrans, 2U, 1, 4U);
+    coact::Event init_e = static_evt(0U);
+    ao.init(init_e);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+    coact::Event* direct = pool.alloc(1U);
+    REQUIRE(direct != nullptr);
+    CHECK_EQ(direct->ref_ctr, 1U);
+    const coact::SubmitResult direct_result = coord.submit_from_task(
+        coact::TargetId(1U), direct, qos);
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
+             static_cast<int>(direct_result.disposition));
+    CHECK_EQ(pool.used(), 0U);
+}
+
 /* =========================================================================
  * dispatcher_stop_exits_run
  * ========================================================================= */
@@ -181,11 +252,11 @@ COACT_TEST(dispatcher_stop_exits_run)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker<>     breaker(cfg);
-    coact::Dispatcher<StageT, coact::pal::Posix> dispatcher(
+    coact::BreakerBank<> breaker(cfg);
+    BankDispatcherT dispatcher(
         staging, registry, monitor, breaker, pal);
 
-    struct Wrap { coact::Dispatcher<StageT, coact::pal::Posix>* d; };
+    struct Wrap { BankDispatcherT* d; };
     Wrap w{&dispatcher};
     pal.start_dispatcher([](void* c) {
         static_cast<Wrap*>(c)->d->run();
@@ -245,9 +316,9 @@ COACT_TEST(coordinator_breaker_l2_drops_noncritical)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker<>     breaker(cfg);
-    breaker.on_overflow();   /* drive to L2 */
-    coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
+    coact::BreakerBank<> breaker(cfg);
+    breaker.on_overflow(coact::TargetId(1U));   /* drive target 1 to L2 */
+    BankCoordinatorT coord(
         staging, registry, monitor, breaker, pal);
 
     AoStage ao(kStates, 3U, kTrans, 2U, 1, 4U);

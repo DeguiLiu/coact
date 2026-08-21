@@ -77,6 +77,9 @@ private:
 // ---------------------------------------------------------------------------
 class PendingCounter {
 public:
+    static_assert(std::atomic<uint16_t>::is_always_lock_free,
+                  "PendingCounter requires lock-free atomic<uint16_t>");
+
     PendingCounter() noexcept : count_(0U) {}
 
     uint16_t load() const noexcept
@@ -106,6 +109,13 @@ private:
 // ---------------------------------------------------------------------------
 class AoBase {
 public:
+    // Per-AO RTC dispatch budget is stored at the base (not a vtable entry):
+    // the dispatcher/coordinator measure dispatch elapsed time against it to
+    // report over-budget calls. Non-virtual so the type-erased path pays no
+    // extra vtable slot (review P2-12).
+    explicit AoBase(uint64_t rtc_budget_ns) noexcept
+        : rtc_budget_ns_(rtc_budget_ns) {}
+
     // Type-erased interface: dispatch/priority accessors stay virtual so the
     // registry and dispatcher can drive any concrete Ao through AoBase*.
     //
@@ -121,6 +131,11 @@ public:
     // Dispatcher-path RTC dispatch (M5): acquires RunningDispatcher lease
     // internally, runs the HSM to completion, releases. Re-entry is a fault.
     virtual void dispatch(const Event& event) noexcept = 0;
+
+    // Dispatcher-owned queued event: atomically attempts the same lease without
+    // asserting when a concurrent direct RTC owns it. A false result leaves the
+    // event untouched so the Dispatcher can retain its ownership and wait.
+    virtual bool try_dispatch_queued(const Event& event) noexcept = 0;
 
     // Direct-path RTC dispatch (M1): acquires RunningDirect lease internally,
     // runs the HSM to completion, releases. Kept distinct so Monitor/C5
@@ -142,11 +157,16 @@ public:
     virtual ExecutionLease& lease() noexcept = 0;
     virtual PendingCounter& pending() noexcept = 0;
 
+    uint64_t rtc_budget_ns() const noexcept { return rtc_budget_ns_; }
+
 protected:
     // Non-owning base: see class comment for the destructor policy. Derived
     // Ao (and the static-lifetime Runtime) destroy objects at their own
     // storage duration; no one may `delete` through this pointer.
     ~AoBase() noexcept = default;
+
+private:
+    uint64_t rtc_budget_ns_;
 };
 
 // ---------------------------------------------------------------------------
@@ -254,7 +274,8 @@ public:
     Ao(const StateDef<Context>* states, uint16_t num_states,
        const TransitionDef<Context>* transitions, uint16_t num_transitions,
        int8_t initial_state, uint8_t max_depth) noexcept
-        : context_{},
+        : AoBase(Traits::kRtcBudgetNs),
+          context_{},
           hsm_(states, num_states, transitions, num_transitions,
                initial_state, max_depth)
     {
@@ -273,15 +294,21 @@ public:
 
     void dispatch(const Event& event) noexcept override
     {
-        const AoRunState held = AoRunState::RunningDispatcher;
-        if (lease_.try_acquire(held)) {
-            hsm_.dispatch(context_, event);
-            lease_.release(held);
-        }
-        else {
+        if (!try_dispatch_queued(event)) {
             // Re-entry while the AO is already running: upper-layer violation.
             COACT_ASSERT(0 == 1);
         }
+    }
+
+    bool try_dispatch_queued(const Event& event) noexcept override
+    {
+        const AoRunState held = AoRunState::RunningDispatcher;
+        const bool taken = lease_.try_acquire(held);
+        if (taken) {
+            hsm_.dispatch(context_, event);
+            lease_.release(held);
+        }
+        return taken;
     }
 
     bool dispatch_direct(const Event& event) noexcept override
@@ -327,13 +354,6 @@ public:
     const char* hsm_current_state_name() const noexcept
     {
         return hsm_.current_state_name();
-    }
-
-    // Compile-time RTC budget injected by Traits (monitor reads it for the
-    // Dispatcher timeout path).
-    static constexpr uint64_t rtc_budget_ns() noexcept
-    {
-        return Traits::kRtcBudgetNs;
     }
 
 private:

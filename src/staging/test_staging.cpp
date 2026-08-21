@@ -59,6 +59,164 @@ struct BatchCfg {
 };
 using BatchStaging = coact::Staging<BatchCfg, coact::BoundedMpscQueue>;
 
+// Deliberately use distinct capacities so this probe can hold High in a
+// reserved-but-unpublished state while Normal is published. It models the
+// observable BoundedMpscQueue contract from mpsc_reserved_slot_is_not_ready.
+struct ReservationGapCfg {
+    enum : uint8_t {
+        kBatchSizeMax = 4U
+    };
+    enum : uint16_t {
+        kHighCapacity = 2U,
+        kNormalCapacity = 3U,
+        kLowCapacity = 4U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 1U
+    };
+};
+
+template <typename T, uint16_t Capacity>
+class ReservationGapQueue {
+public:
+    explicit ReservationGapQueue(coact::CriticalSection) noexcept {}
+
+    bool try_push(T&& value) noexcept
+    {
+        if (occupied_) {
+            return false;
+        }
+        slot_ = std::move(value);
+        occupied_ = true;
+        published_ = (Capacity != ReservationGapCfg::kHighCapacity);
+        return true;
+    }
+
+    bool try_pop(T& out) noexcept
+    {
+        if (!published_) {
+            return false;
+        }
+        out = std::move(slot_);
+        occupied_ = false;
+        published_ = false;
+        return true;
+    }
+
+    bool front(T& out) const noexcept
+    {
+        if (!published_) {
+            return false;
+        }
+        out = slot_;
+        return true;
+    }
+
+    uint16_t size() const noexcept
+    {
+        return occupied_ ? 1U : 0U;
+    }
+
+    bool has_ready() const noexcept
+    {
+        return published_;
+    }
+
+private:
+    T slot_{};
+    bool occupied_ = false;
+    bool published_ = false;
+};
+
+using ReservationGapStaging = coact::Staging<ReservationGapCfg, ReservationGapQueue>;
+
+// Models the narrow but real MPSC window between release-publishing a Low slot
+// and returning to Staging::enqueue(). The producer is held in try_push() only
+// after its Low slot becomes observable, so the consumer can verify that aging
+// follows the published head payload rather than a later side-band update.
+struct PublishedLowGapCfg {
+    enum : uint8_t {
+        kBatchSizeMax = 4U
+    };
+    enum : uint16_t {
+        kHighCapacity = 2U,
+        kNormalCapacity = 3U,
+        kLowCapacity = 4U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 1U
+    };
+};
+
+struct PublishedLowGapControl {
+    std::atomic<bool> low_published{false};
+    std::atomic<bool> release_producer{false};
+};
+
+PublishedLowGapControl g_published_low_gap;
+
+template <typename T, uint16_t Capacity>
+class PublishedLowGapQueue {
+public:
+    explicit PublishedLowGapQueue(coact::CriticalSection) noexcept {}
+
+    bool try_push(T&& value) noexcept
+    {
+        if (occupied_.exchange(true, std::memory_order_acq_rel)) {
+            return false;
+        }
+        slot_ = std::move(value);
+        published_.store(true, std::memory_order_release);
+
+        if constexpr (Capacity == PublishedLowGapCfg::kLowCapacity) {
+            g_published_low_gap.low_published.store(true, std::memory_order_release);
+            while (!g_published_low_gap.release_producer.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        }
+        return true;
+    }
+
+    bool try_pop(T& out) noexcept
+    {
+        if (!published_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        out = std::move(slot_);
+        published_.store(false, std::memory_order_release);
+        occupied_.store(false, std::memory_order_release);
+        return true;
+    }
+
+    bool front(T& out) const noexcept
+    {
+        if (!published_.load(std::memory_order_acquire)) {
+            return false;
+        }
+        out = slot_;
+        return true;
+    }
+
+    uint16_t size() const noexcept
+    {
+        return occupied_.load(std::memory_order_acquire) ? 1U : 0U;
+    }
+
+    bool has_ready() const noexcept
+    {
+        return published_.load(std::memory_order_acquire);
+    }
+
+private:
+    T slot_{};
+    std::atomic<bool> occupied_{false};
+    std::atomic<bool> published_{false};
+};
+
+using PublishedLowGapStaging = coact::Staging<PublishedLowGapCfg, PublishedLowGapQueue>;
+
 // Counting critical-section pair used to drive the single-core ring backend.
 struct CsCounters {
     int saves = 0;
@@ -107,7 +265,7 @@ template <typename S>
 int drain_all(S& s, std::vector<coact::StagingSlot>& out)
 {
     out.clear();
-    coact::StagingSlot slot;
+    coact::StagingSlot slot{};
     int n = 0;
     s.begin_batch();
     while (s.dequeue_one(slot)) {
@@ -191,6 +349,20 @@ COACT_TEST(staging_high_priority_first)
     CHECK_EQ(out[0].event->signal, 12U);   // High first
     CHECK_EQ(out[1].event->signal, 11U);   // then Normal
     CHECK_EQ(out[2].event->signal, 10U);   // then Low
+}
+
+// A reserved High head must not block a published Normal head. Queue size is
+// admission/watermark state; dispatch selection must use published readiness.
+COACT_TEST(staging_skips_unpublished_high_for_ready_normal)
+{
+    ReservationGapStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(13), coact::PriorityClass::High, 0U));
+    CHECK(s.enqueue(coact::TargetId(2U), seq_event(14), coact::PriorityClass::Normal, 0U));
+
+    coact::StagingSlot slot{};
+    s.begin_batch();
+    CHECK(s.dequeue_one(slot));
+    CHECK_EQ(slot.event->signal, 14U);
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +454,36 @@ COACT_TEST(staging_low_late_arrival_no_underflow_force_serve)
     CHECK_EQ(slot.event->signal, 40U);
 }
 
+// A Low producer can publish its slot before Staging::enqueue() records the
+// side-band low_head_arrival_ns_. During that window, aging must use the
+// published slot's enqueue_ns: a newly published Low must not preempt High.
+COACT_TEST(staging_low_aging_uses_published_head_timestamp)
+{
+    g_published_low_gap.low_published.store(false, std::memory_order_relaxed);
+    g_published_low_gap.release_producer.store(false, std::memory_order_relaxed);
+
+    PublishedLowGapStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    std::thread low_producer([&s]() {
+        CHECK(s.enqueue(coact::TargetId(3U), seq_event(50), coact::PriorityClass::Low,
+                        1000000U));
+    });
+
+    while (!g_published_low_gap.low_published.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(51), coact::PriorityClass::High,
+                    1000000U));
+
+    coact::StagingSlot slot{};
+    s.begin_batch();
+    CHECK(s.dequeue_one(slot, 1000020U));
+    CHECK_EQ(slot.event->signal, 51U);
+
+    g_published_low_gap.release_producer.store(true, std::memory_order_release);
+    low_producer.join();
+}
+
 COACT_TEST(staging_batch_size_max)
 {
     BatchStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
@@ -351,13 +553,13 @@ COACT_TEST(staging_never_changes_refcount)
 
     coact::Event* e = pool.alloc(0x1234U);
     REQUIRE(e != nullptr);
-    REQUIRE_EQ(e->ref_ctr, 0U);
+    REQUIRE_EQ(e->ref_ctr, 1U);
 
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
     REQUIRE(s.enqueue(coact::TargetId(9U), e, coact::PriorityClass::High, 0U));
 
     // enqueue must not have inc'ed the event
-    CHECK_EQ(e->ref_ctr, 0U);
+    CHECK_EQ(e->ref_ctr, 1U);
 
     coact::StagingSlot slot;
     s.begin_batch();
@@ -365,10 +567,9 @@ COACT_TEST(staging_never_changes_refcount)
     // staging hands the same pointer back without touching the count
     CHECK_EQ(slot.event, e);
     CHECK_EQ(slot.target, coact::TargetId(9U));
-    CHECK_EQ(e->ref_ctr, 0U);
+    CHECK_EQ(e->ref_ctr, 1U);
 
-    // the consumer does the lifecycle: one inc for the post, one gc to recycle
-    coact::event_ref_inc(e);
+    // the consumer releases the allocation reference it received.
     CHECK_EQ(e->ref_ctr, 1U);
     coact::event_gc(e);
     // after gc the block is back on the free list (memory reused as link), so

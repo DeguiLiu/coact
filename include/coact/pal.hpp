@@ -60,14 +60,14 @@ struct CriticalToken {
 
 // High-resolution monotonic counter injected into a PAL as a static function
 // table (design §7.5): no inheritance / virtual dispatch. read_counter()
-// returns raw counter ticks; frequency_hz converts them to nanoseconds. A
-// target binds a 10 MHz TIM counter (32-bit wrap extended across reads); host
-// tests inject a mock to check conversion / monotonicity / timeouts. RT tick
-// remains the source for Dispatcher blocking waits and long deadlines only.
+// returns raw counter ticks; frequency_hz converts them to nanoseconds.
+// counter_bits declares a wrapping hardware width (64 means already extended).
+// RT tick remains the source for Dispatcher blocking waits and long deadlines.
 struct ClockOps {
     uint64_t (*read_counter)(void* ctx);
     uint32_t frequency_hz;
     void* ctx;
+    uint8_t counter_bits = 64U;
 };
 }  // namespace pal
 

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 
+#include "coact/assert.hpp"
 #include "coact/config.hpp"
 
 namespace coact {
@@ -43,6 +45,7 @@ enum class BreakerLevel : uint8_t {
 template <typename Config = DefaultConfig>
 class Breaker {
 public:
+    Breaker() noexcept : Breaker(Config{}) {}
     explicit Breaker(const Config& cfg) noexcept;
 
     // -- Event inputs (contract 4.4) --
@@ -82,114 +85,187 @@ public:
     static constexpr uint8_t kHealthyWindowsRequired = 3U;
 
 private:
-    void reset_metrics() noexcept;
-    void enter_l1() noexcept;
-    void enter_l2() noexcept;
-    void enter_safe() noexcept;
-    void enter_recovering() noexcept;
+    struct State {
+        BreakerLevel level;
+        uint16_t cooldown_remaining;
+        uint8_t direct_timeout_consec;
+        uint8_t rtc_timeout_consec;
+        uint8_t high_watermark_consec;
+        uint8_t low_watermark_consec;
+        uint8_t healthy_window_count;
+        bool probe_success;
+    };
+
+    static constexpr uint32_t kLevelShift = 0U;
+    static constexpr uint32_t kCooldownShift = 3U;
+    static constexpr uint32_t kDirectTimeoutShift = 19U;
+    static constexpr uint32_t kRtcTimeoutShift = 21U;
+    static constexpr uint32_t kHighWatermarkShift = 23U;
+    static constexpr uint32_t kLowWatermarkShift = 25U;
+    static constexpr uint32_t kHealthyWindowShift = 27U;
+    static constexpr uint32_t kProbeSuccessShift = 29U;
+    static constexpr uint32_t kLevelMask = 0x7U;
+    static constexpr uint32_t kCooldownMask = 0xffffU;
+    static constexpr uint32_t kCounterMask = 0x3U;
+
+    static uint32_t pack(const State& state) noexcept;
+    static State unpack(uint32_t packed) noexcept;
+    static void increment(uint8_t& counter) noexcept;
+
+    template <typename Transition>
+    void update(const Transition& transition) noexcept;
+
+    void reset_metrics(State& state) const noexcept;
+    void enter_l1(State& state) const noexcept;
+    void enter_l2(State& state) const noexcept;
+    void enter_safe(State& state) const noexcept;
+    void enter_recovering(State& state) const noexcept;
 
     const uint16_t cooldown_cycles_;
-    BreakerLevel level_;
-    uint16_t cooldown_remaining_;
-    uint8_t direct_timeout_consec_;
-    uint8_t rtc_timeout_consec_;
-    uint8_t high_watermark_consec_;
-    uint8_t low_watermark_consec_;
-    uint8_t healthy_window_count_;
-    bool probe_success_;
+    // The packed word is the complete mutable state. Relaxed CAS linearizes
+    // transitions; no Breaker event publishes or consumes external data.
+    std::atomic<uint32_t> state_;
+
+    static_assert(std::atomic<uint32_t>::is_always_lock_free,
+                  "coact: Breaker requires lock-free 32-bit atomics");
+    static_assert(static_cast<uint64_t>(Config::kCooldownCycles) <= kCooldownMask,
+                  "coact: kCooldownCycles must fit in 16 bits");
 };
 
 template <typename Config>
 inline Breaker<Config>::Breaker(const Config& cfg) noexcept
     : cooldown_cycles_(static_cast<uint16_t>(cfg.kCooldownCycles)),
-      level_(BreakerLevel::Normal),
-      cooldown_remaining_(static_cast<uint16_t>(0U)),
-      direct_timeout_consec_(static_cast<uint8_t>(0U)),
-      rtc_timeout_consec_(static_cast<uint8_t>(0U)),
-      high_watermark_consec_(static_cast<uint8_t>(0U)),
-      low_watermark_consec_(static_cast<uint8_t>(0U)),
-      healthy_window_count_(static_cast<uint8_t>(0U)),
-      probe_success_(false) {}
+      state_(pack({BreakerLevel::Normal, 0U, 0U, 0U, 0U, 0U, 0U, false})) {}
 
 template <typename Config>
-inline void Breaker<Config>::reset_metrics() noexcept {
-    direct_timeout_consec_ = 0;
-    rtc_timeout_consec_ = 0;
-    high_watermark_consec_ = 0;
-    low_watermark_consec_ = 0;
-    healthy_window_count_ = 0;
-    probe_success_ = false;
+inline uint32_t Breaker<Config>::pack(const State& state) noexcept {
+    return (static_cast<uint32_t>(state.level) << kLevelShift) |
+           (static_cast<uint32_t>(state.cooldown_remaining) << kCooldownShift) |
+           (static_cast<uint32_t>(state.direct_timeout_consec) << kDirectTimeoutShift) |
+           (static_cast<uint32_t>(state.rtc_timeout_consec) << kRtcTimeoutShift) |
+           (static_cast<uint32_t>(state.high_watermark_consec) << kHighWatermarkShift) |
+           (static_cast<uint32_t>(state.low_watermark_consec) << kLowWatermarkShift) |
+           (static_cast<uint32_t>(state.healthy_window_count) << kHealthyWindowShift) |
+           (static_cast<uint32_t>(state.probe_success) << kProbeSuccessShift);
 }
 
 template <typename Config>
-inline void Breaker<Config>::enter_l1() noexcept {
-    level_ = BreakerLevel::BrokenL1;
-    cooldown_remaining_ = cooldown_cycles_;
-    reset_metrics();
+inline typename Breaker<Config>::State Breaker<Config>::unpack(uint32_t packed) noexcept {
+    return {static_cast<BreakerLevel>((packed >> kLevelShift) & kLevelMask),
+            static_cast<uint16_t>((packed >> kCooldownShift) & kCooldownMask),
+            static_cast<uint8_t>((packed >> kDirectTimeoutShift) & kCounterMask),
+            static_cast<uint8_t>((packed >> kRtcTimeoutShift) & kCounterMask),
+            static_cast<uint8_t>((packed >> kHighWatermarkShift) & kCounterMask),
+            static_cast<uint8_t>((packed >> kLowWatermarkShift) & kCounterMask),
+            static_cast<uint8_t>((packed >> kHealthyWindowShift) & kCounterMask),
+            0U != ((packed >> kProbeSuccessShift) & 0x1U)};
 }
 
 template <typename Config>
-inline void Breaker<Config>::enter_l2() noexcept {
-    level_ = BreakerLevel::BrokenL2;
-    cooldown_remaining_ = cooldown_cycles_;
-    reset_metrics();
+inline void Breaker<Config>::increment(uint8_t& counter) noexcept {
+    if (counter < kCounterMask) {
+        ++counter;
+    }
 }
 
 template <typename Config>
-inline void Breaker<Config>::enter_safe() noexcept {
-    level_ = BreakerLevel::Safe;
-    cooldown_remaining_ = cooldown_cycles_;
-    reset_metrics();
+template <typename Transition>
+inline void Breaker<Config>::update(const Transition& transition) noexcept {
+    uint32_t observed = state_.load(std::memory_order_relaxed);
+    bool complete = false;
+    while (!complete) {
+        State next = unpack(observed);
+        transition(next);
+        const uint32_t desired = pack(next);
+        complete = (desired == observed) ||
+                   state_.compare_exchange_weak(observed, desired, std::memory_order_relaxed,
+                                                std::memory_order_relaxed);
+    }
 }
 
 template <typename Config>
-inline void Breaker<Config>::enter_recovering() noexcept {
-    level_ = BreakerLevel::Recovering;
-    reset_metrics();
-    // cooldown_remaining_ is left untouched: from L1/L2 it is already 0;
+inline void Breaker<Config>::reset_metrics(State& state) const noexcept {
+    state.direct_timeout_consec = 0U;
+    state.rtc_timeout_consec = 0U;
+    state.high_watermark_consec = 0U;
+    state.low_watermark_consec = 0U;
+    state.healthy_window_count = 0U;
+    state.probe_success = false;
+}
+
+template <typename Config>
+inline void Breaker<Config>::enter_l1(State& state) const noexcept {
+    state.level = BreakerLevel::BrokenL1;
+    state.cooldown_remaining = cooldown_cycles_;
+    reset_metrics(state);
+}
+
+template <typename Config>
+inline void Breaker<Config>::enter_l2(State& state) const noexcept {
+    state.level = BreakerLevel::BrokenL2;
+    state.cooldown_remaining = cooldown_cycles_;
+    reset_metrics(state);
+}
+
+template <typename Config>
+inline void Breaker<Config>::enter_safe(State& state) const noexcept {
+    state.level = BreakerLevel::Safe;
+    state.cooldown_remaining = cooldown_cycles_;
+    reset_metrics(state);
+}
+
+template <typename Config>
+inline void Breaker<Config>::enter_recovering(State& state) const noexcept {
+    state.level = BreakerLevel::Recovering;
+    reset_metrics(state);
+    // cooldown_remaining is left untouched: from L1/L2 it is already 0;
     // from Safe it still counts down before healthy windows may advance.
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_direct_timeout() noexcept {
-    ++direct_timeout_consec_;
-    switch (level_) {
-        case BreakerLevel::Normal:
-            if (direct_timeout_consec_ >= kDirectTimeoutThreshold) {
-                enter_l1();
-            }
-            break;
-        case BreakerLevel::BrokenL1:
-        case BreakerLevel::BrokenL2:
-        case BreakerLevel::Safe:
-            break;
-        case BreakerLevel::Recovering:
-            enter_l2();  // re-violation inside the recovery window -> L2
-            break;
-        default:
-            break;
-    }
+    update([this](State& state) {
+        increment(state.direct_timeout_consec);
+        switch (state.level) {
+            case BreakerLevel::Normal:
+                if (state.direct_timeout_consec >= kDirectTimeoutThreshold) {
+                    enter_l1(state);
+                }
+                break;
+            case BreakerLevel::BrokenL1:
+            case BreakerLevel::BrokenL2:
+            case BreakerLevel::Safe:
+                break;
+            case BreakerLevel::Recovering:
+                enter_l2(state);
+                break;
+            default:
+                break;
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_dispatcher_rtc_timeout() noexcept {
-    ++rtc_timeout_consec_;
-    switch (level_) {
-        case BreakerLevel::Normal:
-        case BreakerLevel::BrokenL1:
-            if (rtc_timeout_consec_ >= kRtcTimeoutThreshold) {
-                enter_l2();
-            }
-            break;
-        case BreakerLevel::BrokenL2:
-        case BreakerLevel::Safe:
-            break;
-        case BreakerLevel::Recovering:
-            enter_l2();
-            break;
-        default:
-            break;
-    }
+    update([this](State& state) {
+        increment(state.rtc_timeout_consec);
+        switch (state.level) {
+            case BreakerLevel::Normal:
+            case BreakerLevel::BrokenL1:
+                if (state.rtc_timeout_consec >= kRtcTimeoutThreshold) {
+                    enter_l2(state);
+                }
+                break;
+            case BreakerLevel::BrokenL2:
+            case BreakerLevel::Safe:
+                break;
+            case BreakerLevel::Recovering:
+                enter_l2(state);
+                break;
+            default:
+                break;
+        }
+    });
 }
 
 template <typename Config>
@@ -199,131 +275,141 @@ inline void Breaker<Config>::on_watermark_violation() noexcept {
 
 template <typename Config>
 inline void Breaker<Config>::on_watermark(uint8_t percent) noexcept {
-    if (percent > kWatermarkViolationPct) {
-        ++high_watermark_consec_;
-        low_watermark_consec_ = 0;
-    }
-    else if (percent < kLowWatermarkPct) {
-        ++low_watermark_consec_;
-        high_watermark_consec_ = 0;
-    }
-    else {
-        high_watermark_consec_ = 0;
-        low_watermark_consec_ = 0;
-    }
+    update([this, percent](State& state) {
+        if (percent > kWatermarkViolationPct) {
+            increment(state.high_watermark_consec);
+            state.low_watermark_consec = 0U;
+        } else if (percent < kLowWatermarkPct) {
+            increment(state.low_watermark_consec);
+            state.high_watermark_consec = 0U;
+        } else {
+            state.high_watermark_consec = 0U;
+            state.low_watermark_consec = 0U;
+        }
 
-    switch (level_) {
-        case BreakerLevel::Normal:
-            if (high_watermark_consec_ >= kHighWatermarkPersist) {
-                enter_l2();
-            }
-            break;
-        case BreakerLevel::BrokenL1:
-            if (high_watermark_consec_ >= kHighWatermarkPersist) {
-                enter_l2();  // backlog keeps growing
-            }
-            else if ((0 == cooldown_remaining_) &&
-                     (low_watermark_consec_ >= kLowWatermarkPersist)) {
-                enter_recovering();
-            }
-            break;
-        case BreakerLevel::BrokenL2:
-            if ((0 == cooldown_remaining_) &&
-                (low_watermark_consec_ >= kLowWatermarkPersist)) {
-                enter_recovering();
-            }
-            break;
-        case BreakerLevel::Safe:
-            break;
-        case BreakerLevel::Recovering:
-            if (percent >= kLowWatermarkPct) {
-                enter_l2();  // hysteresis: a single rise above 50% aborts recovery
-            }
-            break;
-        default:
-            break;
-    }
+        switch (state.level) {
+            case BreakerLevel::Normal:
+                if (state.high_watermark_consec >= kHighWatermarkPersist) {
+                    enter_l2(state);
+                }
+                break;
+            case BreakerLevel::BrokenL1:
+                if (state.high_watermark_consec >= kHighWatermarkPersist) {
+                    enter_l2(state);
+                } else if ((0U == state.cooldown_remaining) &&
+                           (state.low_watermark_consec >= kLowWatermarkPersist)) {
+                    enter_recovering(state);
+                }
+                break;
+            case BreakerLevel::BrokenL2:
+                if ((0U == state.cooldown_remaining) &&
+                    (state.low_watermark_consec >= kLowWatermarkPersist)) {
+                    enter_recovering(state);
+                }
+                break;
+            case BreakerLevel::Safe:
+                break;
+            case BreakerLevel::Recovering:
+                if (percent >= kLowWatermarkPct) {
+                    enter_l2(state);
+                }
+                break;
+            default:
+                break;
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_overflow() noexcept {
-    switch (level_) {
-        case BreakerLevel::Normal:
-        case BreakerLevel::BrokenL1:
-        case BreakerLevel::Recovering:
-            enter_l2();
-            break;
-        case BreakerLevel::BrokenL2:
-        case BreakerLevel::Safe:
-            break;
-        default:
-            break;
-    }
+    update([this](State& state) {
+        switch (state.level) {
+            case BreakerLevel::Normal:
+            case BreakerLevel::BrokenL1:
+            case BreakerLevel::Recovering:
+                enter_l2(state);
+                break;
+            case BreakerLevel::BrokenL2:
+            case BreakerLevel::Safe:
+                break;
+            default:
+                break;
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_key_reserve_exhausted() noexcept {
-    if (BreakerLevel::Safe != level_) {
-        enter_safe();
-    }
+    update([this](State& state) {
+        if (BreakerLevel::Safe != state.level) {
+            enter_safe(state);
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_watchdog() noexcept {
-    if (BreakerLevel::Safe != level_) {
-        enter_safe();
-    }
+    on_key_reserve_exhausted();
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_dispatch_cycle() noexcept {
-    if (cooldown_remaining_ > 0) {
-        --cooldown_remaining_;
-    }
-    if (BreakerLevel::Recovering == level_) {
-        if ((0 == cooldown_remaining_) && probe_success_) {
-            ++healthy_window_count_;
-            probe_success_ = false;
-            if (healthy_window_count_ >= kHealthyWindowsRequired) {
-                level_ = BreakerLevel::Normal;
-                healthy_window_count_ = 0;
+    update([](State& state) {
+        if (state.cooldown_remaining > 0U) {
+            --state.cooldown_remaining;
+        }
+        if ((BreakerLevel::Recovering == state.level) && (0U == state.cooldown_remaining) &&
+            state.probe_success) {
+            increment(state.healthy_window_count);
+            state.probe_success = false;
+            if (state.healthy_window_count >= kHealthyWindowsRequired) {
+                state.level = BreakerLevel::Normal;
+                state.healthy_window_count = 0U;
             }
         }
-    }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_probe_success() noexcept {
-    if (BreakerLevel::Recovering == level_) {
-        probe_success_ = true;
-    }
+    update([](State& state) {
+        if (BreakerLevel::Recovering == state.level) {
+            state.probe_success = true;
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_probe_failure() noexcept {
-    if (BreakerLevel::Recovering == level_) {
-        enter_l2();
-    }
+    update([this](State& state) {
+        if (BreakerLevel::Recovering == state.level) {
+            enter_l2(state);
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_external_safe_restore() noexcept {
-    if (BreakerLevel::Safe == level_) {
-        enter_recovering();
-    }
+    update([this](State& state) {
+        if (BreakerLevel::Safe == state.level) {
+            enter_recovering(state);
+        }
+    });
 }
 
 template <typename Config>
 inline void Breaker<Config>::on_rtc_ok() noexcept {
     // A qualifying call clears the consecutive-timeout counters but does NOT
     // touch cooldown_remaining_: the recovery window is never skipped.
-    direct_timeout_consec_ = 0;
-    rtc_timeout_consec_ = 0;
+    update([](State& state) {
+        state.direct_timeout_consec = 0U;
+        state.rtc_timeout_consec = 0U;
+    });
 }
 
 template <typename Config>
 inline BreakerLevel Breaker<Config>::level() const noexcept {
-    return level_;
+    return unpack(state_.load(std::memory_order_relaxed)).level;
 }
 
 template <typename Config>
@@ -333,29 +419,220 @@ inline bool Breaker<Config>::direct_allowed(TargetId ao) const noexcept {
     }
     // Per-AO deployment: the coordinator asks the owner AO's breaker. Direct
     // is granted again only once the breaker has fully recovered to Normal.
-    return (BreakerLevel::Normal == level_);
+    return (BreakerLevel::Normal == level());
 }
 
 template <typename Config>
 inline bool Breaker<Config>::healthy_window_passed() const noexcept {
-    if (BreakerLevel::Normal == level_) {
+    const State state = unpack(state_.load(std::memory_order_relaxed));
+    if (BreakerLevel::Normal == state.level) {
         return true;
     }
-    if (BreakerLevel::Recovering == level_) {
-        return (healthy_window_count_ >= kHealthyWindowsRequired);
+    if (BreakerLevel::Recovering == state.level) {
+        return (state.healthy_window_count >= kHealthyWindowsRequired);
     }
     return false;
 }
 
 template <typename Config>
 inline bool Breaker<Config>::drop_non_critical() const noexcept {
-    return (BreakerLevel::BrokenL2 == level_) || (BreakerLevel::Safe == level_);
+    const BreakerLevel current = level();
+    return (BreakerLevel::BrokenL2 == current) || (BreakerLevel::Safe == current);
 }
 
 template <typename Config>
 inline bool Breaker<Config>::safe_events_only() const noexcept {
-    return (BreakerLevel::Safe == level_);
+    return (BreakerLevel::Safe == level());
 }
+
+template <typename Config>
+class BreakerBank;
+
+namespace detail {
+
+template <typename Config>
+Breaker<Config>& target_breaker(BreakerBank<Config>& breakers,
+                                TargetId target) noexcept;
+
+}  // namespace detail
+
+// ---------------------------------------------------------------------------
+// Fixed-capacity per-AO breaker bank. Target-scoped inputs name their AO;
+// genuinely system-wide inputs use an explicit broadcast_* entry.
+// ---------------------------------------------------------------------------
+template <typename Config = DefaultConfig>
+class BreakerBank {
+public:
+    static constexpr uint8_t kCapacity = Config::kMaxAo;
+
+    explicit BreakerBank(const Config&) noexcept : breakers_{} {}
+
+    void on_direct_timeout(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_direct_timeout();
+        }
+    }
+
+    void on_dispatcher_rtc_timeout(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_dispatcher_rtc_timeout();
+        }
+    }
+
+    void on_overflow(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_overflow();
+        }
+    }
+
+    void on_dispatch_cycle(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_dispatch_cycle();
+        }
+    }
+
+    void on_probe_success(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_probe_success();
+        }
+    }
+
+    void on_probe_failure(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_probe_failure();
+        }
+    }
+
+    void on_rtc_ok(TargetId target) noexcept
+    {
+        if (valid(target)) {
+            breaker(target).on_rtc_ok();
+        }
+    }
+
+    BreakerLevel level(TargetId target) const noexcept
+    {
+        return valid(target) ? breaker(target).level() : BreakerLevel::Safe;
+    }
+
+    bool direct_allowed(TargetId target) const noexcept
+    {
+        return valid(target) && breaker(target).direct_allowed(target);
+    }
+
+    bool drop_non_critical(TargetId target) const noexcept
+    {
+        return !valid(target) || breaker(target).drop_non_critical();
+    }
+
+    bool safe_events_only(TargetId target) const noexcept
+    {
+        return !valid(target) || breaker(target).safe_events_only();
+    }
+
+    void broadcast_watermark_violation() noexcept
+    {
+        for_each([](Breaker<Config>& item) { item.on_watermark_violation(); });
+    }
+
+    void broadcast_watermark(uint8_t percent) noexcept
+    {
+        for_each([percent](Breaker<Config>& item) { item.on_watermark(percent); });
+    }
+
+    void broadcast_key_reserve_exhausted() noexcept
+    {
+        for_each([](Breaker<Config>& item) { item.on_key_reserve_exhausted(); });
+    }
+
+    void broadcast_watchdog() noexcept
+    {
+        for_each([](Breaker<Config>& item) { item.on_watchdog(); });
+    }
+
+    void broadcast_dispatch_cycle() noexcept
+    {
+        for_each([](Breaker<Config>& item) { item.on_dispatch_cycle(); });
+    }
+
+    void broadcast_external_safe_restore() noexcept
+    {
+        for_each([](Breaker<Config>& item) { item.on_external_safe_restore(); });
+    }
+
+private:
+    friend Breaker<Config>& detail::target_breaker<Config>(
+        BreakerBank<Config>& breakers, TargetId target) noexcept;
+
+    static constexpr bool valid(TargetId target) noexcept
+    {
+        return target != kInvalidTarget && target.raw() <= kCapacity;
+    }
+
+    Breaker<Config>& breaker(TargetId target) noexcept
+    {
+        return breakers_[index(target)];
+    }
+
+    const Breaker<Config>& breaker(TargetId target) const noexcept
+    {
+        return breakers_[index(target)];
+    }
+
+    static size_t index(TargetId target) noexcept
+    {
+        COACT_ASSERT(valid(target));
+        return static_cast<size_t>(target.raw() - 1U);
+    }
+
+    template <typename Operation>
+    void for_each(const Operation& operation) noexcept
+    {
+        for (Breaker<Config>& item : breakers_) {
+            operation(item);
+        }
+    }
+
+    std::array<Breaker<Config>, kCapacity> breakers_;
+
+    static_assert(kCapacity > 0U, "coact: BreakerBank requires at least one AO");
+};
+
+namespace detail {
+
+template <typename Config>
+inline Breaker<Config>& target_breaker(Breaker<Config>& breaker,
+                                       TargetId) noexcept
+{
+    return breaker;
+}
+
+template <typename Config>
+inline Breaker<Config>& target_breaker(BreakerBank<Config>& breakers,
+                                       TargetId target) noexcept
+{
+    return breakers.breaker(target);
+}
+
+template <typename Config>
+inline void breaker_idle_cycle(Breaker<Config>& breaker) noexcept
+{
+    breaker.on_dispatch_cycle();
+}
+
+template <typename Config>
+inline void breaker_idle_cycle(BreakerBank<Config>& breakers) noexcept
+{
+    breakers.broadcast_dispatch_cycle();
+}
+
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // RejectReason: M1 admission gate C1..C7 rejection causes (design 9.2/9.3).

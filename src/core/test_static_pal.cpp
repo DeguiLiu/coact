@@ -97,6 +97,7 @@ COACT_TEST(static_pal_init_and_start_success)
     stub_reset_faults();
     coact::pal::RtThreadResources<4096U, 4U> res;
     coact::pal::RtThread pal(res);
+    CHECK(!coact::pal::RtThread::in_dispatcher_thread());
     CHECK_EQ(static_cast<int>(coact::pal::InitError::kOk),
              static_cast<int>(pal.initialize()));
 
@@ -145,6 +146,22 @@ COACT_TEST(static_pal_stack_too_large_rejected)
     CHECK_EQ(static_cast<int>(coact::pal::InitError::kStackTooLarge),
              static_cast<int>(pal.initialize()));
 }
+
+COACT_TEST(static_pal_dispatcher_wait_ticks_preserve_finite_timeout)
+{
+    CHECK_EQ(static_cast<rt_int32_t>(RT_WAITING_FOREVER),
+             coact::pal::detail::dispatcher_wait_ticks(0U));
+    CHECK_EQ(static_cast<rt_int32_t>(1),
+             coact::pal::detail::dispatcher_wait_ticks(1U));
+    CHECK_EQ(static_cast<rt_int32_t>(RT_WAITING_FOREVER - 1),
+             coact::pal::detail::dispatcher_wait_ticks(
+                 static_cast<uint32_t>(RT_WAITING_FOREVER)));
+    CHECK_EQ(static_cast<rt_int32_t>(RT_WAITING_FOREVER - 1),
+             coact::pal::detail::dispatcher_wait_ticks(0xFFFFFFFFU));
+}
+
+static_assert(coact::pal::detail::dispatcher_wait_ticks(1U) == 1,
+              "1 kHz dispatcher waits must remain a compile-time 1:1 conversion");
 
 /* ---- One-time start / stop ----------------------------------------------- */
 
@@ -394,6 +411,43 @@ COACT_TEST(static_pal_clock_ops)
     usleep(2000);
     const uint64_t t1 = pal2.monotonic_ns();
     CHECK(t1 >= t0);
+}
+
+COACT_TEST(static_pal_clock_ops_avoids_counter_product_overflow)
+{
+    stub_reset_faults();
+    coact::pal::RtThreadResources<4096U, 4U> res;
+    coact::pal::RtThread pal(res);
+    MockCounter mc{18446744074ULL};
+    coact::pal::ClockOps ops;
+    ops.read_counter = &mock_counter_read;
+    ops.frequency_hz = 10000000U;
+    ops.ctx = &mc;
+    pal.set_clock_ops(ops);
+
+    // This value is just past UINT64_MAX / 1e9. Multiplying before dividing
+    // wraps, while quotient/remainder conversion remains exact.
+    CHECK_EQ(1844674407400ULL, pal.monotonic_ns());
+}
+
+COACT_TEST(static_pal_clock_ops_extends_32bit_counter_wrap)
+{
+    stub_reset_faults();
+    coact::pal::RtThreadResources<4096U, 4U> res;
+    coact::pal::RtThread pal(res);
+    MockCounter mc{0xFFFFFFFCULL};
+    coact::pal::ClockOps ops;
+    ops.read_counter = &mock_counter_read;
+    ops.frequency_hz = 100U;
+    ops.ctx = &mc;
+    ops.counter_bits = 32U;
+    pal.set_clock_ops(ops);
+
+    const uint64_t before_wrap = pal.monotonic_ns();
+    mc.counter = 5U;
+    const uint64_t after_wrap = pal.monotonic_ns();
+    CHECK_EQ(90000000ULL, after_wrap - before_wrap);
+    CHECK(after_wrap > before_wrap);
 }
 
 /* ---- Dispatcher single-core profile assembly (C's leftover) -------------- */

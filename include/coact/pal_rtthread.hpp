@@ -72,8 +72,40 @@ inline ClockOps tick_clock_ops() noexcept
     ops.read_counter = &rt_tick_counter_read;
     ops.frequency_hz = static_cast<uint32_t>(RT_TICK_PER_SECOND);
     ops.ctx = nullptr;
+    ops.counter_bits = static_cast<uint8_t>(sizeof(rt_tick_t) * 8U);
     return ops;
 }
+
+namespace detail {
+
+inline constexpr uint64_t exact_ns_per_counter(uint32_t frequency_hz) noexcept
+{
+    return (frequency_hz != 0U && (1000000000ULL % frequency_hz) == 0U)
+        ? (1000000000ULL / frequency_hz)
+        : 0U;
+}
+
+// Convert a Dispatcher wait timeout to RT-Thread ticks. Zero is the sole
+// infinite-wait value; every non-zero timeout remains finite, including one
+// whose rounded tick count reaches RT_WAITING_FOREVER.
+inline constexpr rt_int32_t dispatcher_wait_ticks(uint32_t timeout_ms) noexcept
+{
+    if (timeout_ms == 0U) {
+        return static_cast<rt_int32_t>(RT_WAITING_FOREVER);
+    }
+    uint64_t ticks = timeout_ms;
+    if constexpr (RT_TICK_PER_SECOND != 1000U) {
+        ticks =
+            (static_cast<uint64_t>(timeout_ms) * RT_TICK_PER_SECOND + 999U) / 1000U;
+    }
+    const uint64_t forever = static_cast<uint64_t>(RT_WAITING_FOREVER);
+    if (ticks >= forever) {
+        return static_cast<rt_int32_t>(forever - 1U);
+    }
+    return static_cast<rt_int32_t>(ticks);
+}
+
+}  // namespace detail
 
 // Fixed per-thread execution-context slot (design §7.5). Does NOT occupy
 // RT-Thread's single rt_thread::user_data field.
@@ -179,7 +211,9 @@ public:
           state_(Lifecycle::kUninitialized),
           last_error_(InitError::kOk),
           dispatcher_stack_bytes_(4096U),
-          clock_ops_(tick_clock_ops())
+          clock_ops_(tick_clock_ops()),
+          ns_per_counter_(detail::exact_ns_per_counter(
+              static_cast<uint32_t>(RT_TICK_PER_SECOND)))
     {
     }
 
@@ -205,7 +239,8 @@ public:
     // cmdfw can bind it as a gate callback without an instance.
     static bool in_dispatcher_thread() noexcept
     {
-        return (rt_thread_self() == dispatcher_tcb());
+        const rt_thread_t dispatcher = dispatcher_tcb();
+        return (dispatcher != nullptr) && (rt_thread_self() == dispatcher);
     }
 
     /* ---- Monotonic clock ---------------------------------------------- */
@@ -215,7 +250,7 @@ public:
     uint64_t clock_resolution_ns() const noexcept;
     void set_clock_ops(ClockOps ops) noexcept;
 
-    /* ---- Dispatcher wait/signal --------------------------------------- */
+    /* ---- Dispatcher wait/signal (0 ms = wait forever) ----------------- */
     void wait_dispatcher(uint32_t timeout_ms) noexcept;
     void signal_dispatcher_from_task() noexcept;
     void signal_dispatcher_from_isr() noexcept;
@@ -280,6 +315,7 @@ private:
                                   rt_thread_t t) noexcept;
     static ContextSlot* alloc_slot(RtThreadResourcesBase* res,
                                    rt_thread_t t) noexcept;
+    uint64_t read_extended_counter() const noexcept;
 
     /* Returns a pointer to the current thread's ExecutionContext in the fixed
        table. Null for ISR, the Dispatcher (TCB-identified), or unregistered
@@ -293,6 +329,10 @@ private:
     InitError   last_error_;
     uint32_t    dispatcher_stack_bytes_; /* default 4096; overridable */
     ClockOps    clock_ops_;              /* default: RT tick; §7.5 */
+    uint64_t    ns_per_counter_;          /* zero selects exact fallback */
+    mutable uint64_t counter_epoch_ = 0U;
+    mutable uint64_t last_counter_ = 0U;
+    mutable bool counter_seen_ = false;
 };
 
 }  // namespace pal

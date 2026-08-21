@@ -86,7 +86,6 @@ COACT_TEST(reclaimer_batcher_five_pools_no_assert)
     for (int i = 0; i < 5; ++i) {
         ev[i] = pools[i].alloc(static_cast<std::uint16_t>(0x1000U + i));
         REQUIRE(ev[i] != nullptr);
-        coact::event_ref_inc(ev[i]);   // the queued reference
     }
 
     coact::ReclaimBatcher batcher;     // default per-batch pool capacity (4)
@@ -124,7 +123,6 @@ void run_equivalent_scenario(HostPool* pools,
         for (int j = 0; j < 2; ++j) {
             ev[i][j] = pools[i].alloc(static_cast<std::uint16_t>(0x20U + i * 2U + j));
             REQUIRE(ev[i][j] != nullptr);
-            coact::event_ref_inc(ev[i][j]);
         }
     }
 
@@ -177,7 +175,6 @@ COACT_TEST(reclaimer_batcher_table_full_degrades_to_immediate)
     for (int i = 0; i < 3; ++i) {
         ev[i] = pools[i].alloc(static_cast<std::uint16_t>(0x30U + i));
         REQUIRE(ev[i] != nullptr);
-        coact::event_ref_inc(ev[i]);
     }
 
     coact::ReclaimBatcher<2> batcher;   // too small for three distinct pools
@@ -190,6 +187,53 @@ COACT_TEST(reclaimer_batcher_table_full_degrades_to_immediate)
     for (int i = 0; i < 3; ++i) {
         CHECK_EQ(pools[i].used(), 0U);
     }
+}
+
+COACT_TEST(reclaimer_batcher_zero_reference_does_not_reclaim)
+{
+    PoolStorage<kBlock, kCap> storage;
+    HostPool pool;
+    pool.init(storage.data, sizeof(storage.data));
+
+    coact::Event* event = pool.alloc(0x41U);
+    REQUIRE(event != nullptr);
+    event->ref_ctr = 0U;
+
+    coact::ReclaimBatcher batcher;
+    batcher.begin();
+    batcher.release(event);
+    batcher.flush();
+
+    CHECK_EQ(pool.used(), 1U);
+
+    event->ref_ctr = 1U;
+    batcher.begin();
+    batcher.release(event);
+    batcher.flush();
+    CHECK_EQ(pool.used(), 0U);
+}
+
+COACT_TEST(reclaimer_batcher_consumes_one_of_multiple_references)
+{
+    PoolStorage<kBlock, kCap> storage;
+    HostPool pool;
+    pool.init(storage.data, sizeof(storage.data));
+
+    coact::Event* event = pool.alloc(0x42U);
+    REQUIRE(event != nullptr);
+    coact::event_ref_inc(event);
+    CHECK_EQ(event->ref_ctr, 2U);
+
+    coact::ReclaimBatcher batcher;
+    batcher.begin();
+    batcher.release(event);
+    batcher.flush();
+
+    CHECK_EQ(event->ref_ctr, 1U);
+    CHECK_EQ(pool.used(), 1U);
+
+    coact::event_gc(event);
+    CHECK_EQ(pool.used(), 0U);
 }
 
 // ---------------------------------------------------------------------------
@@ -207,7 +251,6 @@ COACT_TEST(reclaimer_immediate_single_core_drains)
     for (int i = 0; i < 2; ++i) {
         ev[i] = pool.alloc(static_cast<std::uint16_t>(0x40U + i));
         REQUIRE(ev[i] != nullptr);
-        coact::event_ref_inc(ev[i]);
         CHECK_EQ(pool.used(), static_cast<std::uint16_t>(i + 1));
     }
 

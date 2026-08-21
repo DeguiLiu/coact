@@ -174,7 +174,7 @@ COACT_TEST(stress_overload_drops_noncritical)
     coact::AoRegistry  registry;
     coact::Monitor     monitor;
     coact::DefaultConfig cfg;
-    coact::Breaker<>     breaker(cfg);
+    coact::BreakerBank<> breaker(cfg);
 
     StressAo ao(sStates, 2U, sTrans, 1U, 1, 4U);
     ao.context() = StressCtx{nullptr};
@@ -184,11 +184,12 @@ COACT_TEST(stress_overload_drops_noncritical)
     CHECK(registry.bind(&ao, ao.logical_prio()));
 
     /* Drive breaker to L2. */
-    breaker.on_overflow();
-    breaker.on_overflow();
-    breaker.on_overflow();
+    breaker.on_overflow(coact::TargetId(1U));
+    breaker.on_overflow(coact::TargetId(1U));
+    breaker.on_overflow(coact::TargetId(1U));
 
-    coact::DispatchCoordinator<StageT, coact::pal::Posix> coord(
+    coact::DispatchCoordinator<StageT, coact::pal::Posix,
+                               coact::BreakerBank<coact::DefaultConfig>> coord(
         staging, registry, monitor, breaker, pal);
 
     coact::Event e{};

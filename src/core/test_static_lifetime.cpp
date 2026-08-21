@@ -11,7 +11,9 @@
 #include <cstdio>
 #include <unistd.h>
 
+#ifndef COACT_RTT_STUB
 #define COACT_RTT_STUB
+#endif
 #include "test/rtthread_stub.h"
 
 #include "coact/ao.hpp"

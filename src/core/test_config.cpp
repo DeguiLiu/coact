@@ -79,13 +79,16 @@ COACT_TEST(config_staging_and_dispatcher_config_type)
     coact::AoRegistry<TestConfig> registry;
     coact::Monitor<TestConfig>     monitor;
     TestConfig                     cfg{};
-    coact::Breaker<TestConfig>     breaker(cfg);
-    coact::Dispatcher<StageT, coact::pal::Posix> dispatcher(
+    coact::BreakerBank<TestConfig> breaker(cfg);
+    using DispatcherT = coact::Dispatcher<
+        StageT, coact::pal::Posix, coact::HostSmpProfile,
+        coact::BreakerBank<TestConfig>>;
+    DispatcherT dispatcher(
         staging, registry, monitor, breaker, pal);
 
     /* Dispatcher::run() uses StageT::ConfigType::kBatchSizeMax (2) and
        kBatchTimeoutMs (1 ms); we just confirm it constructs and can stop. */
-    struct Wrap { coact::Dispatcher<StageT, coact::pal::Posix>* d; };
+    struct Wrap { DispatcherT* d; };
     Wrap w{&dispatcher};
     pal.start_dispatcher([](void* c) {
         static_cast<Wrap*>(c)->d->run();

@@ -79,15 +79,18 @@ public:
     using ConfigType = Config;
     using StagingType = Staging<Config,
         PalT::template QueueBackend>;
-    using DispatcherType    = Dispatcher<StagingType, PalT, Profile>;
-    using CoordinatorType   = DispatchCoordinator<StagingType, PalT>;
+    using BreakerBankType   = BreakerBank<Config>;
+    using DispatcherType    = Dispatcher<StagingType, PalT, Profile,
+                                         BreakerBankType>;
+    using CoordinatorType   = DispatchCoordinator<StagingType, PalT,
+                                                  BreakerBankType>;
 
     explicit Runtime(PalT& pal) noexcept
         : pal_(pal),
           cfg_{},
           staging_(make_critical_section(pal_)),
-          dispatcher_(staging_, registry_, monitor_, breaker_, pal_),
-          coordinator_(staging_, registry_, monitor_, breaker_, pal_),
+          dispatcher_(staging_, registry_, monitor_, breakers_, pal_),
+          coordinator_(staging_, registry_, monitor_, breakers_, pal_),
           initialized_(false),
           started_(false)
     {
@@ -157,14 +160,15 @@ public:
 
     CoordinatorType& coordinator() noexcept { return coordinator_; }
     Monitor<Config>& monitor()     noexcept { return monitor_; }
-    Breaker<Config>& breaker()     noexcept { return breaker_; }
+    BreakerBankType& breakers()    noexcept { return breakers_; }
+    BreakerBankType& breaker()     noexcept { return breakers_; }
 
 private:
     PalT&           pal_;
     ConfigType      cfg_;
     AoRegistry<Config> registry_;
     Monitor<Config> monitor_;
-    Breaker<Config> breaker_{cfg_};
+    BreakerBankType breakers_{cfg_};
     StagingType     staging_;
     DispatcherType  dispatcher_;
     CoordinatorType coordinator_;

@@ -62,6 +62,36 @@ struct MoveOnly {
     MoveOnly& operator=(MoveOnly&&) = default;
 };
 
+struct LifetimeProbe {
+    static int active;
+
+    int value;
+
+    explicit LifetimeProbe(int v) noexcept : value(v) {
+        ++active;
+    }
+
+    LifetimeProbe(const LifetimeProbe&) = delete;
+    LifetimeProbe& operator=(const LifetimeProbe&) = delete;
+
+    LifetimeProbe(LifetimeProbe&& other) noexcept
+        : value(std::exchange(other.value, -1)) {
+    }
+
+    LifetimeProbe& operator=(LifetimeProbe&& other) noexcept {
+        value = std::exchange(other.value, -1);
+        return *this;
+    }
+
+    ~LifetimeProbe() {
+        if (value >= 0) {
+            --active;
+        }
+    }
+};
+
+int LifetimeProbe::active = 0;
+
 // Move-only handle that visibly invalidates the source on move, so a failed
 // push can prove the incoming object was NOT consumed while a successful push
 // consumed it (std::exchange leaves owns==false and value==0 in the source).
@@ -84,10 +114,44 @@ struct MoveHandle {
     MoveHandle& operator=(const MoveHandle&) = delete;
 };
 
+std::atomic<bool> g_blocking_move_entered{false};
+std::atomic<bool> g_blocking_move_release{false};
+
+struct BlockingMove {
+    int value = 0;
+    bool block_on_move = false;
+
+    BlockingMove() noexcept = default;
+    explicit BlockingMove(int v, bool block) noexcept
+        : value(v), block_on_move(block) {}
+    BlockingMove(const BlockingMove&) = delete;
+    BlockingMove& operator=(const BlockingMove&) = delete;
+    BlockingMove(BlockingMove&& other) noexcept
+        : value(other.value), block_on_move(false)
+    {
+        if (other.block_on_move) {
+            g_blocking_move_entered.store(true, std::memory_order_release);
+            while (!g_blocking_move_release.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        }
+        other.value = 0;
+        other.block_on_move = false;
+    }
+    BlockingMove& operator=(BlockingMove&& other) noexcept
+    {
+        value = other.value;
+        block_on_move = false;
+        other.value = 0;
+        other.block_on_move = false;
+        return *this;
+    }
+};
+
 // ---------------------------------------------------------------------------
 // MPSC stress driver. Each producer pushes a contiguous block of unique ids;
-// the single consumer verifies total count, per-producer FIFO order, and that
-// every id is popped exactly once (no loss, no duplication).
+// the single consumer verifies total count and that every id is popped exactly
+// once (no loss, no duplication, no out-of-range payload).
 // ---------------------------------------------------------------------------
 template <uint16_t Capacity>
 void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
@@ -110,7 +174,6 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
             });
         }
 
-        std::vector<int> last_per_producer(static_cast<size_t>(producer_count), -1);
         std::vector<unsigned char> seen(static_cast<size_t>(total), 0);
         int popped = 0;
         int violations = 0;
@@ -124,12 +187,6 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
                     continue;
                 }
                 seen[static_cast<size_t>(v)] = 1U;
-                const int p = v / items_per_producer;
-                const int i = v % items_per_producer;
-                if (i != last_per_producer[static_cast<size_t>(p)] + 1) {
-                    ++violations;   // per-producer FIFO broken
-                }
-                last_per_producer[static_cast<size_t>(p)] = i;
             }
             else if (producers_done.load(std::memory_order_acquire) == producer_count) {
                 break;
@@ -147,12 +204,6 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
                 continue;
             }
             seen[static_cast<size_t>(v)] = 1U;
-            const int p = v / items_per_producer;
-            const int i = v % items_per_producer;
-            if (i != last_per_producer[static_cast<size_t>(p)] + 1) {
-                ++violations;
-            }
-            last_per_producer[static_cast<size_t>(p)] = i;
         }
 
         for (std::thread& t : producers) {
@@ -214,7 +265,7 @@ COACT_TEST(mpsc_fifo_single_thread) {
 }
 
 // ---------------------------------------------------------------------------
-// BoundedMpscQueue: capacity-1 boundary (dedicated 3-state slot path).
+// BoundedMpscQueue: capacity-1 boundary.
 // ---------------------------------------------------------------------------
 COACT_TEST(mpsc_capacity_one) {
     coact::BoundedMpscQueue<int, 1> q;
@@ -280,6 +331,113 @@ COACT_TEST(mpsc_move_only) {
     CHECK_EQ(out.value, 1);
     CHECK(q.try_pop(out));
     CHECK_EQ(out.value, 2);
+    CHECK(!q.try_pop(out));
+}
+
+COACT_TEST(mpsc_front_observes_without_consuming) {
+    coact::BoundedMpscQueue<int, 2> q;
+    int front = 0;
+    int popped = 0;
+
+    CHECK(!q.front(front));
+    CHECK(q.try_push(11));
+    CHECK(q.try_push(12));
+    CHECK(q.front(front));
+    CHECK_EQ(front, 11);
+    CHECK_EQ(q.size(), 2U);
+    CHECK(q.try_pop(popped));
+    CHECK_EQ(popped, 11);
+    CHECK(q.front(front));
+    CHECK_EQ(front, 12);
+}
+
+COACT_TEST(mpsc_destroys_unconsumed_payloads) {
+    CHECK_EQ(LifetimeProbe::active, 0);
+    {
+        coact::BoundedMpscQueue<LifetimeProbe, 2> q;
+        CHECK(q.try_push(LifetimeProbe(7)));
+        CHECK_EQ(LifetimeProbe::active, 1);
+    }
+    CHECK_EQ(LifetimeProbe::active, 0);
+}
+
+COACT_TEST(mpsc_reserved_slot_is_not_ready)
+{
+    coact::BoundedMpscQueue<BlockingMove, 2U> q;
+    g_blocking_move_entered.store(false, std::memory_order_relaxed);
+    g_blocking_move_release.store(false, std::memory_order_relaxed);
+
+    std::thread producer([&q]() {
+        CHECK(q.try_push(BlockingMove(77, true)));
+    });
+    while (!g_blocking_move_entered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    CHECK_EQ(q.size(), 1U);
+    CHECK(!q.has_ready());
+    BlockingMove out;
+    CHECK(!q.try_pop(out));
+
+    g_blocking_move_release.store(true, std::memory_order_release);
+    producer.join();
+    CHECK(q.has_ready());
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out.value, 77);
+}
+
+COACT_TEST(mpsc_capacity_one_stalled_writer_remains_full)
+{
+    coact::BoundedMpscQueue<BlockingMove, 1U> q;
+    g_blocking_move_entered.store(false, std::memory_order_relaxed);
+    g_blocking_move_release.store(false, std::memory_order_relaxed);
+
+    std::thread stalled_producer([&q]() {
+        CHECK(q.try_push(BlockingMove(1, true)));
+    });
+    while (!g_blocking_move_entered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    BlockingMove rejected(2, false);
+    CHECK(!q.try_push(std::move(rejected)));
+    CHECK_EQ(rejected.value, 2);
+    CHECK_EQ(q.size(), 1U);
+    CHECK(!q.has_ready());
+
+    g_blocking_move_release.store(true, std::memory_order_release);
+    stalled_producer.join();
+    BlockingMove out;
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out.value, 1);
+}
+
+// A stalled producer may hold one physical cell, but it must not prevent a
+// later producer's completed push from being consumed.
+COACT_TEST(mpsc_published_item_bypasses_stalled_producer)
+{
+    coact::BoundedMpscQueue<BlockingMove, 2U> q;
+    g_blocking_move_entered.store(false, std::memory_order_relaxed);
+    g_blocking_move_release.store(false, std::memory_order_relaxed);
+
+    std::thread stalled_producer([&q]() {
+        CHECK(q.try_push(BlockingMove(1, true)));
+    });
+    while (!g_blocking_move_entered.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+    }
+
+    CHECK(q.try_push(BlockingMove(2, false)));
+    BlockingMove out;
+    CHECK(q.has_ready());
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out.value, 2);
+    CHECK_EQ(q.size(), 1U);
+
+    g_blocking_move_release.store(true, std::memory_order_release);
+    stalled_producer.join();
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out.value, 1);
     CHECK(!q.try_pop(out));
 }
 
@@ -351,6 +509,34 @@ COACT_TEST(ring_move_only) {
     CHECK(q.try_pop(out));
     CHECK_EQ(out.value, 5);
     CHECK_EQ(q.size(), 0);
+}
+
+COACT_TEST(ring_front_observes_without_consuming) {
+    coact::SingleCoreCriticalRing<int, 2> q(counting_cs());
+    int front = 0;
+    int popped = 0;
+
+    CHECK(!q.front(front));
+    CHECK(q.try_push(21));
+    CHECK(q.try_push(22));
+    CHECK(q.front(front));
+    CHECK_EQ(front, 21);
+    CHECK_EQ(q.size(), 2U);
+    CHECK(q.try_pop(popped));
+    CHECK_EQ(popped, 21);
+    CHECK(q.front(front));
+    CHECK_EQ(front, 22);
+}
+
+COACT_TEST(ring_destroys_unconsumed_payloads) {
+    reset_counters();
+    CHECK_EQ(LifetimeProbe::active, 0);
+    {
+        coact::SingleCoreCriticalRing<LifetimeProbe, 2> q(counting_cs());
+        CHECK(q.try_push(LifetimeProbe(9)));
+        CHECK_EQ(LifetimeProbe::active, 1);
+    }
+    CHECK_EQ(LifetimeProbe::active, 0);
 }
 
 // ---------------------------------------------------------------------------

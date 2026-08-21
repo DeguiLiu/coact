@@ -26,7 +26,7 @@ coact（**Co**operative **Act**ive-object framework）是一个面向运行 RT-T
 | 目标 | 默认队列后端 | 同步原语 | 说明 |
 |---|---|---|---|
 | **RT-Thread 5.2.x 单核**（首选） | `SingleCoreCriticalRing`（irq-mask，无原子） | `rt_hw_interrupt_disable/enable` | Cortex-M 原生 32-bit CAS，零堆 |
-| Linux host（兼容） | `BoundedMpscQueue`（Vyukov） | 原生 CAS | 用于开发 / 测试 / SMP 参考 |
+| Linux host（兼容） | `BoundedMpscQueue`（ready-set） | 无锁 64-bit 原子 | 用于开发 / 测试 / SMP 参考 |
 
 选平台即选 PAL：RT-Thread 用 `coact/pal_rtthread.hpp`，host 用 `coact/pal_posix.hpp`。其余框架完全一致。
 
