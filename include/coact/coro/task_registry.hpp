@@ -93,7 +93,7 @@ public:
 
     static constexpr uint16_t capacity() noexcept { return Capacity; }
 
-    // Register a new task. The completion event goes to `waiter` with
+    // Register a task. The completion event goes to `waiter` with
     // `signal` when the task completes; kInvalidTarget creates a
     // fire-and-poll task (no event). Returns kSlotsFull when exhausted.
     Expected<TaskPair, TaskError> create(TargetId waiter, uint16_t signal,

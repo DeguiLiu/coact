@@ -4,47 +4,28 @@
  * ===========================================================================
  * 功能描述
  *   - 本文件是 coro 模式下的 DemoPal 实现：把 coact::pal::Posix 的
- *     thread_create / sleep_us / mutex_* / cond_* 操作面重写为协程化版
- *     本，落到 coro_mode.hpp 的 StackfulExecutor 上。原本各自跑在 7 个
- *     pthread 上的 worker execute()，经此 shim 后共享单 pthread 的 pump。
+ *     thread_create / sleep_us / cond_wait 操作面重写为协程化版本，落到
+ *     coro_mode.hpp 的 StackfulExecutor 上。原本各自跑在 7 个 pthread 上
+ *     的 worker execute()，经此 shim 后共享单 pthread 的 pump。
  *   - 仅在编译期定义 ISP_DEMO_CORO 时被 common.hpp 的 DemoPal alias 选中
  *     （ISP_DEMO_USE_RTT 优先于 ISP_DEMO_CORO，host 默认走 Posix）。
- *   - 行为契约：对外接口与 Posix 一致（SoO/LoO 替换），内部把 pthread_
- *     create 改为 StackfulExecutor::spawn + trampoline，sleep_us 改为
- *     coact::coro::sleep_for 协程让出。
- *   对应 RS500 module/common 服务层在 MCU 单核公平调度模型下的 PAL
- *   替换路径，与 RT-Thread PAL（多线程静态表）形成第三种执行拓扑。
+ *   - 线程模型：只有 1 个 worker 载体 pthread（pump）。thread_create 仅
+ *     登记请求；pump 在自己的栈上 materialize 协程（getcontext/makecontext
+ *     全部发生在 pump 线程），随后 run_once 协作驱动。
  *
  * 与其他文件的关系
  *   - 上游：common.hpp 在 ISP_DEMO_CORO 时把 DemoPal 绑到本文件 CoroPal；
- *     main.cpp 启动顺序为：构造 StackfulExecutor → 启动 pump → 实例化
- *     worker → worker.start() 经 g_pal->thread_create 落入本文件 shim。
- *   - 下游：全部 7 个非 AO worker（IrscWorker / IspIrqWorker / SoutDmaWorker
- *     / MipiIrqWorker / CmdDmaWorker / UsbDmaWorker）共用此 shim；
- *     worker 的 sleep_us / mutex_lock 也走它进入协程 pump。
+ *     main.cpp 启动顺序为：构造 StackfulExecutor → install_pump_hook →
+ *     启动 pump → 实例化 worker → worker.start() 经 g_pal->thread_create
+ *     落入本文件 shim 的登记表。
+ *   - 下游：全部 7 个非 AO worker 共用此 shim。
  *   - 依赖：coact::pal::Posix（基类）/ coro_mode.hpp（StackfulExecutor 与
  *     yield/resume）/ coact::coro 原语；common.hpp 的 g_pal 单例持有。
- *
- * 文字图（PAL shim 视角）
- * ┌──────────────────────────────────────────────────────────────────┐
- * │ 例子系统数据流（→事件信号  ⇒DDR/黑板数据）                        │
- * │                                                                  │
- * │  [sensor_irsc]──kFrameIrscOut──▶[isp_chain]──kHlFused/Done──▶   │
- * │   ▲ DemoPal (ISP_DEMO_CORO → 本文件 CoroPal)                    │
- * │   │ thread_create / sleep_us / cond_wait → StackfulExecutor pump│
- * │                                  [video_stream]──kPicPacked──▶  │
- * │                                  [output_itf]──kFrameEof──▶     │
- * │                                  [winhost 观察者]                │
- * │                                                                  │
- * │  编排: [main.cpp] ──kIrscCmd/kVideoCmd──▶ 各模块 AO             │
- * │  重配: [recfg_session] ◀──kRecfgReq── main；门控 g_session      │
- * │  共享: [common.hpp] 词汇+DdrCtx+黑板 / PAL: g_pal (本文件 shim)  │
- * └──────────────────────────────────────────────────────────────────┘
  * ===========================================================================
  */
 // ISP demo coro-mode PAL shim: coact::pal::Posix subclass whose
-// thread_create/sleep_us route into the coro executor instead of pthreads.
-// SPDX-License-Identifier: MIT
+// thread_create/sleep_us/cond_wait route into the coro executor instead of
+// pthreads. SPDX-License-Identifier: MIT
 #pragma once
 
 #include "isp_pipeline/coro_mode.hpp"
@@ -57,21 +38,26 @@
 
 namespace isp_demo_coro {
 
-struct CoroThreadCtx {
+// One deferred thread_create request. The pump materializes it (arms the
+// coroutine) on the pump thread; the calling thread never touches ucontext.
+struct PendingSlot {
     void (*entry)(void*) = nullptr;
     void* arg = nullptr;
-    coact::coro::posix::Coroutine* co = nullptr;
+    coact::coro::posix::Coroutine* co = nullptr;  // armed by the pump
 };
 
-inline bool is_on_coroutine_stack() noexcept
+inline bool is_on_pump_thread() noexcept
 {
     return pthread_self() == g_thread && g_thread_valid;
 }
 
+// Sleep routing: inside a coroutine body (pump thread with a live current_)
+// the sleep becomes a cooperative yield; on any other thread it is a real
+// sleep (main-thread pacing keeps real semantics).
 inline void coro_pal_sleep_us(coact::coro::posix::Coroutine* co,
                               uint32_t us) noexcept
 {
-    if ((nullptr != co) && is_on_coroutine_stack()) {
+    if ((nullptr != co) && is_on_pump_thread()) {
         coro_sleep_us(*co, us);
     } else {
         sleep_us_impl(us);
@@ -85,21 +71,30 @@ class CoroPal final : public coact::pal::Posix {
 public:
     static constexpr uint16_t kMaxCoroThreads = 12U;
 
+    // Deferred arm: the pump thread materializes pending thread_create
+    // requests on ITS OWN stack (ucontext setup stays on one thread).
+    static void pump_materialize() noexcept
+    {
+        for (uint16_t i = 0U; i < kMaxCoroThreads; ++i) {
+            PendingSlot& p = pending_[i];
+            if ((nullptr != p.entry) && (nullptr == p.co)) {
+                p.co = g_exec->arm(&coro_thread_body, &p,
+                                   coact::coro::posix::ResumeArg{});
+            }
+        }
+    }
+
+    // thread_create only ENQUEUES the request; the pump arms it.
     bool thread_create(ThreadHandle& t, coact::pal::ThreadEntry entry,
                        void* context) noexcept
     {
         for (uint16_t i = 0U; i < kMaxCoroThreads; ++i) {
-            if (nullptr == slots_[i].entry) {
-                slots_[i].entry = entry;
-                slots_[i].arg = context;
-                slots_[i].co = g_exec->arm(&coro_thread_body, &slots_[i],
-                                           coact::coro::posix::ResumeArg{});
-                if (nullptr == slots_[i].co) {
-                    slots_[i].entry = nullptr;
-                    return false;
-                }
+            if (nullptr == pending_[i].entry) {
+                pending_[i].entry = entry;
+                pending_[i].arg = context;
+                pending_[i].co = nullptr;
                 t.valid = true;
-                t.tid = reinterpret_cast<pthread_t>(slots_[i].co);
+                t.tid = reinterpret_cast<pthread_t>(&pending_[i]);
                 return true;
             }
         }
@@ -108,19 +103,15 @@ public:
 
     void thread_join(ThreadHandle& t) noexcept
     {
-        for (uint16_t i = 0U; i < kMaxCoroThreads; ++i) {
-            if (reinterpret_cast<pthread_t>(slots_[i].co) == t.tid &&
-                nullptr != slots_[i].entry) {
-                for (int pass = 0; pass < 2000000; ++pass) {
-                    if (!slots_[i].co->is_running()) {
-                        slots_[i].entry = nullptr;
-                        t.valid = false;
-                        return;
-                    }
-                    sleep_us_impl(200U);
-                }
+        PendingSlot* p = reinterpret_cast<PendingSlot*>(t.tid);
+        for (int pass = 0; pass < 2000000; ++pass) {
+            if ((nullptr != p->co) && !p->co->is_running()) {
+                p->entry = nullptr;
+                p->co = nullptr;
+                t.valid = false;
                 return;
             }
+            sleep_us_impl(200U);
         }
         t.valid = false;
     }
@@ -132,20 +123,17 @@ public:
 
     // Cooperative cond_wait: when called from INSIDE a coroutine body, the
     // pump thread must never park in pthread_cond_wait (that would freeze
-    // every other coroutine). Instead: unlock, yield one scheduling pass
-    // (200 us park via the executor), relock - the single-core polling
-    // scheduler equivalent of a condvar wait. On any other thread it is a
-    // real cond_wait (main-thread joins keep blocking semantics).
+    // every other coroutine). Instead: unlock, yield one scheduling pass,
+    // relock with a trylock loop (the main thread may hold the mutex inside
+    // its own real cond_wait stop protocol; a blocking lock here would park
+    // the pump - single-core rule: never park). On any other thread this is
+    // a real cond_wait.
     void cond_wait(CondHandle& c, MutexHandle& m,
                    uint32_t timeout_ms) noexcept
     {
-        if ((nullptr != current_) && is_on_coroutine_stack()) {
+        if ((nullptr != current_) && is_on_pump_thread()) {
             coact::pal::Posix::mutex_unlock(m);
             coro_sleep_us(*current_, 200U);
-            /* Re-acquire with a yield-loop trylock: the main thread may hold
-               the mutex inside its own (real) cond_wait stop protocol - a
-               blocking pthread_mutex_lock here would park the pump thread
-               and freeze every coroutine (single-core rule: never park). */
             while (0 != pthread_mutex_trylock(&m.mtx)) {
                 coro_sleep_us(*current_, 200U);
             }
@@ -154,22 +142,32 @@ public:
         coact::pal::Posix::cond_wait(c, m, timeout_ms);
     }
 
+    // The body announces itself so sleep_us/cond_wait from the worker entry
+    // route into cooperative yields (thread_local: pump thread only).
     static void set_current(coact::coro::posix::Coroutine* co) noexcept
     {
         current_ = co;
     }
 
 private:
-    CoroThreadCtx slots_[kMaxCoroThreads]{};
+    static PendingSlot pending_[kMaxCoroThreads];
     static thread_local coact::coro::posix::Coroutine* current_;
 };
 
+inline PendingSlot CoroPal::pending_[kMaxCoroThreads] = {};
+
 inline thread_local coact::coro::posix::Coroutine* CoroPal::current_ = nullptr;
+
+// Install the pump hook (called once from main via install_pump_hook()).
+inline void install_pump_hook() noexcept
+{
+    pump_materialize_hook = &CoroPal::pump_materialize;
+}
 
 inline void coro_thread_body(void* user,
                              coact::coro::posix::Coroutine& self)
 {
-    CoroThreadCtx* ctx = static_cast<CoroThreadCtx*>(user);
+    PendingSlot* ctx = static_cast<PendingSlot*>(user);
     CoroPal::set_current(ctx->co);
     ctx->entry(ctx->arg);
     CoroPal::set_current(nullptr);

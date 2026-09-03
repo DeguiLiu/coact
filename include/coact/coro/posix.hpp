@@ -43,6 +43,9 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 #include <utility>
 
 #include "coact/coro/config.hpp"
@@ -312,22 +315,43 @@ public:
     static constexpr uint16_t kCapacity = MaxCoroutines;
     static constexpr uint32_t kStackBytes = StackBytes;
 
-    StackfulExecutor() noexcept = default;
+    StackfulExecutor() noexcept {
+        /* Fill all stack guards with the magic at construction so the
+           run_once() canary check does not flag never-armed slots. arm()
+           overwrites both ends on each use. */
+        constexpr uint64_t kGuard = 0xDEADBEEFCAFEBABEULL;
+        for (uint16_t i = 0U; i < kCapacity; ++i) {
+            std::byte* base = stacks_[i].bytes.data();
+            std::memcpy(base, &kGuard, sizeof(kGuard));
+            std::memcpy(base + kStackBytes - sizeof(kGuard), &kGuard,
+                        sizeof(kGuard));
+        }
+    }
     StackfulExecutor(const StackfulExecutor&) = delete;
     StackfulExecutor& operator=(const StackfulExecutor&) = delete;
 
-    // Arm a new coroutine on a free stack slot. Returns nullptr when all
+    // Arm a coroutine on a free stack slot. Returns nullptr when all
     // slots are busy. Must be called before start() or from the executor
     // thread.
     Coroutine* arm(void (*body)(void*, Coroutine&), void* user,
                    ResumeArg initial_arg) noexcept
     {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         for (uint16_t i = 0U; i < kCapacity; ++i) {
             if (SlotState::kFree == slots_[i].state) {
                 Coroutine& co = slots_[i].co;
                 if (!co.arm(stacks_[i].bytes.data(), StackBytes, body, user,
                             initial_arg)) {
                     return nullptr;
+                }
+                /* STACK GUARD: mark both ends of this coroutine stack so
+                   run_once() can detect overflow / underflow precisely. */
+                {
+                    std::byte* base = stacks_[i].bytes.data();
+                    constexpr uint64_t kGuard = 0xDEADBEEFCAFEBABEULL;
+                    std::memcpy(base, &kGuard, sizeof(kGuard));
+                    std::memcpy(base + StackBytes - sizeof(kGuard), &kGuard,
+                                sizeof(kGuard));
                 }
                 slots_[i].state = SlotState::kRun;
                 slots_[i].deadline_ns = 0U;
@@ -342,6 +366,7 @@ public:
     // the TaskRegistry completion path.
     void wake(Coroutine& co, ResumeArg arg) noexcept
     {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         Slot* s = slot_of(co);
         if ((nullptr != s) && (SlotState::kWaitTask == s->state)) {
             s->state = SlotState::kRun;
@@ -355,8 +380,10 @@ public:
     // Returns the number of live (non-retired) coroutines after the pass.
     uint16_t run_once() noexcept
     {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         const uint64_t now = now_ns();
         uint16_t live = 0U;
+
         for (uint16_t i = 0U; i < kCapacity; ++i) {
             Slot& s = slots_[i];
             if (SlotState::kFree == s.state) {
@@ -404,6 +431,7 @@ public:
     // Number of non-free slots.
     uint16_t live_count() const noexcept
     {
+        std::lock_guard<std::mutex> lock(state_mutex_);
         uint16_t live = 0U;
         for (uint16_t i = 0U; i < kCapacity; ++i) {
             if (SlotState::kFree != slots_[i].state) {
@@ -435,6 +463,7 @@ private:
 
     Slot slots_[kCapacity]{};
     StaticStackPool<StackBytes> stacks_[kCapacity]{};
+    mutable std::mutex state_mutex_;
 };
 
 // -------------------------------------------------------------------------

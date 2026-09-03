@@ -204,6 +204,7 @@ int main()
     static coact::coro::posix::StackfulExecutor<16U, 256U * 1024U> coro_exec;
     isp_demo_coro::g_exec = &coro_exec;
     DemoPal pal;
+    isp_demo_coro::install_pump_hook();
     isp_demo_coro::start_executor();
 #else
     DemoPal pal;

@@ -79,6 +79,23 @@ add_test(NAME isp_pipeline_demo_rtt
          COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
                  --target isp_pipeline_demo_rtt)
 
+# msh_monitor_demo: MSH-style three-layer monitoring queries over a running
+# AO system (design_architecture_zh.md 5.9). A compact self-built runtime:
+# 7 AOs (incl. a reconfig-transaction HSM) + 2 non-AO workers + a mini
+# hardware blackboard; the scenario (boot -> IRSC 4-step -> streaming ->
+# live X1->X2 reconfig -> stop) interleaves `query status/data/health` at
+# milestones AND fires queries from a parallel monitor pthread mid-run.
+# Queries read lock-free snapshots only (no event plane) — the "query never
+# interrupts" proof. Command dispatch is a const static function table.
+add_executable(msh_monitor_demo
+    msh_monitor_demo.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp)
+target_link_libraries(msh_monitor_demo PRIVATE coact_core Threads::Threads)
+# Self-verifying: asserts its invariants and exits non-zero on failure.
+add_test(NAME msh_monitor_demo COMMAND msh_monitor_demo)
+
+include(${CMAKE_CURRENT_SOURCE_DIR}/coact_coro_demos.cmake)
+
 # log_rtthread_demo: single-core RT-Thread static log adapter, compiled on host
 # against test/rtthread_stub.h (RT-Thread API backed by pthreads). Exercises the
 # writer end-to-end: task + ISR producers, admission drop, stop/drain.

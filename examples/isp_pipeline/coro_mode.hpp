@@ -119,10 +119,15 @@ inline void coro_sleep_us(coact::coro::posix::Coroutine& co,
         now_us() + static_cast<uint64_t>(us), 0U});
 }
 
+// Hook the PAL installs so the pump materializes deferred thread_create
+// requests on the pump's own stack (see coro_pal.hpp).
+inline void (*pump_materialize_hook)() noexcept = []() noexcept {};
+
 // Executor pump thread: round-robin cooperative passes until stop + drain.
 inline void* pump_trampoline(void* /*arg*/) noexcept
 {
     while (!g_stop.load(std::memory_order_acquire)) {
+        isp_demo_coro::pump_materialize_hook();
         if (0U == g_exec->run_once()) {
             /* All coroutines parked or finished: brief idle nap (no busy
                spin; the workload is latency-paced, not throughput-paced). */

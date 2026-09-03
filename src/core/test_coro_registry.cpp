@@ -375,7 +375,7 @@ COACT_TEST(task_generation_guard_stale_handle)
     CHECK_EQ(stale_id.slot().value, second.task.id().slot().value);
     CHECK(stale_id.generation() != second.task.id().generation());
 
-    /* The new incarnation is live and independent. */
+    /* The fresh incarnation is live and independent. */
     REQUIRE(static_cast<bool>(second.promise.complete(2U)));
 
     /* Stale id operations fail with kInvalidId. */
