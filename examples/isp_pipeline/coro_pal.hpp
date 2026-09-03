@@ -33,6 +33,7 @@
 #ifdef ISP_DEMO_CORO
 
 #include <cstdint>
+#include <mutex>
 
 #include "coact/pal_posix.hpp"
 
@@ -76,6 +77,7 @@ public:
     static void pump_materialize() noexcept
     {
         for (uint16_t i = 0U; i < kMaxCoroThreads; ++i) {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
             PendingSlot& p = pending_[i];
             if ((nullptr != p.entry) && (nullptr == p.co)) {
                 p.co = g_exec->arm(&coro_thread_body, &p,
@@ -88,6 +90,7 @@ public:
     bool thread_create(ThreadHandle& t, coact::pal::ThreadEntry entry,
                        void* context) noexcept
     {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
         for (uint16_t i = 0U; i < kMaxCoroThreads; ++i) {
             if (nullptr == pending_[i].entry) {
                 pending_[i].entry = entry;
@@ -105,11 +108,14 @@ public:
     {
         PendingSlot* p = reinterpret_cast<PendingSlot*>(t.tid);
         for (uint32_t pass = 0U; pass < 2000000U; ++pass) {
-            if ((nullptr != p->co) && !p->co->is_running()) {
-                p->entry = nullptr;
-                p->co = nullptr;
-                t.valid = false;
-                return;
+            {
+                std::lock_guard<std::mutex> lock(pending_mutex_);
+                if ((nullptr != p->co) && !p->co->is_running()) {
+                    p->entry = nullptr;
+                    p->co = nullptr;
+                    t.valid = false;
+                    return;
+                }
             }
             sleep_us_impl(200U);
         }
@@ -118,7 +124,7 @@ public:
 
     void sleep_us(uint32_t us) noexcept
     {
-        coro_pal_sleep_us(current_, us);
+        coro_pal_sleep_us(coact::coro::posix::Coroutine::current(), us);
     }
 
     // Cooperative cond_wait: when called from INSIDE a coroutine body, the
@@ -131,32 +137,26 @@ public:
     void cond_wait(CondHandle& c, MutexHandle& m,
                    uint32_t timeout_ms) noexcept
     {
-        if ((nullptr != current_) && is_on_pump_thread()) {
+        coact::coro::posix::Coroutine* current =
+            coact::coro::posix::Coroutine::current();
+        if ((nullptr != current) && is_on_pump_thread()) {
             coact::pal::Posix::mutex_unlock(m);
-            coro_sleep_us(*current_, 200U);
+            coro_sleep_us(*current, 200U);
             while (0 != pthread_mutex_trylock(&m.mtx)) {
-                coro_sleep_us(*current_, 200U);
+                coro_sleep_us(*current, 200U);
             }
             return;
         }
         coact::pal::Posix::cond_wait(c, m, timeout_ms);
     }
 
-    // The body announces itself so sleep_us/cond_wait from the worker entry
-    // route into cooperative yields (thread_local: pump thread only).
-    static void set_current(coact::coro::posix::Coroutine* co) noexcept
-    {
-        current_ = co;
-    }
-
 private:
     static PendingSlot pending_[kMaxCoroThreads];
-    static thread_local coact::coro::posix::Coroutine* current_;
+    static std::mutex pending_mutex_;
 };
 
 inline PendingSlot CoroPal::pending_[kMaxCoroThreads] = {};
-
-inline thread_local coact::coro::posix::Coroutine* CoroPal::current_ = nullptr;
+inline std::mutex CoroPal::pending_mutex_;
 
 // Install the pump hook (called once from main via install_pump_hook()).
 inline void install_pump_hook() noexcept
@@ -168,9 +168,7 @@ inline void coro_thread_body(void* user,
                              coact::coro::posix::Coroutine& self)
 {
     PendingSlot* ctx = static_cast<PendingSlot*>(user);
-    CoroPal::set_current(ctx->co);
     ctx->entry(ctx->arg);
-    CoroPal::set_current(nullptr);
     (void)self.yield(coact::coro::posix::YieldRequest{
         coact::coro::posix::WaitReason::kDone, 0U, 0U});
 }

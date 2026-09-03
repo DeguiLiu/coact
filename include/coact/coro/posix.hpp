@@ -41,6 +41,7 @@
 #include <ucontext.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -168,7 +169,12 @@ public:
     // after a yield returns (the executor refreshed it before the swap).
     ResumeArg resume_arg() const noexcept { return pending_arg_; }
 
-    bool is_running() const noexcept { return running_; }
+    static Coroutine* current() noexcept { return active_; }
+
+    bool is_running() const noexcept
+    {
+        return running_.load(std::memory_order_acquire);
+    }
 
     // True once start() entered the body (executor picks start vs resume).
     bool started() const noexcept { return started_; }
@@ -184,8 +190,9 @@ private:
     ResumeArg pending_arg_{};
     YieldRequest last_yield_{};
     bool armed_ = false;
-    bool running_ = false;
+    std::atomic<bool> running_{false};
     bool started_ = false;
+    inline static thread_local Coroutine* active_ = nullptr;
 
     static void trampoline(void* self_void) noexcept;
     void run_body() noexcept;
@@ -238,13 +245,18 @@ inline bool Coroutine::arm(void* stack, uint32_t stack_bytes,
     body_ = body;
     user_ = user;
     pending_arg_ = arg;
+    running_ = false;
+    started_ = false;
     armed_ = getcontext(&ctx_) == 0;
     if (!armed_) {
         return false;
     }
     ctx_.uc_stack.ss_sp = stack;
     ctx_.uc_stack.ss_size = stack_bytes;
-    ctx_.uc_link = &return_ctx_;
+    // Natural body return is handled by run_body(), which swaps to the
+    // executor context captured by resume/start. Keep uc_link null so
+    // makecontext never attempts an implicit setcontext to the arming thread.
+    ctx_.uc_link = nullptr;
     makecontext(&ctx_, reinterpret_cast<void (*)()>(&Coroutine::trampoline),
                 1, static_cast<void*>(this));
     return true;
@@ -255,6 +267,7 @@ inline YieldRequest Coroutine::resume(ResumeArg arg) noexcept
     if (!armed_ || !running_) {
         return YieldRequest{WaitReason::kDone, 0U, 0U};
     }
+    active_ = this;
     pending_arg_ = arg;
     if (swapcontext(&return_ctx_, &ctx_) != 0) {
         running_ = false;
@@ -274,6 +287,7 @@ inline YieldRequest Coroutine::start(ResumeArg arg) noexcept
     }
     running_ = true;
     started_ = true;
+    active_ = this;
     pending_arg_ = arg;
     if (swapcontext(&return_ctx_, &ctx_) != 0) {
         running_ = false;

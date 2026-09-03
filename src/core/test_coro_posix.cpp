@@ -7,6 +7,7 @@
 #include "test/test_harness.hpp"
 
 #include <cstdint>
+#include <thread>
 
 #include "coact/coro/config.hpp"
 #include "coact/coro/posix.hpp"
@@ -155,6 +156,66 @@ COACT_TEST(stackful_executor_capacity_full)
         REQUIRE(nullptr != exec.arm(&body_b, &st, ResumeArg{}));
     }
     CHECK(nullptr == exec.arm(&body_b, &st, ResumeArg{}));
+}
+
+struct AlternationState {
+    uint32_t a = 0U;
+    uint32_t b = 0U;
+    uint32_t wrong_active = 0U;
+};
+
+static void alternating_body(void* user, Coroutine& self)
+{
+    auto* state = static_cast<AlternationState*>(user);
+    const bool is_a = (state->a == state->b);
+    for (uint32_t i = 0U; i < 128U; ++i) {
+        if (Coroutine::current() != &self) {
+            ++state->wrong_active;
+        }
+        if (is_a) {
+            ++state->a;
+        } else {
+            ++state->b;
+        }
+        (void)self.yield(YieldRequest{WaitReason::kSleep,
+                                      coact::coro::posix::now_ns(), 0U});
+    }
+    (void)self.yield(YieldRequest{WaitReason::kDone, 0U, 0U});
+}
+
+COACT_TEST(stackful_executor_tracks_active_coroutine)
+{
+    StackfulExecutor<2U, 32U * 1024U> exec;
+    AlternationState state;
+    REQUIRE(nullptr != exec.arm(&alternating_body, &state, ResumeArg{}));
+    REQUIRE(nullptr != exec.arm(&alternating_body, &state, ResumeArg{}));
+    for (uint32_t pass = 0U; pass < 300U && exec.live_count() != 0U;
+         ++pass) {
+        (void)exec.run_once();
+        std::this_thread::yield();
+    }
+    CHECK_EQ(0U, exec.live_count());
+    CHECK_EQ(128U, state.a);
+    CHECK_EQ(128U, state.b);
+    CHECK_EQ(0U, state.wrong_active);
+}
+
+static void one_shot_body(void* user, Coroutine& self)
+{
+    auto* runs = static_cast<uint32_t*>(user);
+    ++*runs;
+    (void)self.yield(YieldRequest{WaitReason::kDone, 0U, 0U});
+}
+
+COACT_TEST(stackful_executor_rearms_retired_slot)
+{
+    StackfulExecutor<1U, 32U * 1024U> exec;
+    uint32_t runs = 0U;
+    REQUIRE(nullptr != exec.arm(&one_shot_body, &runs, ResumeArg{}));
+    CHECK_EQ(0U, exec.run_once());
+    REQUIRE(nullptr != exec.arm(&one_shot_body, &runs, ResumeArg{}));
+    CHECK_EQ(0U, exec.run_once());
+    CHECK_EQ(2U, runs);
 }
 
 /* Affinity pinning: the API exists on Linux; pinning to an out-of-range

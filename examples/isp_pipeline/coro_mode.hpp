@@ -80,6 +80,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <thread>
 #include <utility>
 
 #include "coact/coro/posix.hpp"
@@ -91,7 +92,7 @@ inline coact::coro::posix::StackfulExecutor<16U, 256U * 1024U>* g_exec =
     nullptr;
 inline std::atomic<bool> g_stop{false};
 inline pthread_t g_thread{};
-inline bool g_thread_valid = false;
+inline std::atomic<bool> g_thread_valid{false};
 
 inline uint64_t now_us() noexcept
 {
