@@ -49,7 +49,7 @@
 ### 3.2 监督与评审
 
 - **监督员**：全程 1 分钟（后改 10 分钟）轮审，收官报告确认 16 轮稳定全绿、无 agent 冲突、预警巨型提交（f8bd107 17395 行）与 common.hpp 950 行大杂烩风险（→ 已派 vocabulary 拆分应对）
-- **深度评审**（`docs/example_ISP_pipeline_review_task_code_architecture.md`）：记录重配窗口、PAL 同步、线程资源和代码质量问题。
+- **深度评审**（`docs/example_ISP_pipeline_review_record_code_architecture.md`）：记录重配窗口、PAL 同步、线程资源和代码质量问题。
 
 ## 4. 文档清单
 
@@ -60,7 +60,7 @@
 | docs/cpp_coding_conventions_zh.md | 418 行：纯 C++17 规约 124 条 + 47 项 checklist（全体 agent 遵循） |
 | docs/example_ISP_pipeline_functional_test_report_zh.md | 测试方法、RS500 对应关系和一致性验证 |
 | docs/isp_pipeline_demo_run_log.txt | 755 行：日志阅读指南 + 18 处内联中文阶段注释 |
-| docs/example_ISP_pipeline_review_task_code_architecture.md | 评审任务书 v1.1（含首轮遗留项复核表） |
+| docs/example_ISP_pipeline_review_record_code_architecture.md | 评审任务书 v1.1（含首轮遗留项复核表） |
 | docs/cpp17_coact_usage_zh.md | coro 使用文档（并行协作产出） |
 
 ## 5. 待处理事项

@@ -2,6 +2,10 @@
 
 **结论**：66 项功能自检断言全 PASS（exit 0）。功能验证方法为"自检断言内嵌"，逐项核对 RS500 业务场景的架构级复现与修复（示例定位：架构模型与故障注入演示，非业务复刻）。
 
+**关联文档**：架构说明见 `example_ISP_pipeline_design_architecture_zh.md`；一致性故障与处理见 `example_ISP_pipeline_design_consistency_avoidance_zh.md`；代码评审见 `example_ISP_pipeline_review_record_code_architecture.md`；逐阶段运行证据见 `isp_pipeline_demo_run_log_fresh.txt`。
+
+**推荐阅读顺序**：先看第 1 章功能链路，再看第 2 章断言分组，最后按第 4 章命令复现；运行时输出和中文阶段说明集中在 `isp_pipeline_demo_run_log_fresh.txt`。
+
 ## 1. 测试范围
 
 ```mermaid
@@ -48,7 +52,7 @@ flowchart LR
 
 ### 2.3 日志范围
 
-日志分四层，各层频次与用途不同，单次运行总量约 330 条（输出 571 行）：
+日志分四层，各层频次与用途不同；最新 coro 运行输出 727 行，逐项结果见 `isp_pipeline_demo_run_log_fresh.txt`：
 
 | 层级 | 内容 | 频次（单次运行） |
 |---|---|---|
@@ -74,7 +78,7 @@ cd build && make -j12
 
 ## 5. 与 RS500 功能对应关系
 
-对齐分析基于 ~/RS500/docs/ 文档与 ~/RS500/module/ 源码逐项核实（映射范围限文档提及的核心模块 + vdcmd，按既定边界不追求线程全覆盖）。
+对齐分析基于示例源码、运行日志和 RS500 模块名称逐项核实（映射范围限核心模块与 vdcmd，按既定边界不追求线程全覆盖）。
 
 ### 5.1 已对齐功能
 
@@ -92,13 +96,13 @@ cd build && make -j12
 | MIPI CSI TX stream error/idle 中断回流 | MipiIrqWorker + MipiSinkAo TX_PENDING 态 | 语义对齐 | 无 CSI-2 包/D-PHY |
 | T37 UVC X2 提前封帧（655360B ERR+EOF）与 Identity Zoom 规避 | WRAPE 字节级精确复现 + 10 轮切换稳定 | 完整 | 最接近真实故障（字节边界精确） |
 | 超分 X1→X2 原子重配（重配事务窗口） | RecfgOrchAo 8 态 + 事务冻结 | 完整 | 架构实验模型，重配内容为几何参数 |
-| deinit 停稳机制分叉（Change16517） | QuiescePolicy 编译期统一门面 | 完整 | ioctl 计数为建模值 |
+| deinit 停稳机制差异（Change16517） | QuiescePolicy 编译期选择事件或轮询路径 | 完整 | ioctl 计数为建模值 |
 | regmap 三标志缓存协议（Linux regcache 同构） | PeriphRegCache + BypassGuard | 完整 | 寄存器地址空间为玩具集 |
 | 三类画面异常（花屏/丢帧/闪屏）复现与修复 | anomaly 场景组断言 | 完整 | 像素为 8x8 玩具帧 |
 
 ### 5.2 同步与一致性问题对照
 
-demo 的核心定位：用 coact 架构系统性解决 RS500 文档复盘过的同步与一致性问题，每类均有"复现故障 → 架构规避 → 断言验证"完整闭环。
+demo 的定位是复现 RS500 文档中的同步与一致性问题，并记录处理结果和测试断言。
 
 | RS500 反馈的问题 | 解决机制（架构层） | 验证 |
 |---|---|---|
@@ -107,7 +111,7 @@ demo 的核心定位：用 coact 架构系统性解决 RS500 文档复盘过的�
 | 参数回灌（旧参数回写寄存器） | regmap 三标志协议 + RAII BypassGuard（Linux regcache 同构） | 0xBEEF→0x1002 覆盖复现 + 零新漂移断言 |
 | 废弃地址（DMA 用旧布局） | layout_version 查即作废 | stale query MISS 断言 |
 | 坐标失同步 | 单一坐标变换权威 | [100,200]→[439,539] 映射断言 |
-| deinit 停稳机制分叉（Change16517） | QuiescePolicy 编译期统一门面 | ioctl 计数对比断言 |
+| deinit 停稳机制差异（Change16517） | QuiescePolicy 编译期选择路径 | ioctl 计数对比断言 |
 | 峰值破窗丢帧 | 显式窗口模型 + DDR 环 overrun 守卫 | spike 4 drops 复现 + 深窗口 0 drops 断言 |
 | 半停重启闪屏 | HSM 停稳弧 | 旧几何 flash 复现 + 对齐断言 |
 | 花屏（位宽错配） | 共享假设单点验证 | 32/32 损坏复现 + 0 损坏断言 |
