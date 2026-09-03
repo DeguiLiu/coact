@@ -1,12 +1,14 @@
 // coact::coro strong identity types: TaskId (generation-guarded) and
-// TaskSlotId (raw slot index). Zero-overhead value wrappers in the
-// coact::TargetId style.
+// TaskSlotId (raw slot index). Zero-overhead value wrappers: TaskId is a
+// NewType alias so every id in the codebase shares one strong-typing idiom.
 // SPDX-License-Identifier: MIT
 #pragma once
 
 #include <cstdint>
+#include <type_traits>
 
 #include "coact/coro/config.hpp"
+#include "coact/vocabulary.hpp"
 
 namespace coact {
 namespace coro {
@@ -31,34 +33,30 @@ struct TaskSlotId {
 //   [15:8] generation (wraps after 256 releases per slot - callers must not
 //                     hold a handle across 256 subsequent uses of that slot)
 //   [7:0]  slot index (capacity <= 256)
-// Capacities above 256 slots are rejected at compile time.
-struct TaskId {
-    uint16_t value = 0U;
-    constexpr TaskId() noexcept = default;
-    constexpr explicit TaskId(uint16_t raw) noexcept : value(raw) {}
-    constexpr explicit operator bool() const noexcept { return 0U != value; }
+// Capacities above 256 slots are rejected at compile time. Packing and
+// unpacking live in the free functions below (make_task_id / slot_of /
+// generation_of) because NewType is a plain strong wrapper.
+struct TaskIdTag {};
+using TaskId = coact::NewType<uint16_t, TaskIdTag>;
 
-    constexpr TaskSlotId slot() const noexcept
-    {
-        return TaskSlotId(static_cast<uint16_t>(
-            value & static_cast<uint16_t>(0xFFU)));
-    }
+// Pack (slot index, generation) into the wire identity.
+constexpr TaskId make_task_id(TaskSlotId slot, uint16_t gen) noexcept
+{
+    return TaskId(static_cast<uint16_t>(
+        ((gen & 0xFFU) << 8U) | (slot.value & 0xFFU)));
+}
 
-    constexpr uint16_t generation() const noexcept
-    {
-        return static_cast<uint16_t>(value >> 8U);
-    }
+// Slot index half of a TaskId (low 8 bits).
+constexpr TaskSlotId slot_of(TaskId id) noexcept
+{
+    return TaskSlotId(static_cast<uint16_t>(id.value() & 0xFFU));
+}
 
-    static constexpr TaskId make(TaskSlotId slot, uint16_t gen) noexcept
-    {
-        return TaskId(static_cast<uint16_t>(
-            ((gen & 0xFFU) << 8U) | (slot.value & 0xFFU)));
-    }
-
-    constexpr uint16_t raw() const noexcept { return value; }
-    constexpr bool operator==(TaskId o) const noexcept { return value == o.value; }
-    constexpr bool operator!=(TaskId o) const noexcept { return value != o.value; }
-};
+// Generation half of a TaskId (high 8 bits).
+constexpr uint16_t generation_of(TaskId id) noexcept
+{
+    return static_cast<uint16_t>(id.value() >> 8U);
+}
 
 inline constexpr TaskId kInvalidTaskId(0U);
 

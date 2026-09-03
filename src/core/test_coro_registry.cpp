@@ -63,11 +63,11 @@ static_assert(std::is_standard_layout<coact::coro::CompletionPayload>::value,
               "completion payload must be standard layout");
 
 /* TaskId packing checks. */
-static_assert(TaskId::make(coact::coro::TaskSlotId(3U), 5U).slot().value ==
-                  3U,
+static_assert(coact::coro::slot_of(coact::coro::make_task_id(
+                  coact::coro::TaskSlotId(3U), 5U)).value == 3U,
               "TaskId low bits are the slot index");
-static_assert(TaskId::make(coact::coro::TaskSlotId(3U), 5U).generation() ==
-                  5U,
+static_assert(coact::coro::generation_of(coact::coro::make_task_id(
+                  coact::coro::TaskSlotId(3U), 5U)) == 5U,
               "TaskId high bits are the generation");
 static_assert(!coact::coro::kInvalidTaskId, "kInvalidTaskId is falsy");
 
@@ -94,7 +94,7 @@ static void t_count(TrivialCtx& c, const coact::Event& e)
        offset 0): decode through the awaitable bridge. */
     const coact::coro::CompletionEventPayload p =
         coact::coro::decode_completion(e);
-    c.last_payload_task_id = p.id.raw();
+    c.last_payload_task_id = p.id.value();
     c.last_payload_status = static_cast<uint8_t>(p.status);
 }
 
@@ -194,7 +194,7 @@ COACT_TEST(task_basic_complete_and_release)
     /* The completion event reached the AO (direct or via the Dispatcher). */
     rig.drain(1U);
     CHECK_EQ(1U, rig.ao.context().completed_events);
-    CHECK_EQ(task.id().raw(), rig.ao.context().last_payload_task_id);
+    CHECK_EQ(task.id().value(), rig.ao.context().last_payload_task_id);
 
     auto res = rig.reg.take_result(task.id());
     REQUIRE(static_cast<bool>(res));
@@ -372,8 +372,10 @@ COACT_TEST(task_generation_guard_stale_handle)
     auto second_exp = rig.reg.create(coact::kInvalidTarget, 0U, coact::EventQos{false, false});
     REQUIRE(static_cast<bool>(second_exp));
     auto second = std::move(second_exp.value());
-    CHECK_EQ(stale_id.slot().value, second.task.id().slot().value);
-    CHECK(stale_id.generation() != second.task.id().generation());
+    CHECK_EQ(coact::coro::slot_of(stale_id).value,
+             coact::coro::slot_of(second.task.id()).value);
+    CHECK(coact::coro::generation_of(stale_id) !=
+          coact::coro::generation_of(second.task.id()));
 
     /* The fresh incarnation is live and independent. */
     REQUIRE(static_cast<bool>(second.promise.complete(2U)));
