@@ -48,7 +48,7 @@
 
 ### 3.2 监督与评审
 
-- **监督员**：全程 1 分钟（后改 10 分钟）轮审，收官报告确认 16 轮稳定全绿、无 agent 冲突、预警巨型提交（f8bd107 17395 行）与 common.hpp 950 行大杂烩风险（→ 已派 vocabulary 拆分应对）
+- **监督员**：全程 1 分钟（后改 10 分钟）轮审，最终报告确认 16 轮稳定全绿、无 agent 冲突、预警巨型提交（f8bd107 17395 行）与 common.hpp 950 行的模块边界风险（→ 已派 vocabulary 拆分应对）
 - **深度评审**（`docs/example_ISP_pipeline_review_record_code_architecture.md`）：记录重配窗口、PAL 同步、线程资源和代码质量问题。
 
 ## 4. 文档清单

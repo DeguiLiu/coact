@@ -36,8 +36,8 @@
 **评审期间新增修复（非首轮清单）**：
 - Monitor pending 不回写：dispatcher 递减路径补 `record_pending`（7de7094）
 - 协程 deadline 微秒/纳秒混用（睡眠近似立即到期）：统一纳秒基准（2c28d56）
-- **协程 current 路由崩溃（#41 blocker）**：demo 层 current_ 仅在协程 body 入口设置一次，多协程交替后读到陈旧指针，在自己栈上对错误协程 yield → swapcontext 互踩 → canary 爆。修复为 executor 在每次 swap 前后维护 current（4bb4e57，消融实验坐实：仅移植路由修复即 3/3 PASS）
-- slot 复用缺陷与 running_ 跨线程竞争：arm 重置状态 + atomic（4bb4e57，`rearms_retired_slot` RED 坐实）
+- **协程 current 路由崩溃（#41 blocker）**：demo 层 current_ 仅在协程 body 入口设置一次，多协程交替后读到陈旧指针，在自己栈上对错误协程 yield → swapcontext 交叉执行 → 栈保护字节被覆盖。修复为 executor 在每次 swap 前后维护 current（4bb4e57，消融实验验证：仅移植路由修复即 3/3 PASS）
+- slot 复用缺陷与 running_ 跨线程竞争：arm 重置状态 + atomic（4bb4e57，`rearms_retired_slot` 失败测试验证）
 - SoftIrq sigmask 泄漏：deinit 路径补 SIG_UNBLOCK（9ef5b88）
 
 **仍未闭合**：IRQ/SOUT parked 所有权在池耗尽时不闭合（分配失败直接 return，in_flight 不减）——见第 3 章 #6/#7。
