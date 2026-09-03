@@ -21,7 +21,7 @@
 | m-1 cond_signal 遗留令牌 | 未修复 | `src/core/pal_rtthread.cpp:543-546` 无 waiter 判断，空闲 signal 会在 counting semaphore 中留下令牌，改变下一次 wait 语义。 |
 | m-2 CoroPal 忙等 | 部分修复 | `coro_pal.hpp:124-140` 的 cond_wait 已 cooperative yield；但 `:104-117` 的 thread_join 仍以 200us 睡眠轮询并以固定次数超时。 |
 | m-3 coro 真 cond_wait 破坏公平 | 已修复 | `coro_pal.hpp:131-142` 在 pump 协程路径解锁、yield、trylock；非 pump 线程才调用 Posix cond_wait。 |
-| m-4 文档旧单文件落点 | 未修复 | `docs/cpp_coding_conventions_zh.md:8,24,47` 与 `docs/design_architecture_zh.md:3` 仍指向已不存在的 `examples/isp_pipeline_demo.cpp`。 |
+| m-4 文档旧单文件落点 | 已修复 | 架构文档已改用 `examples/isp_pipeline/` 和 `example_ISP_pipeline_*` 文档名。 |
 | m-5/m-6 | [待核实] | 首轮任务书未给出这两项的唯一原始定义；当前未将其臆测映射到新问题，需补充首轮报告后复核。 |
 
 ## 发现清单
@@ -58,7 +58,7 @@
 
 13. **IspPipelineAO 代码与实际装配脱节**：`recfg_session.hpp:88-140` 定义了 8 节点级联和 HSM 表，但 main 实际用 orchestrator 合成 8 个 ack；文档虽注明“未实例化”，仍保留可误用 API。修复：删除死代码或把合成行为封装成唯一明确的测试 double。
 
-14. **文档机制漂移**：`docs/design_architecture_zh.md:219,316,422-425` 仍描述 session 广播是主联动路径，但 `common.hpp:881-895` 明确只读 atomic guard、禁用 publish；多处源文件落点仍是旧单文件。修复：同步架构图、落点和“当前未广播”的状态。
+14. **文档机制漂移**：`docs/example_ISP_pipeline_design_architecture_zh.md` 已改为当前模块结构，并明确 session guard 直读 atomic、事件广播为备用机制。
 
 15. **有界协程 drain 可能提前返回**：`examples/isp_pipeline/coro_mode.hpp:137-142` 固定最多 20,000 次 `run_once()`，不检查最终 `live_count()`。长 sleep 或尚未 materialize 的协程可在 stop 返回时仍存活。修复：stop 只在 `live_count()==0` 后返回，并提供取消/时间推进策略。
 
@@ -70,9 +70,13 @@
 4. 协程 executor、CoroPal、worker stop 共用一套生命周期测试：pending、armed、running、retired 四态必须可观测。
 5. 将评审基线（HEAD、增量 commit、ctest 列表）写入报告前置记录，避免 SoftIrq 等提交脱离评审范围。
 
-## 验证与覆盖
+## 验证、覆盖与精简结论
 
 - 基线命令：`cd build && make -j12 && ctest --output-on-failure`。
 - 结果：构建成功，50/50 测试通过。
 - 现有 ctest 已覆盖 coro registry/combinators/posix/awaitable/scheduler/integration、timer 和 RT-Thread stub；当前工作树未覆盖 SoftIrq（目标增量缺失）。
 - MiniMax worker 因 Token Plan 限额返回 HTTP 429；所有报告证据由主模型使用 `rg`/带行号读取复核。
+
+### 精简结论
+
+当前代码可构建且测试通过，但资源耗尽、PAL 条件语义、协程时钟、IRQ 完成失败和停机排空仍需持续回归。

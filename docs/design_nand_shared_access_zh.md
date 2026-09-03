@@ -140,7 +140,7 @@ struct DataReadyEvent {
 
 `kDataUpdated` 用无 payload 的裸 `Event` 即可，扇出时仅凭信号识别。
 
-## 7. 拥有者 AO 实现骨架
+### 7. 拥有者 AO 实现骨架
 
 ```cpp
 // One pool carries every NAND event; block size covers the largest layout.
@@ -232,7 +232,7 @@ inline void on_read_done(NandCtx& ctx, const coact::Event& evt)
 
 通知采用每个订阅者独立 `alloc` 的事件，生命周期互不干扰。若需多个 AO 同时持有同一份只读数据（真正的多播共享），改用单次 `alloc` + `event_ref_inc` + 多次 `submit_from_task`，每个消费者处理完 `event_gc`，最后一个 gc 到 0 归还池。
 
-## 8. 装配
+### 8. 装配
 
 ```cpp
 using RuntimeT = coact::Runtime<coact::DefaultConfig, coact::pal::RtThread,
@@ -253,7 +253,7 @@ g_rt.start();
 
 写方 AO-A 发起请求，NAND 完成中断经 `try_submit_from_isr` 推进状态机，全程无锁。
 
-## 9. 边界与约束
+### 9. 边界与约束
 
 - **查询响应零共享是核心**。小数据（配置、状态）用 `DataReadyEvent` 内联快照；大数据块若内联代价过高，改用"响应事件携带 `const` 指针 + 读完成确认事件归还"或双缓冲快照，但设备访问的独占 AO 无论如何不可省。
 - **订阅者列表是编译期静态数组**，与 coact 反动态分配、反工厂的约束一致。

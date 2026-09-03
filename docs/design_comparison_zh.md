@@ -85,7 +85,7 @@
 
 ---
 
-## 7. 平台抽象
+### 7. 平台抽象
 
 | 维度 | coact | newosp |
 |---|---|---|
@@ -96,7 +96,7 @@
 
 ---
 
-## 8. 编译期配置
+### 8. 编译期配置
 
 | 维度 | coact | newosp |
 |---|---|---|
@@ -105,7 +105,7 @@
 
 ---
 
-## 9. 并发内存序纪律
+### 9. 并发内存序纪律
 
 两库均全程显式 memory_order，无 seq_cst 兜底。coact 额外：
 - `wake_pending_` acq_rel exchange 合并唤醒；Dispatcher 清 latch 后复查 Ready，producer publish 后仅在 false→true 时 signal，关闭 missed-wakeup 窗口
@@ -117,7 +117,7 @@ newosp 额外：
 
 ---
 
-## 10. 安全约束对比
+### 10. 安全约束对比
 
 | 维度 | coact | newosp 核心层 |
 |---|---|---|
@@ -128,7 +128,7 @@ newosp 额外：
 
 ---
 
-## 总结：场景选择矩阵
+### 总结：场景选择矩阵
 
 | 场景 | 选 coact | 选 newosp 核心层 |
 |---|---|---|

@@ -1,14 +1,14 @@
-# Design: coact ISP Pipeline 示例架构方案
+# coact ISP Pipeline 示例架构
 
-> 本文是 `examples/isp_pipeline_demo.cpp`（约 4900 行单一综合示例）的**架构视角**设计文档。示例以 coact 主动对象框架对 RS500 红外视频系统做"消息发生级"架构模拟（定位：由 RS500 业务场景驱动的架构模型与故障注入演示，非业务复刻）：IRSC 传感器产帧、低/高增益双链并行、HL 融合、enhance/TPD 双路、PIC/TEMP 视频打包、WRAPE 封帧、USB Bulk DMA 出流与 MIPI 输出，并在同一进程内系统性规避 RS500 复盘文档中的九类一致性异常。
+> 本文说明 `examples/isp_pipeline/` 的模块划分、线程边界、状态机和数据同步方式。示例以消息发生级别模拟 RS500 红外视频链路，不是硬件驱动实现。
 >
-> 姊妹文档 `design_consistency_avoidance_zh.md` 以**异常视角**展开（每类异常的故障机理与测试证据），本文以**架构视角**展开（系统如何分层、每个构件为何存在、异常如何被结构吸收）；两文互相引用，不重复论证。所有代码标识符均经 grep 核实；行号会随后续小改漂移，故以函数名与大致区域标注。
+> 姊妹文档 `example_ISP_pipeline_design_consistency_avoidance_zh.md` 记录故障场景和测试证据；本文集中说明架构和代码落点。
 
 ---
 
-## 1. 总览：一个文件，三个平面
+## 1. 系统总览
 
-结论先行：示例的全部结构可以收敛为一句话——**业务状态全部住在 14 个主动对象（AO）里，由 Dispatcher 单线程串行化；硬件的异步行为全部由 7 个非 AO pthread worker 模拟，worker 与 AO 的唯一耦合是事件平面；跨模块共享的事实收拢到三块各有失效协议的只读快照域**。资源竞争、消息链路、状态同步、数据同步、异步通知五个工程维度各有一个明确的结构答案，不依赖编码纪律。
+业务状态由 14 个 AO 持有，Dispatcher 串行处理 AO 事件；7 个 worker 模拟异步硬件行为并把完成事件投回 AO。跨模块数据集中在硬件状态、DDR 帧数据和寄存器镜像三个区域。
 
 ```mermaid
 flowchart LR
@@ -49,13 +49,13 @@ flowchart LR
 
 *图 1：三平面总览。黄色 worker 只产生事件（模拟中断回调与 DMA 完成的异步往返），蓝色/紫色/绿色 AO 持有全部业务状态，青色三块共享域各有独立的写者与失效协议。*
 
-图 1 走读：`WPLANE` 泳道的六个 worker 类型（`IspIrqWorker` 有 enhance/tpd 两个实例，合计 7 线程）经 `submit_from_task` 把完成事件投回事件平面——这是它们与 AO 的全部耦合，没有共享可变状态跨越边界。`EPLANE` 泳道的三组 AO 全部挂在同一个 `coact::Runtime` 上，Dispatcher 单线程派发保证任何两个 RTC 步骤不会交错。`DPLANE` 泳道的三块共享域不是经典黑板（多生产者轮询），而是**单写者只读快照域**，第 5 章展开其写者/读者/失效协议与反黑板边界。
+六类 worker 通过 `submit_from_task` 把完成事件投回同一个 Dispatcher。三类共享数据由各自的写入者管理，AO 只通过事件访问其他模块。
 
-帧的完整旅程（数据面一帧的走读）：IrscWorker 按帧节拍发 `kFrameIrscOut`（双投）→ low/high 增益链 AO 各自在 RTC 步骤里把 DN 像素写入 DDR 的 DN 区（确定性合成，两链写入相同字节——幂等）→ 各自策略变换后写入低/高增益出区，发 `kLowGainDone`/`kHighGainDone` → `HlFuseAo` 配对同帧号双 done，40% 低增益 + 60% 高增益融合写入 fused 区，一次写双路扇出 `kHlFused`（flags 区分 PIC/TEMP）→ enhance/tpd AO 各自变换（gamma 拉伸 / Y16 温度码），经 ISP 节点完成中断窗口（Active→IrqPending→Active）放行 → `VideoPackAo` 重打包 + SOUT 写回窗口（乘积态 park/release）→ PIC 路交 `WrapeAo` 封帧、TEMP 路交 `MipiSinkAo` 进 TX 窗口 → WRAPE 递交 UsbDmaWorker 按 16KB 事务搬运，EOF 回到 `WinHostAo`；MIPI TX 完成回 sink 记帧。每一跳的像素都在 DDR 里、事件里只有描述符、终点的 sink 逐字节复算整条变换链（DN 种子→增益→融合→增强/TPD）。
+帧路径为：IRSC → 双增益 → HL 融合 → enhance/TPD → VideoPack → WRAPE/MIPI → USB/Host。像素留在 DDR，事件只携带描述符。
 
-### 1.1 五个维度的结构答案
+### 1.1 设计取舍
 
-| 维度 | RS500 的问题形态 | 示例的结构答案 | 落点 |
+| 维度 | RS500 的问题形态 | 示例实现 | 落点 |
 |---|---|---|---|
 | 资源竞争 | DDR 环、寄存器组、DMA 通道被多模块直接驱动，靠锁与纪律 | 每类资源一个拥有者；Dispatcher 串行化使 AO 数据面访问免锁 | `DdrCtx` 单一属主；`g_zoom`/`g_wrape` 唯一写者 |
 | 消息链路 | 各模块回调嵌套，时序隐含在调用栈里 | 30 个类型化信号（`enum class Sig`）单一词汇表；像素不过事件通道，载荷只带 DDR 槽位描述符 | `Sig`、`Payload::ddr_slot/ddr_id` |
@@ -63,15 +63,15 @@ flowchart LR
 | 数据同步 | 布局重算后旧地址记录错误命中 | 版本护栏查即作废 + 槽位帧戳 overrun 守卫 | `layout_version`、`FrameStamp` |
 | 异步通知 | 中断回调直接改共享状态 | 完成中断退化为"事件 + 模拟时延"，回调落在 AO 自己的 RTC 步骤里 | `WorkerBase` execute 钩子族 |
 
-### 1.2 与姊妹文档的分工及验证策略
+### 1.2 相关文档
 
 `design_consistency_avoidance_zh.md` 证明的是"九类异常被规避且被断言锁定"；本文回答的是"什么样的分层让规避成为结构属性而非补丁"。第 6 章给出每类异常到架构构件的映射索引，故障机理与测试证据一律引用该文。架构判据只有一条：**每一层结构都对应至少一条可失败的自检断言**（数据面字节保真、通道计数互证、会话终态、各黑板的失效协议），断言以进程退出码为门禁——结构答案与文档宣称的分界线即在于此。最终形态的验证元数据：52 条 `check()` 断言全 PASS、5 连跑稳定（~1.9 s、退出码 0）、全量 ctest 37/37（flash_proxy_demo 已注册）、全量构建零警告，验证矩阵详见姊妹文档 §6.1。
 
 ---
 
-## 2. 主动对象层：14 个 AO 的划分与合并
+## 2. AO 划分
 
-结论先行：AO 划分遵循"**每类硬件域一个 AO、每个独立汇聚点一个 AO**"两条规则；结构相同但数据流并行的实体合并进同一 AO 的 HSM 乘积状态（`VideoFsmAo`、`VideoPackAo`），数据流真正并行且时延语义不同的实体保留独立 AO（low/high 双链）。
+AO 按硬件域和事件汇聚点划分；PIC/TEMP 合并为乘积状态，低增益和高增益保持独立。
 
 ### 2.1 AO 清单与优先级
 
@@ -98,16 +98,12 @@ TargetId 按绑定序 1-14 分配（框架 `TargetId` 是强类型 1 基恒等�
 
 PriorityClass 已按上表接线实现：`OrchestratorAo` 用 `HighAoTrait`（High 分区）、`WinHostAo` 用 `LowAoTrait`（Low 分区）、其余 12 个 AO 用 `AoTrait`（Normal 分区），Trait 定义处的注释按 RTE `rte_register_service` 模型说明分区理由（控制回执不得在帧洪峰后老化、帧数据可容忍老化、纯遥测走低分区）。
 
-### 2.2 合并决策：结构相同则合并，数据流并行则保留
-
-**合并的两组**。`VideoFsmAo` 与 `VideoPackAo` 各自原先是一对结构完全相同的 AO（PIC 一路、TEMP 一路），合并把"流差异"从 AO 边界移进 HSM 状态：
+### 2.2 AO 合并原则
 
 - `VideoFsmAo`：coact HSM 只有一个活动叶子（无正交区域），两路独立 FSM 表达为状态的**乘积**——PIC 相位 x TEMP 相位，3x3 = 9 个显式状态（`kVfII`..`kVfGT`），事件 `kVideoCmd` 用 flags bit0 携带流身份，31 条弧（25 条合法 + 6 条 reject）构成封闭状态对集合。
 - `VideoPackAo`：两路 SOUT 写回窗口同理表达为 2x2 = 4 个乘积态（`kPackBA`/`kPackPS`/`kPackTS`/`kPackBS`），单一 `SoutDmaWorker` 用 job 的 `cmd_arg` 打路径标记，`kSoutDone` 的 guard（`sout_is_pic`/`sout_is_temp`）区分两条完成通道，无串扰。
 
-合并的收益是三重的：AO 数下降、注册表预算留出余量；两路命令无需跨 AO 自路由，事件天然进入同一个队列按序处理；**乘积态把"两路流当前各自处于什么阶段"变成一个显式可枚举的状态**，"两路同时停在写回窗口"（`kPackBS`）不再是不变量盲区。合并的代价是一张更大的转移表（VideoFsm 31 弧），由 `VF_ARC` 宏批量生成控制复杂度。每路可变数据保留在 ctx 的独立镜像里（`VideoPathMirror pic/temp`、pic/temp 双停靠环），AO 边界内仍是单写者。
-
-**保留并行的双链**。`LowGainAo` 与 `HighGainAo` 不合并，理由是数据流语义而非代码结构：两链时延不同（`kLat.low_gain_us=400` vs `high_gain_us=600`）、变换策略不同（`LowGainPolicy` vs `HighGainPolicy`）、完成事件独立（`kLowGainDone`/`kHighGainDone`），真正的汇聚点在 `HlFuseAo` 的 fan-in——它等待两链**同一 frame_id** 的完成事件到齐才融合（`HlCtx::maybe_fuse`）。若把两链合并进一个 AO，帧的并行处理会被串行化，HL 融合的配对时序语义随之改变；这不是结构重复，而是并行业务。`EnhanceAo`/`TempChainAo` 同理保留：两者虽共享 `FusedNodeBase<Policy>` 骨架，但各自挂独立的 ISP 节点完成中断线（两个 `IspIrqWorker` 实例），是两个独立的中断源。
+低增益和高增益因时延、策略和完成事件不同保持独立，在 `HlFuseAo` 按同一 `frame_id` 汇聚。Enhance 与 TPD 连接不同 IRQ worker，也保持独立。
 
 ### 2.3 与 RS500 模块的完整映射
 
@@ -161,13 +157,13 @@ flowchart LR
 
 ---
 
-## 3. 非 AO worker 层：只模拟消息的发生
+## 3. Worker 与 AO 边界
 
-结论先行：worker 是"硬件行为平面"——它们存在的唯一目的是让异步时延（总线写入、节点中断、DMA 搬运、TX 完成）发生在 AO 之外的真实线程上，再把完成时刻作为事件投回。worker 不持有业务状态、不读不改任何 AO 上下文；**worker 与 AO 的唯一耦合是事件平面的 `submit_from_task`**。
+worker 只模拟总线、DMA 和中断完成时刻。业务状态留在 AO，完成事件通过 `submit_from_task` 返回 Dispatcher。
 
 ### 3.1 WorkerBase CRTP 骨架
 
-六个 worker 类型中四个继承 `WorkerBase<Derived, Job, Depth>`（约 850-975 行区域），骨架持有 mutex+cond 交接环、停机排空生命周期与 executed/rejected 计数；派生类只提供 `execute(job)` 钩子，经 `derived()` 静态下转型在编译期解析，零虚表。设计要点（源码注释逐条背书）：
+四类 worker 继承 `WorkerBase<Derived, Job, Depth>`，骨架负责交接环、停机排空和计数，派生类只实现 `execute(job)`。
 
 | 机制 | 设计 | 动机 |
 |---|---|---|
@@ -206,15 +202,15 @@ worker 与 AO 的接线表（装配期 `start()` 参数固化回执目标，之�
 
 worker 的 execute 钩子全部是同一形状：`usleep(时延)` + `alloc_typed` + `submit_from_task`。没有 SPI 事务、没有协议解析、没有寄存器值——**只有异步往返的形状**。以 `CmdDmaWorker` 为例：`IrscDriverAo` 的 `onIrscCmd` 不内联执行命令，而是把子命令递交异步通道后立即返回；寄存器写时延活在 worker 线程上，`onIrscDmaDone` 回到 AO 的 RTC 步骤里才组装回执。这正是真实驱动"绝不在 dispatcher 上下文里忙等总线"的形状。业务逻辑（哪一步算 ready、何时扇出下游）全部留在 AO 的转移表里，worker 对此一无所知。
 
-**中断完成与帧提交的交错由 parking ring 吸收**。AO 递交异步通道后不阻塞等待：帧描述符（`IoMeta`）停入 AO 上下文里的深度 4 环形停靠区（`FusedNodeCtx::parked`/`VideoPackCtx` 的 pic/temp 双环/`SinkCtx::tx_parked`）；完成事件回来时按 `frame_id` 扫描停靠环，命中者经 `std::exchange` 一步取走（`std::exchange(*hit, IoMeta{})`）释放下游，不匹配者计入 stale 计数。这使"帧提交时刻"与"中断完成时刻"天然容许乱序交错——一帧在等中断时下一帧已可入环，无需任何锁。通道拒绝（环满）走**自提交完成**：AO 给自己投一个携带该 frame_id 的合成完成事件，经正常转移弧回家，丢弃被计数且不内联处理（与 4.4 节"转移动作不自提交"是同一契约的两个侧面）。
+完成事件按 `frame_id` 匹配 AO 中的 parked 描述符；通道满或事件池耗尽时显式计数并走丢弃路径。
 
 ### 3.4 停机契约与排空顺序
 
-停机顺序是装配的镜像（main() 末尾）：五个中断/DMA 通道先排空（它们的完成事件要喂给活着的 AO）→ USB 引擎排空最后一批 Bulk 事务（喂 `WinHostAo`）→ `rt.stop()` 停 Dispatcher → `g_log.stop()`。停机前有两道守卫：pending 计数排空循环（等每个 AO 队列清零且 video FSM 回 IDLE——固定 sleep 会在负载下与 Dispatcher 竞走，pending-based drain 才是正确契约）与 worker-drain 守卫（`tx_done_count`/`pic_sout_done`/`irq_done_count` 全部追平提交数，飞行中的 job 一个不丢）。
+停机时先排空会产生 AO 完成事件的 worker，再排空 AO 队列，最后停止 Dispatcher 和日志线程。
 
 ---
 
-## 4. 层次 HSM 与组合编排
+## 4. 状态机与启动编排
 
 结论先行：跨 AO 的层次结构（主会话包含子 FSM）不用嵌套 HSM 引擎表达，而是用**会话状态广播 + 子 FSM guard** 的经典嵌入式手法：主会话推进时经组合模式扇出 `kSessionState`，每个子 AO 的弧 guard 读门控字决定合法性。联动发生在事件平面上（一次广播、N 个 guard），从不经共享可变状态。
 
@@ -289,7 +285,7 @@ flowchart LR
 
 *图 3：层次嵌套全景。蓝色 AO（14 个）按会话相位与组合段分组归属；黄色 worker（6 类 7 实例）挂在所属 AO 边上，虚线回边即"完成中断"事件（信号名标注）；紫色是 AO 内部的子 FSM 镜像。实线为数据面推进（IrscWorker 的双投帧）。*
 
-图 3 走读：最外层 `SYS` 框即主会话复合状态——AO 在哪个相位框里，就是它在那个会话阶段的归属：`OrchestratorAo`/`IrscDriverAo` 在 BOOT/INIT 完成命令链；数据链各段全部住在 `RUNNING` 内（流塑形窗口开放）；`RecfgOrchAo` 与其 `RecfgStage` 镜像嵌在 `RUNNING.RECFG_TXN` 内——事务窗口开启时，会话门控的当前实现仅覆盖 IRSC 命令通道（`irsc_session_open` guard：INIT/RUNNING 白名单，RECFG_TXN 期间拒绝 IRSC 命令）；video/pack/enhance/tpd 无冻结 guard——demo 时序上重配发生在稳态流之后，若需真正的流塑形冻结需扩展 guard 白名单（架构预留，未实现）。`SEGS` 框即 `SessionEventComposite` 的固定段数组（4.7 节），五个订阅 AO 分布在传感器/视频段中，门控经 guard 直读 atomic 相位字、扇出广播按需启用（4.7 节"门控优先走 atomic 直读"）。段内的 AO 排布即数据链序（低/高增益 → HL 融合 → enhance/tpd → video pack → 输出），与图 2 的拓扑一致，但此处强调**归属**而非数据流：每个 AO 属于哪个段、哪个段属于哪个会话相位。worker 全部以虚线回边（完成中断）挂在 AO 边上——`IspIrqWorker` 两个实例分别归 enhance/tpd（独立中断线），`SoutDmaWorker` 单实例以路径标记服务 VideoPackAo 双流；实线只有 IrscWorker 的两条（数据面推进的源头）。`CmdDmaWorker` 归 BOOT/INIT 相位框：它在 IRSC 命令链期间工作（4 步寄存器写往返），流启动后闲置。AO 间的数据面推进事件（`kLowGainDone`、`kHlFused`、`kPicPacked` 等）为控制画面密度未画，完整链路见图 2 与 5.4 节信号表。
+图 3 展示会话、数据链、AO 和 worker 的归属关系；worker 通过完成事件回到所属 AO。
 
 ### 4.1 主会话 HSM
 
@@ -452,7 +448,7 @@ sequenceDiagram
 
 ---
 
-## 5. 多黑板与消息优先级
+## 5. 共享数据与事件优先级
 
 结论先行：跨 AO 共享的数据收拢在三块**各自拥有独立写者集合与失效协议**的域里——硬件状态快照、帧数据 DDR、寄存器镜像；链路上全部跨模块交互收敛为 30 个类型化信号，按 AO 固定的 `PriorityClass` 分区派发，过载时 `EventQos::critical` 豁免事务证据类事件。
 
@@ -509,7 +505,7 @@ DDR 域的写读协议值得单独展开，因为它是三块中唯一承载真�
 - **读路径**（`DdrCtx::read`）：经 `std::launder` 取回戳（C++17 对象模型：槽位内存里的对象生命周期由 placement-new 开始，launder 重建指针-对象关系），双校验（戳内 frame_id 与旁路 `slot_frame[]` 都要匹配）才返回 true；校验通过后**声明槽位**（置 `kReaderClaimed`），payload memcpy 完成后立即释放（置 `kFree`）——claim/release 夹住最窄窗口，是"CPU 取走 DMA 描述符所有权排空数据"的软件镜像。失败即 overrun，调用方计数丢帧或用退化种子（`fill_dn`）继续——降级路径显式，绝不静默读旧数据。
 - **免锁理由**：所有读写发生在 Dispatcher 单线程的 AO action 里，唯一跨线程的 `write_idx`/统计计数被 `static_assert(is_always_lock_free)` 锁死无锁假设。
 
-### 5.3 黑板与真实硬件的并发解决之道：四个武器的映射
+### 5.3 共享数据与硬件机制
 
 黑板模拟的是**软硬件协调**本身。真实硬件解决读写并发靠四件武器——硬件原子性、所有权协议、中断同步点、总线仲裁——demo 把"硬件保证"降级为"协议保证"，逐项映射如下：
 
@@ -657,7 +653,7 @@ flowchart LR
 
 ---
 
-## 6. 设计模式与 C++17 落点总表 + 九类异常架构答案
+## 6. 实现约束与问题映射
 
 结论先行：四个经典模式全部以**编译期静态**形态落地（CRTP 静态多态、const 策略函数表、constexpr 命令表、固定数组组合），零虚表、零堆、零运行期构建；C++17 特性的使用全部服务于"对象生命周期显式化"与"契约编译期化"。九类一致性异常按"不一致的两端"收束为三个机制，三个机制分别住在示例的不同层。
 
@@ -690,7 +686,7 @@ flowchart LR
 - **零虚表边界**：CRTP/策略/命令/组合四模式全部静态化后，示例里唯一的 vtable 在框架 `AoBase`（dispatch/priority 等类型擦除接口），业务代码零虚调用；构建级 `-fno-exceptions -fno-rtti` 进一步封死动态机制。
 - **placement new + launder 的适用边界**：该纪律只用于"固定内存槽位里构造平凡对象"（DDR 戳、地址记录、job 槽、事件池载荷），全部对象 trivially copyable 且槽位对齐满足——不存在析构遗漏与类型混淆风险；非平凡对象（`PeriphRegCache` 等）照常成员式生存。
 
-### 6.3 九类一致性异常的架构答案索引
+### 6.3 九类异常与处理方式
 
 每类异常给出复现机制与架构构件的对应；故障机理、测试输出与断言证据见 `design_consistency_avoidance_zh.md` 对应节（该文 §3.1-3.10）。
 
@@ -707,36 +703,4 @@ flowchart LR
 | U9 | 半停重启闪屏 | STOP 后不等 idle 直接 START，首帧携带旧几何 | HSM 停稳弧：`Quiescing→Applying` 只能由 `kSoutIdle` 触发（`at_quiesce` 守卫），"未停稳即重启"在拓扑上不可达（见本文 4.2/4.4 entry 契约） | §3.9 |
 | 附 | 花屏（位宽错配） | 8bit 数据按 16bit 字搬运，两像素合一 | 共享位宽权威 + sink/WRAPE 每帧逐字节复算整条变换链（`verify_pic_bytes`）——共享假设被打破在字节级立即暴露 | §3.10 |
 
-收束关系（姊妹文档图 14 的架构视角展开）：写路径分叉类（U1/U3/U4）由**单一权威**吸收，传播缺失类（U2/U5/U6/U7）由**事件传播**吸收，提交无边界类（U8/U9）由**提交边界**吸收。本文的补充论点是三个机制分别住在不同层，分层使每个机制都可被独立审查：
-
-```mermaid
-flowchart LR
-    subgraph M1G["写路径分叉"]
-        U1a["U1 口径漂移"]:::bad
-        U3a["U3 提前封帧"]:::bad
-        U4a["U4 参数回灌"]:::bad
-    end
-    subgraph M2G["传播缺失"]
-        U2a["U2 新旧交替"]:::bad
-        U5a["U5 废弃地址"]:::bad
-        U6a["U6 坐标失同步"]:::bad
-        U7a["U7 停稳分叉"]:::bad
-    end
-    subgraph M3G["提交无边界"]
-        U8a["U8 峰值破窗"]:::bad
-        U9a["U9 半停闪屏"]:::bad
-    end
-    A1["单一权威"]:::ok --> L1["数据结构层<br/>FrameGeometry / write 入口 / 位宽权威"]:::ok2
-    A2["事件传播"]:::ok --> L2["AO 与 HSM 层<br/>kSessionState / 8 态事务 / 版本事件"]:::ok2
-    A3["提交边界"]:::ok --> L3["事务与停机契约层<br/>首帧裁决 / 停稳弧 / 排空契约"]:::ok2
-    M1G ==> A1
-    M2G ==> A2
-    M3G ==> A3
-    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
-    classDef ok2 fill:#cffafe,stroke:#0891b2,color:#083344
-```
-
-*图 12：九类异常按不一致结构收束为三个机制、分别住在三个架构层。收束不是事后归类——示例先定三个机制，再按机制反向构造九类异常的复现场景（对照实验结构）。*
-
-这就是本文架构方案的最终主张：三平面分离是根约束（第 1-3 章），层次用门控不用嵌套（第 4 章），失效协议先于数据结构（第 5 章），契约编译期化到极限（第 6 章）。四个主张互为支撑——平面分离让失效协议可以按域独立设计，门控式层次让契约可以落在静态表里，而全部静态化反过来使三平面的每条边界都可被编译器与断言双重背书。
+三类问题分别对应写入者、事件传播和提交边界；具体映射见上表和一致性文档。
