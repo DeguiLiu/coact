@@ -3,11 +3,13 @@
 > coact 是一个面向 RT-Thread MCU 的 C++17 事件驱动框架。本文以实测数据评估其语言选型：
 > 从性能、启动、能力与调试成本四个维度说明采用 C++17 的依据，并给出可复现的验证方法。
 
-## 一、选型背景
+## 一、结论先行
+
+### 选型背景
 
 coact 的代码主体由模板与静态表构成。开发过程中，是否改用 C11 重写是被反复提出的问题。嵌入式领域对 C++ 持有普遍保留态度：在资源受限的 MCU 上，C++ 的动态设施（异常、RTTI、虚函数、动态分配）被认为运行期代价过高。coact 的应对方式是把状态机、队列、事件池做成编译期结构，并以 `-fno-exceptions -fno-rtti` 关闭动态设施。本文以实测评估这套选型是否成立，并界定其适用范围。
 
-## 二、结论概述
+### 结论概述
 
 coact 在 `-fno-exceptions -fno-rtti` 与编译期结构的约束下采用 C++17，与 C11 相比：
 
@@ -18,7 +20,7 @@ coact 在 `-fno-exceptions -fno-rtti` 与编译期结构的约束下采用 C++17
 
 结论：C++17 不慢、不拖慢启动，并具备 C 无法提供的编译期检查能力，调试成本通过错误时机互换得以抵消。以下分项说明。
 
-## 三、性能实测：热路径机器码与 C11 趋同
+## 二、性能实测：热路径机器码与 C11 趋同
 
 ### 3.1 编译产物对照
 
@@ -40,12 +42,15 @@ target_compile_options(coact_core INTERFACE -fno-exceptions -fno-rtti)
 
 ```mermaid
 flowchart LR
-    T1["TransitionDef[] 静态表"] --> M1["const struct 数组 + 循环"]
-    T2["EventPool tagged-CAS"] --> M2["原生 CAS 指令"]
-    T3["BoundedMpscQueue 模板"] --> M3["struct + 内联函数"]
-    M1 --> MC["= 手写 C 的机器码"]
+    T1["TransitionDef[] 静态表"]:::t --> M1["const struct 数组 + 循环"]:::m
+    T2["EventPool tagged-CAS"]:::t --> M2["原生 CAS 指令"]:::m
+    T3["BoundedMpscQueue 模板"]:::t --> M3["struct + 内联函数"]:::m
+    M1 --> MC["= 手写 C 的机器码"]:::mc
     M2 --> MC
     M3 --> MC
+    classDef t fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef m fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef mc fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 ```
 
 热路径上仅剩一次 vtable 虚调用（每次派发调用 `ao->dispatch`）。C 的等价实现同样采用函数指针间接调用，代价相同。仅当 C 以 switch 硬编码分发时可省去该间接调用，其结果只是把一个间接跳转换作跳转表索引——Cortex-M 上约 2~4 个周期，纳秒级。
@@ -80,7 +85,7 @@ inline PoolRecord* g_pool_registry[kMaxEventPools] = {};   // 零初始化 → .
 
 **小结**：性能并非拒绝 C++ 的理由。CPU 实际开销来自平台，启动时间与 `.text` 体积无关。
 
-## 四、能力评估：编译期检查的不可替代性
+## 三、能力评估：编译期检查的不可替代性
 
 性能趋同的前提下，采用 C++ 的动因在于编译期能力。以下示例出自 newosp（coact 的姊妹库）的工业嵌入式实践：模板、`variant`、`constexpr`、RAII 使编译器在编译期捕获类型不匹配、内存越界、资源泄漏与未处理错误；C 将这些检查全部推迟到运行时，依赖代码审查与 sanitizer 事后发现。
 
@@ -128,7 +133,9 @@ RAII 使资源泄漏在结构上不可能：`ScopeGuard` 在每条 return 路径
 
 **小结**：C++ 使编译器掌握类型、常量、生命周期与错误路径的信息，信息越多，编译器的检查与优化越充分。C 的 `void*`、宏与手动 cleanup 隐藏这些信息，编译器只看到指针与整数。
 
-## 五、成本评估：调试体验
+## 四、成本、边界与适用范围
+
+### 调试体验成本
 
 调试体验是 C++ 模板框架的主要成本，C11 在该维度占优。
 
@@ -147,7 +154,21 @@ RAII 使资源泄漏在结构上不可能：`ScopeGuard` 在每条 return 路径
 
 **小结**：难读的编译期错误优于难复现的运行期崩溃。调试成本并未消除，而是从运行期移至编译期。
 
-## 六、适用边界：动态设施的运行期代价
+```mermaid
+flowchart LR
+    CE["编译期错误<br/>类型不匹配 / static_assert"]:::ce
+    RE["运行期错误<br/>SIGSEGV / OOM / 数据损坏"]:::re
+    T["时机互换<br/>一次性编译期成本<br/>vs 持续运行期偿还"]:::t
+    CE --> T
+    RE --> T
+    classDef ce fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef re fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef t fill:#e0e7ff,stroke:#4f46e5,color:#312e81
+```
+
+*图 2：错误时机互换——编译期一次性支付 vs 运行期持续偿还。*
+
+### 动态设施的运行期代价
 
 上述结论的前提是"编译期结构"纪律。违反纪律的写法会产生显著运行期代价：
 
@@ -160,7 +181,7 @@ RAII 使资源泄漏在结构上不可能：`ScopeGuard` 在每条 return 路径
 
 零成本抽象存在边界：抽象在编译期彻底消解（模板、constexpr、静态表）则无运行期开销；无法消解（虚函数、`std::function`、异常）则需支付运行期账单。此处的"慢"针对动态设施，语言本身并不慢。
 
-## 七、选型适用范围
+### 选型适用范围
 
 coact 的选择对同类项目具有参考价值：
 
@@ -174,9 +195,33 @@ coact 的选择对同类项目具有参考价值：
 | 既有大型 C 代码库 | 增量引入 | 无需重写，新模块用 C++，边界以薄胶水衔接 |
 | 无 ASan/UBSan 等工具链支持 | C | C 的隐藏缺陷依赖 sanitizer 与审查兜底 |
 
+```mermaid
+flowchart LR
+    S1{"状态机/事件驱动为主？"}:::q
+    S2{"协议解析/类型敏感？"}:::q
+    S3{"flash/RAM 极紧且须 XIP？"}:::q
+    S4{"团队以 C 为主？"}:::q
+    C1["C++：静态表 + HSM 契合"]:::c
+    C2["C++：variant / NewType / expected"]:::c
+    C3["谨慎：量化 .text 膨胀"]:::w
+    C4["C：守不住纪律优势归零"]:::c2
+    S1 -->|是| C1
+    S2 -->|是| C2
+    S3 -->|是| C3
+    S4 -->|是| C4
+    classDef q fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef c fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef c2 fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef w fill:#fef3c7,stroke:#d97706,color:#78350f
+```
+
+*图 3：选型决策树——按场景给出倾向与理由。*
+
 结论：coact 采用 C++17 的决定性因素不是性能，而是类型与内存安全。性能趋同与启动不受影响消除了拒绝 C++ 的障碍；前提是守住纪律——`-fno-exceptions -fno-rtti`、编译期结构、避免动态容器。
 
-## 八、复现方法
+## 五、复现方法与结论
+
+### 复现方法
 
 性能结论可通过 `src/core/bench_hotpath.cpp` 复现。该工具将两种派发机制隔离为独立 mode，`--cores 1 --tick-hz 100` 复现 RT-Thread 单核 100Hz 多线程场景：
 
@@ -193,9 +238,9 @@ $ ./build_bench/src/core/bench_hotpath --mode staged --cores 1 --seconds 3
 staged: normal=177240 high=145848 total=323088 in 3.000s -> 107696 ev/s pool.used=0
 ```
 
-构建类型对结果影响显著：默认 Debug 约 1.1e5 ev/s；`-O2`（RelWithDebInfo）单核 staged 量级约 **0.9~1.2M ev/s**（`docs/hotpath_profiling_zh.md` 实测），direct 模式约 17M ev/s。附加 `--sample out.folded` 并以 `tools/flamegraph_svg.py` 生成火焰图，可观察到 condvar 与时钟约占一半的 CPU 分配，与语言无关。
+构建类型对结果影响显著：默认 Debug 约 1.1e5 ev/s；`-O2`（RelWithDebInfo）单核 staged 量级约 **0.9~1.2M ev/s**，direct 模式约 17M ev/s。采样与火焰图的完整方法、以及无锁池多核争用详见《coact 热路径剖析》（`docs/blogs/09-hotpath-profiling-sampling-and-cache-contention.md`）。
 
-## 九、结论
+### 结论
 
 C++ 与 C 的分水岭在于信息：C++ 使编译器掌握类型、常量、生命周期与错误路径的全部信息，其代价（编译错误难读、符号 mangled、体积略大）一次性支付给编译期；C 隐藏这些信息，代价持续支付给运行期——每个被忽略的错误码、每次越界、每处泄漏，都以上线后的崩溃与 OOM 偿还。对嵌入式场景，编译期一次性支付优于运行期持续偿还。
 
@@ -209,4 +254,4 @@ C++ 与 C 的分水岭在于信息：C++ 使编译器掌握类型、常量、生
 
 ---
 
-*事实依据：`include/coact/{hsm,pool,queue,ao,event,runtime}.hpp`、`CMakeLists.txt`、`src/core/bench_hotpath.cpp`；能力章节示例出自 newosp（MIT）实践；实测数据：`docs/hotpath_profiling_zh.md` 及本文 Debug 实测。*
+*事实依据：`include/coact/{hsm,pool,queue,ao,event,runtime}.hpp`、`CMakeLists.txt`、`src/core/bench_hotpath.cpp`；能力章节示例出自 newosp（MIT）实践；实测数据：本文 Debug 实测，热路径剖析详见 `docs/blogs/09-hotpath-profiling-sampling-and-cache-contention.md`。*

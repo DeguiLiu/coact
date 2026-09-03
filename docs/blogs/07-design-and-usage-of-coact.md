@@ -32,43 +32,38 @@ coact 将状态机实现为纯数据。状态与转移是两张 `const` 静态�
 一次事件从提交到回池的完整交互（常规 staging 路径；direct 快路径为可选项）：
 
 ```mermaid
-sequenceDiagram
-    autonumber
-    participant P as Producer（任务 / ISR 上下文）
-    participant POOL as EventPool
-    participant C as Coordinator
-    participant S as Staging（三分区）
-    participant D as Dispatcher 线程
-    participant A as Ao
-    participant H as HSM
-
-    P->>POOL: alloc(signal)  取定容池事件块
-    P->>C: submit_from_task(target, e, qos)
-    C->>C: registry.lookup(target) 定位 Ao
-    alt direct 快路径（direct_eligible=true 且来自任务）
-        C->>A: dispatch_direct(e) 生产者上下文直接派发
-    else 常规 staging 路径
-        C->>S: stage(e) 按 QoS 入 High / Normal / Low 分区
-        C->>D: signal（仅 Dispatcher 空闲时唤醒，Drain 复查封闭 missed-wakeup）
-        D->>S: dequeue_one(now_ns) 批量取事件（Low 分区按龄老化）
-        loop 每个事件
-            D->>A: dispatch(e)
-            A->>A: 获取执行租约（RunningDispatcher，单执行权）
-            A->>H: dispatch(e)
-            H->>H: 静态转移表查找 · 叶→父链继承 · entry / guard / action
-            H-->>A: 转移完成
-            A-->>D: 返回
-            D->>POOL: reclaim.release(e) 引用计数归零 → 回池
-        end
-        Note over POOL: 批次结束 reclaim.flush() 批量归还
-    end
+flowchart TD
+    P["Producer（任务/ISR）<br/>alloc + submit"]:::p
+    C{"direct_eligible<br/>且来自任务？"}:::q
+    A["dispatch_direct<br/>生产者上下文直接派发"]:::a
+    S["staging 三分区<br/>High / Normal / Low"]:::s
+    D["Dispatcher 批取出队<br/>Low 按龄老化"]:::d
+    AO["Ao::dispatch<br/>获取执行租约"]:::ao
+    H["HSM 静态转移表<br/>entry / guard / action"]:::h
+    R["reclaim.release / flush<br/>引用计数归零回池"]:::r
+    P --> C
+    C -->|是| A
+    C -->|否| S
+    S --> D
+    D --> AO
+    AO --> H
+    H --> R
+    A --> R
+    classDef p fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef q fill:#e0e7ff,stroke:#4f46e5,color:#312e81
+    classDef a fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef s fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef d fill:#fce7f3,stroke:#db2777,color:#831843
+    classDef ao fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
+    classDef h fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef r fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 ```
 
 ### 3. 无锁热路径与零拷贝所有权
 
 事件的生命周期是嵌入式事件驱动框架最易泄漏的部分。coact 通过两个机制保证：
 
-- **定容无锁池**：事件来自 `EventPool`，free-list 是单个 32-bit tagged 索引（`[15:0]=索引 / [31:16]=ABA tag`），`compare_exchange_weak` 在 32 位 Cortex-M 上是原生指令，**无需 libatomic**；ISR 安全由注入的 `CriticalSection` 保证，RT-Thread 上映射 `rt_hw_interrupt_disable/enable`；
+- **定容无锁池**：事件来自 `EventPool`，同步后端按编译期 Profile 二选一——单核 RT-Thread 用 `RttSingleCoreProfile`（irq 屏蔽临界区内的 plain index/head，无 CAS、无 ABA tag），SMP / TSan 验证用 `HostSmpProfile`（free-list 是 32-bit tagged 索引 `[15:0]=索引 / [31:16]=ABA tag`，`compare_exchange_weak` 在 32 位平台是原生指令，**无需 libatomic**）；ISR 安全由注入的 `CriticalSection` 保证，RT-Thread 上映射 `rt_hw_interrupt_disable/enable`；
 - **引用计数所有权**：`Event` 头只有 `signal / pool_id / ref_ctr`，`alloc` 时 0，每次投递 inc，消费者 `gc` dec，最后一次 `gc` 由 Dispatcher **批量归还**给池（`ReclaimBatcher`，一次 splice 多事件）；事件全程指针传递、零拷贝，同一事件可安全扇出给多个 AO；
 - **唤醒确定性**：仅 Dispatcher 空闲时才 signal，drain 复查封闭 missed-wakeup 窗口。
 
@@ -91,34 +86,39 @@ sequenceDiagram
 ```mermaid
 flowchart TD
     subgraph L4["L4 集成层（core）"]
-        core["coordinator.hpp · dispatcher.hpp · runtime.hpp<br/>提交管线 · 派发循环 · 三阶段装配"]
+        core["coordinator.hpp · dispatcher.hpp · runtime.hpp<br/>提交管线 · 派发循环 · 三阶段装配"]:::l4
     end
 
     subgraph L3["L3 调度基础设施"]
-        ao["ao.hpp<br/>主动对象 · 单执行权租约 · Ao 注册表"]
-        staging["staging.hpp<br/>三级队列 · 批选择 · Low 老化"]
-        monitor["monitor.hpp<br/>熔断器 · 水位 · RTC 超时"]
-        policy["policy.hpp<br/>限速 / 策略钩子"]
+        ao["ao.hpp<br/>主动对象 · 单执行权租约 · Ao 注册表"]:::l3
+        staging["staging.hpp<br/>三级队列 · 批选择 · Low 老化"]:::l3
+        monitor["monitor.hpp<br/>熔断器 · 水位 · RTC 超时"]:::l3
+        policy["policy.hpp<br/>限速 / 策略钩子"]:::l3
     end
 
     subgraph L2["L2 原语层"]
-        queue["queue.hpp<br/>MPSC / 单核临界区环形队列"]
-        hsm["hsm.hpp<br/>层次状态机 · 父态继承 · 静态转移表"]
+        queue["queue.hpp<br/>MPSC / 单核临界区环形队列"]:::l2
+        hsm["hsm.hpp<br/>层次状态机 · 父态继承 · 静态转移表"]:::l2
     end
 
     subgraph L1["L1 事件层"]
-        event["event.hpp · pool.hpp<br/>Event · 引用计数 · 无锁定容池"]
+        event["event.hpp · pool.hpp<br/>Event · 引用计数 · 无锁定容池"]:::l1
     end
 
     subgraph L0["L0 基础与平台"]
-        base["config · expected · assert"]
-        pal["pal_posix.hpp / pal_rtthread.hpp"]
+        base["config · expected · assert"]:::l0
+        pal["pal_posix.hpp / pal_rtthread.hpp"]:::l0
     end
 
     L4 --> L3
     L3 --> L2
     L2 --> L1
     L1 --> L0
+    classDef l4 fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef l3 fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef l2 fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef l1 fill:#fce7f3,stroke:#db2777,color:#831843
+    classDef l0 fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
 ```
 
 **换平台只换 L0**：`pal_posix` 与 `pal_rtthread` 提供相同的队列后端、同步原语与线程接口，其余层完全一致——同一套头文件在 Linux host 与 RT-Thread 都能编译。RT-Thread 上 Dispatcher 以普通内核线程运行，producer 调 `submit_from_task`，ISR 调 `try_submit_from_isr`。
@@ -234,9 +234,20 @@ rt.stop();
 - **引用计数所有权 → 不手工管理事件**：alloc / 投递 / 回收全由框架闭环，杜绝泄漏与 UAF；
 - **分层 PAL → 一份代码双平台**：host 调试、板端部署，只有 L0 不同。
 
-## 结语
+### 结语
 
 coact 的设计取舍可以归纳为三对选择：**编译期 vs 运行期**（选前者，开销归零）、**单线程 vs 多线程**（选前者，锁消失）、**静态表 vs 动态注册**（选前者，错误前置）。这些选择的共同方向，是把框架的复杂度从运行期迁移到编译期、从运行时迁移到类型系统。使用者面对的是一个"填表 + 装配"的骨架，而非需要理解全局运行机制的复杂系统。
+
+```mermaid
+flowchart LR
+    A1["编译期 vs 运行期"]:::a --> R1["选编译期：开销归零"]:::r
+    A2["单线程 vs 多线程"]:::a --> R2["选单线程：锁消失"]:::r
+    A3["静态表 vs 动态注册"]:::a --> R3["选静态表：错误前置"]:::r
+    classDef a fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef r fill:#d1fae5,stroke:#059669,color:#064e3b
+```
+
+*图 4：三对核心取舍——共同方向是把复杂度从运行期迁移到编译期与类型系统。*
 
 ---
 

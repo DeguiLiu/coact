@@ -4,38 +4,40 @@
 > + 层次状态机（HSM）为骨架，用单 Dispatcher 线程串行派发、无锁定容池与三级队列，在单核 MCU 上提供确定性的异步事件调度。
 > 本文介绍它解决的问题、在系统中的位置、使用方式与收益，再展开设计思想与核心机制。
 
-## 1. 框架是做什么的
+## 一、框架定位与收益
+
+### 框架是做什么的
 
 裸机 RTOS 的项目里，模块间通信和事件分发往往要手写一遍邮箱加等待逻辑。coact 把这件事抽象成一条可复用的流水线：事件从定容池取出，经提交入口、三级队列、单线程派发，最终送进目标主动对象的状态机，再回收回池。
 
 coact 面向 RT-Thread 的 MCU，同时保留 ARM-Linux 作为开发与验证环境。同一套头文件在两种平台都能编译，差异收敛到一层平台抽象（PAL），因此可以先在 host 上验证逻辑，再落到板端。
 
-### 1.1 coact 在系统中的位置
+#### 1.1 coact 在系统中的位置
 
 coact 位于中断/任务等事件生产方与各业务主动对象之间，充当事件通信与调度背板。硬件中断或后台线程产生的信号，经 coact 的统一提交入口进入事件管线，由 Dispatcher 线程串行派发给目标主动对象；主动对象内部的状态机处理后，可再向其他主动对象投递事件。系统结构如下：
 
 ```mermaid
 flowchart LR
     subgraph PROD["事件生产方"]
-        ISR["中断服务例程 ISR"]
-        TASK["普通任务线程"]
+        ISR["中断服务例程 ISR"]:::prod
+        TASK["普通任务线程"]:::prod
     end
 
     subgraph COACT["coact"]
-        SUB["提交入口<br/>submit_from_task / try_submit_from_isr"]
-        STG["三级暂存区 staging<br/>High / Normal / Low"]
-        DISP["Dispatcher 线程<br/>串行批派发"]
+        SUB["提交入口<br/>submit_from_task / try_submit_from_isr"]:::coact
+        STG["三级暂存区 staging<br/>High / Normal / Low"]:::coact
+        DISP["Dispatcher 线程<br/>串行批派发"]:::coact
     end
 
     subgraph AOS["业务主动对象"]
-        AO1["AO 节点管理<br/>状态机 + 心跳"]
-        AO2["AO 协议栈<br/>状态机 + 帧解析"]
-        AO3["AO 其他业务<br/>状态机"]
+        AO1["AO 节点管理<br/>状态机 + 心跳"]:::aos
+        AO2["AO 协议栈<br/>状态机 + 帧解析"]:::aos
+        AO3["AO 其他业务<br/>状态机"]:::aos
     end
 
     subgraph HW["平台/硬件"]
-        PAL["PAL 平台抽象<br/>RT-Thread / ARM-Linux"]
-        POOL["定容事件池 EventPool"]
+        PAL["PAL 平台抽象<br/>RT-Thread / ARM-Linux"]:::hw
+        POOL["定容事件池 EventPool"]:::hw
     end
 
     ISR --> SUB
@@ -49,11 +51,15 @@ flowchart LR
     AO2 <--> AO3
     COACT --> PAL
     PAL --> HW
+    classDef prod fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef coact fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef aos fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef hw fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
 ```
 
 coact 不取代 RTOS，而是运行其上的一层事件调度背板：RT-Thread 负责线程、信号量与中断管理，coact 负责事件从产生到处理的确定性传递。Demo（`examples/`）演示了三条典型路径：单一协议状态机、多被动节点共用一个运行时、以及 coact 与外部组件桥接的串口 OTA 流程。
 
-## 2. 如何使用
+## 二、如何使用
 
 接入 coact 的核心是把业务拆成若干主动对象，每个主动对象用"五件声明 + 三阶段装配"接入。以 `examples/` 里的主动对象为例。
 
@@ -105,7 +111,7 @@ rt.start();          /* 启动 Dispatcher 线程 */
 
 把 `pal::Posix` 换成 `pal::RtThread`（`pal_rtthread.hpp`）即落到 RT-Thread 板端，其余装配代码不变。运行后，用 `submit_from_task(...)`（任务）或 `try_submit_from_isr(...)`（中断，永不阻塞）提交事件，事件所有权随即交给框架。
 
-## 3. 使用收益
+### 使用收益
 
 coact 投入使用的收益体现在六个方面：
 
@@ -116,7 +122,7 @@ coact 投入使用的收益体现在六个方面：
 - **编译期正确性**：状态表、转移表、AO 预算均编译期定型，类型与结构错误在构建时即暴露，而非运行期崩溃；
 - **跨平台复用**：同一份业务逻辑先经 ARM-Linux（host）验证，再落到 RT-Thread 板端，显著降低嵌入式调试与回归成本。
 
-## 4. 设计思想：三条核心取舍
+## 三、设计思想：三条核心取舍
 
 ### 4.1 单 Dispatcher 线程串行派发，消灭并发
 
@@ -128,43 +134,50 @@ coact 用单一 Dispatcher 线程驱动所有主动对象。所有 AO 状态只�
 
 ### 4.3 无锁热路径与引用计数所有权
 
-事件来自定容 `EventPool`，free-list 是单个 32-bit tagged 索引（`[15:0]=索引 / [31:16]=ABA tag`），CAS 在 32 位 Cortex-M 上是原生指令，无需 libatomic。事件头只有 `signal / pool_id / ref_ctr`，所有权由引用计数表达：投递 inc，消费 dec，最后一次 `gc` 由 Dispatcher 批量归还池。事件全程指针传递、零拷贝，同一事件可安全扇出给多个 AO。
+事件来自定容 `EventPool`，同步后端按编译期 Profile 二选一：单核 RT-Thread 用 `RttSingleCoreProfile`（irq 屏蔽临界区内的 plain index/head，无 CAS、无 ABA tag），SMP / TSan 验证用 `HostSmpProfile`（free-list 是 32-bit tagged 索引 `[15:0]=索引 / [31:16]=ABA tag`，CAS 在 32 位平台是原生指令，无需 libatomic）。事件头只有 `signal / pool_id / ref_ctr`，所有权由引用计数表达：投递 inc，消费 dec，最后一次 `gc` 由 Dispatcher 批量归还池。事件全程指针传递、零拷贝，同一事件可安全扇出给多个 AO。
 
-## 5. 分层结构
+## 四、分层结构与高性能机制
+
+### 分层结构
 
 coact 严格单向依赖，自下而上五层：
 
 ```mermaid
 flowchart TD
     subgraph L4["L4 集成层（core）"]
-        core["coordinator.hpp · dispatcher.hpp · runtime.hpp<br/>提交管线 · 派发循环 · 三阶段装配"]
+        core["coordinator.hpp · dispatcher.hpp · runtime.hpp<br/>提交管线 · 派发循环 · 三阶段装配"]:::l4
     end
 
     subgraph L3["L3 调度基础设施"]
-        ao["ao.hpp<br/>主动对象 · 单执行权租约 · Ao 注册表"]
-        staging["staging.hpp<br/>三级队列 · 批选择 · Low 老化"]
-        monitor["monitor.hpp<br/>熔断器 · 水位 · RTC 超时"]
-        policy["policy.hpp<br/>过滤 · 限速 · 合并槽位"]
+        ao["ao.hpp<br/>主动对象 · 单执行权租约 · Ao 注册表"]:::l3
+        staging["staging.hpp<br/>三级队列 · 批选择 · Low 老化"]:::l3
+        monitor["monitor.hpp<br/>熔断器 · 水位 · RTC 超时"]:::l3
+        policy["policy.hpp<br/>过滤 · 限速 · 合并槽位"]:::l3
     end
 
     subgraph L2["L2 原语层"]
-        queue["queue.hpp<br/>MPSC / 单核临界区环形队列"]
-        hsm["hsm.hpp<br/>层次状态机 · 父态继承 · 静态转移表"]
+        queue["queue.hpp<br/>MPSC / 单核临界区环形队列"]:::l2
+        hsm["hsm.hpp<br/>层次状态机 · 父态继承 · 静态转移表"]:::l2
     end
 
     subgraph L1["L1 事件层"]
-        event["event.hpp · pool.hpp<br/>Event · 引用计数 · 无锁定容池"]
+        event["event.hpp · pool.hpp<br/>Event · 引用计数 · 无锁定容池"]:::l1
     end
 
     subgraph L0["L0 基础与平台"]
-        base["config · expected · assert"]
-        pal["pal_posix.hpp / pal_rtthread.hpp"]
+        base["config · expected · assert"]:::l0
+        pal["pal_posix.hpp / pal_rtthread.hpp"]:::l0
     end
 
     L4 --> L3
     L3 --> L2
     L2 --> L1
     L1 --> L0
+    classDef l4 fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef l3 fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef l2 fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef l1 fill:#fce7f3,stroke:#db2777,color:#831843
+    classDef l0 fill:#ede9fe,stroke:#7c3aed,color:#4c1d95
 ```
 
 | 层 | 组成 | 职责 |
@@ -177,9 +190,9 @@ flowchart TD
 
 换平台只换 L0：`pal_posix` 与 `pal_rtthread` 提供相同的队列后端、同步原语与线程接口，其余层完全一致。
 
-## 6. 高性能：零拷贝、无锁与准入控制
+### 高性能：零拷贝、无锁与准入控制
 
-### 6.1 零拷贝投递
+#### 6.1 零拷贝投递
 
 事件在管线中始终以指针传递，staging 存 `Event*`，进入与取出均为 O(1)。线程与中断各有独立投递入口，差异在唤醒与调度时机：
 
@@ -190,7 +203,7 @@ flowchart TD
 
 在 ARM-Linux（host）上没有中断上下文，ISR 投递路径仅作板端移植模板，开发验证走 `submit_from_task`。
 
-### 6.2 准入控制：过滤、限速与合并
+#### 6.2 准入控制：过滤、限速与合并
 
 提交入口用三类规则评估每个事件，遏制高频信号占用管线：
 
@@ -202,7 +215,22 @@ flowchart TD
 
 其中合并槽位（`MergeCell`）以单个 `std::atomic` 状态加四态 CAS 状态机实现：`Empty → Published →（Merging → Published | Consuming → Empty）`。同一信号后到值直接覆盖槽内旧值，只留最新；CAS 失败不旋转，退回正常入队，保证正确性。它可削减高频冗余信号的队列占用，是准入控制无锁性的核心。
 
-## 7. 收束
+```mermaid
+flowchart LR
+    E["Empty"]:::e -->|发布| P["Published"]:::p
+    P -->|新值到达| M["Merging"]:::m
+    M -->|复用槽位| P
+    P -->|消费| C["Consuming"]:::c
+    C -->|回池| E
+    classDef e fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef p fill:#d1fae5,stroke:#059669,color:#064e3b
+    classDef m fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef c fill:#fce7f3,stroke:#db2777,color:#831843
+```
+
+*图 3（MergeCell 四态）：同一信号后到值覆盖槽内旧值，只留最新；CAS 失败退回正常入队。*
+
+## 五、收束
 
 coact 把主动对象模式、静态表驱动 HSM 与无锁事件管线合成一体，面向 RT-Thread 单核 MCU，同时以 ARM-Linux 承担开发与验证。它位于中断与任务生产方、业务主动对象之间，提供确定、零拷贝、无锁的事件调度背板。对需要确定性与低资源开销的嵌入式项目，这套框架提供了一个可直接采用的事件驱动底座。
 
