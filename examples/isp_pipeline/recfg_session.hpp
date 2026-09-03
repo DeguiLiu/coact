@@ -54,6 +54,7 @@
 #include <cstdio>
 
 #include "coact/ao.hpp"
+#include "coact/bitfield.hpp"
 #include "coact/hsm.hpp"
 #include "coact/runtime.hpp"
 
@@ -144,6 +145,68 @@ inline const TransitionDef<IspCtx> kIspTransitions[] = {
 // We don't actually instantiate one AO per node (would bloat the registry
 // past kMaxAo). Instead the orchestrator synthesizes the 8 kIspReady acks
 // directly into its own queue at startup, modeling the nodes' init completion.
+
+
+// ---------------------------------------------------------------------------
+// Toy register map: the register-as-field-group structure the real hardware
+// has (RS500 SOUT / AI control registers). Each register is a uint32 backing
+// word; each field is a BitFieldView — an INDEPENDENT RMW that never touches
+// its neighbors. This is the structure "register = one uint32 scalar" hides;
+// the SOUT opcode / mode contract inversion class of failures (and the AI
+// control-code 0x0008 semantic reversal) lived exactly here, because the
+// scalar model made it trivially easy to overwrite one field while reading
+// or writing another.
+//
+//   REG_SOUT_CTRL:  [0]   enable   (SoutCtrlEnable) FSM-owned stream gate
+//                   [4:7] opcode   (SoutCtrlOpcode) e.g. 0x2=frame, 0xA=recfg
+//                   [8:9] mode     (SoutCtrlMode)   stream mode the FSM owns
+//   REG_AI_CTRL:    [0]   bypass   (AiCtrlBypass)   SR feature kill switch
+//                   [1:2] magx     (AiCtrlMagx)     SR factor selector
+//
+// Hardware correspondence: a register write in the driver is always a
+// per-field RMW, so reading side-effects can never leak into adjacent fields.
+// g_sout_ctrl is the simulated REG_SOUT_CTRL hardware word: single writer
+// (recfg APPLY action, Dispatcher thread); main thread reads it only after
+// the recfg transaction window has closed (same discipline as g_zoom /
+// g_sel / g_wrape — "WHY THIS IS NOT A BLACKBOARD").
+// ---------------------------------------------------------------------------
+struct SoutCtrlTag {};
+struct AiCtrlTag   {};
+
+using SoutCtrlEnable = coact::BitFieldView<SoutCtrlTag, 0U, 1U>;
+using SoutCtrlOpcode = coact::BitFieldView<SoutCtrlTag, 4U, 4U>;
+using SoutCtrlMode   = coact::BitFieldView<SoutCtrlTag, 8U, 2U>;
+using AiCtrlBypass   = coact::BitFieldView<AiCtrlTag,   0U, 1U>;
+using AiCtrlMagx     = coact::BitFieldView<AiCtrlTag,   1U, 2U>;
+
+// Compile-time guard: the five field views in this register block must
+// never share a bit — disjoint masks prove it at template instantiation.
+static_assert(coact::fields_disjoint<SoutCtrlEnable, SoutCtrlOpcode>(),
+              "SoutEnable / SoutOpcode fields overlap");
+static_assert(coact::fields_disjoint<SoutCtrlEnable, SoutCtrlMode>(),
+              "SoutEnable / SoutMode fields overlap");
+static_assert(coact::fields_disjoint<SoutCtrlOpcode, SoutCtrlMode>(),
+              "SoutOpcode / SoutMode fields overlap");
+static_assert(coact::fields_disjoint<AiCtrlBypass, AiCtrlMagx>(),
+              "AiBypass / AiMagx fields overlap");
+
+// Toy REG_SOUT_CTRL opcode vocabulary (stand-in for the SOUT opcodes).
+inline constexpr std::uint32_t kSoutOpcodeFrame = 0x2U;
+inline constexpr std::uint32_t kSoutOpcodeRecfg = 0xAU;
+inline constexpr std::uint32_t kSoutModeActive  = 0x2U;
+inline constexpr std::uint32_t kSoutEnableOn    = 0x1U;
+
+// PeriphRegCache indices the demo scenarios use for the bit-field layer.
+// Picked to NOT overlap with scenarios A/B/C's scalar indices (0..5).
+inline constexpr std::uint16_t kRegSoutCtrl = 6U;
+inline constexpr std::uint16_t kRegAiCtrl   = 7U;
+
+// The simulated REG_SOUT_CTRL hardware word: enabled, framing opcode, in
+// active mode at boot. Single writer below (recfg APPLY); readers observe
+// it from the main thread only after the recfg transaction closed.
+inline std::uint32_t g_sout_ctrl{(kSoutModeActive << 8U)
+                                 | (kSoutOpcodeFrame << 4U)
+                                 | kSoutEnableOn};
 
 
 // ---------------------------------------------------------------------------
@@ -371,6 +434,15 @@ inline void rcEnterApply(RecfgAoCtx& ctx, const Event&)
     ctx.stage = RecfgStage::kApplying;
     // Dependency order: AI -> DMA width -> geometry -> clock -> SOUT.
     // SINGLE-AUTHORITY rule: every layer reads target_geom.
+    //
+    // SOUT_CTRL: re-issue the opcode for the new geometry through the field
+    // view — only opcode[4:7] moves; mode[8:9] (the stream mode the FSM
+    // owns) and enable[0] MUST survive the reconfiguration. A whole-word
+    // rewrite here would invert the SOUT opcode/mode contract — the failure
+    // class this bit-field structure exists to prevent. Same word, two
+    // fields, one read-modify-write — exactly the "register = field group"
+    // property the scalar PeriphRegCache lost.
+    SoutCtrlOpcode::write(g_sout_ctrl, kSoutOpcodeRecfg);
     if (ctx.inject_stale_sout) {
         // FAULT INJECTION (the documented bug): SOUT frames with the OLD
         // geometry while AI already produces X2 — truncated transfer.
@@ -636,6 +708,38 @@ struct PeriphRegCache {
         // Default write-through: hardware first, shadow only on success.
         st.hardware[reg] = val;
         st.shadow[reg] = val;
+    }
+
+    // Bit-field entry: the SAME three-flag protocol as write() (bypass ->
+    // hardware only; cache_only -> shadow + dirty; default -> write-through),
+    // but the value lands through a BitFieldView RMW — only the field's
+    // bits move; adjacent fields in the same word are NEVER touched. The
+    // sanctioned way to change one parameter that shares a word with others
+    // (the scalar write() lands the whole 32-bit value and would clobber
+    // its neighbors — the failure mode the bit-field layer exists to stop).
+    template <typename Field>
+    void write_field(std::uint16_t reg, std::uint32_t val) noexcept
+    {
+        if (cache_bypass) {
+            Field::write(st.hardware[reg], val);
+            ++bypass_writes;
+            return;
+        }
+        if (cache_only) {
+            Field::write(st.shadow[reg], val);
+            cache_dirty = true;
+            dirty_regs[reg] = true;
+            return;
+        }
+        Field::write(st.hardware[reg], val);
+        Field::write(st.shadow[reg], val);
+    }
+
+    // Field read from the shadow copy (the authority).
+    template <typename Field>
+    [[nodiscard]] std::uint32_t read_field(std::uint16_t reg) const noexcept
+    {
+        return Field::read(st.shadow[reg]);
     }
 
     // Full parameter re-push (the 2.1 failure trigger): replays the shadow

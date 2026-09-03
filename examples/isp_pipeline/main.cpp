@@ -879,6 +879,44 @@ int main()
                     fixed.x0, fixed.y0, fixed.x1, fixed.y1);
     }
 
+    // --- Scenario E: bit-field RMW through the cache (field-level protocol) -
+    // The register is a FIELD GROUP — writing the opcode must move only
+    // opcode[4:7]; mode[8:9] and enable[0] are the FSM's live stream posture
+    // and MUST survive. Same discipline, same three-flag protocol, just a
+    // narrower lane than write()'s whole-word store.
+    std::uint32_t bf_sout_mode_before = 0U;
+    std::uint32_t bf_ai_bypass_before = 0U;
+    std::uint32_t bf_sout_after = 0U;
+    std::uint32_t bf_ai_after = 0U;
+    {
+        // Seed both toy registers through the field layer (write-through).
+        regs.write_field<SoutCtrlEnable>(kRegSoutCtrl, kSoutEnableOn);
+        regs.write_field<SoutCtrlMode>(kRegSoutCtrl, kSoutModeActive);
+        regs.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeFrame);
+        regs.write_field<AiCtrlBypass>(kRegAiCtrl, 0U);
+        regs.write_field<AiCtrlMagx>(kRegAiCtrl, 1U);
+
+        // Snapshot the neighbor fields BEFORE the field-level RMWs.
+        bf_sout_mode_before = regs.read_field<SoutCtrlMode>(kRegSoutCtrl);
+        bf_ai_bypass_before = regs.read_field<AiCtrlBypass>(kRegAiCtrl);
+
+        // The isolation RMWs: opcode and magx move ONLY their own lanes.
+        regs.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeRecfg);
+        regs.write_field<AiCtrlMagx>(kRegAiCtrl, 2U);
+        bf_sout_after = regs.st.shadow[kRegSoutCtrl];
+        bf_ai_after = regs.st.shadow[kRegAiCtrl];
+        std::printf("[cache] scenario E: SOUT_CTRL shadow=0x%x (opcode=%u "
+                    "mode=%u enable=%u), AI_CTRL shadow=0x%x (magx=%u "
+                    "bypass=%u); hw=0x%x/0x%x\n",
+                    bf_sout_after, SoutCtrlOpcode::read(bf_sout_after),
+                    SoutCtrlMode::read(bf_sout_after),
+                    SoutCtrlEnable::read(bf_sout_after),
+                    bf_ai_after, AiCtrlMagx::read(bf_ai_after),
+                    AiCtrlBypass::read(bf_ai_after),
+                    regs.st.hardware[kRegSoutCtrl],
+                    regs.st.hardware[kRegAiCtrl]);
+    }
+
     // =====================================================================
     // Error-signal injection scenario: one deliberate interrupt per chain —
     // the NEW signals (kIspFifoOvf / kMipiStreamErr / kUsbErrInt) each get
@@ -1305,6 +1343,27 @@ int main()
         check(t.x0 == 439U && t.x1 == 539U,
               "scenario D: mirror transform maps [100,200]->[439,539]");
     }
+    // Bit-field layer: the field RMW touches ONLY the named field; the
+    // adjacent lanes in the same register word survive untouched. Same
+    // three-flag protocol as write() — same shadow/hardware coherency,
+    // same cache_only dirty tracking, same bypass counter.
+    check(SoutCtrlOpcode::read(bf_sout_after) == kSoutOpcodeRecfg
+              && SoutCtrlMode::read(bf_sout_after) == bf_sout_mode_before
+              && SoutCtrlEnable::read(bf_sout_after) == kSoutEnableOn,
+          "scenario E: SOUT opcode RMW left mode/enable fields untouched");
+    check(AiCtrlMagx::read(bf_ai_after) == 2U
+              && AiCtrlBypass::read(bf_ai_after) == bf_ai_bypass_before
+              && bf_sout_after == regs.st.hardware[kRegSoutCtrl]
+              && bf_ai_after == regs.st.hardware[kRegAiCtrl],
+          "scenario E: AI magx RMW left bypass untouched; shadow==hardware");
+    // Recfg path: rcEnterApply re-issued the SOUT opcode through the field
+    // view; mode[8:9] (the FSM-owned stream posture) must have survived
+    // every transaction (pass-2 fault + pass-3 clean both run APPLY).
+    check(SoutCtrlOpcode::read(g_sout_ctrl) == kSoutOpcodeRecfg
+              && SoutCtrlMode::read(g_sout_ctrl) == kSoutModeActive
+              && SoutCtrlEnable::read(g_sout_ctrl) == kSoutEnableOn,
+          "recfg path: SOUT_CTRL opcode re-issued via BitFieldView, "
+          "mode/enable lanes preserved across transactions");
     // Display anomalies: symptom reproduced AND fix verified.
     check(garbled_pairs > 0U, "garbled: width mismatch corrupts pixels");
     check(garbled_fixed == 0U, "garbled: shared width authority is lossless");
