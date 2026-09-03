@@ -29,23 +29,24 @@ RS500 红外视频链路架构演示（Linux host / RT-Thread 双平台）。定
 
 ```mermaid
 flowchart LR
-    subgraph AO层["14 AO（Dispatcher 单线程串行）"]
-        ORCH[OrchestratorAo]:::high --> IRSC[IrscDriverAo]:::n
-        IRSC --> ENH[EnhanceAo]:::n --> PACK[VideoPackAo]:::n
-        IRSC --> TPD[TempChainAo]:::n --> PACK
-        FSM[VideoFsmAo 9态]:::n --> PACK
-        WRAP[WrapeAo]:::n --> HOST[WinHostAo]:::n
-        MIPI[MipiSinkAo]:::n
-        RECFG[RecfgOrchAo 8态]:::n
-        VLOW/LOW 等[增益双链+融合 3 AO]:::n
+    subgraph AOL["14 AO（Dispatcher 单线程串行）"]
+        ORCH["OrchestratorAo"]:::high --> IRSC["IrscDriverAo"]:::n
+        IRSC --> ENH["EnhanceAo"]:::n --> PACK["VideoPackAo"]:::n
+        IRSC --> TPD["TempChainAo"]:::n --> PACK
+        FSM["VideoFsmAo 9态"]:::n --> PACK
+        WRAP["WrapeAo"]:::n --> HOST["WinHostAo"]:::n
+        MIPI["MipiSinkAo"]:::n
+        RECFG["RecfgOrchAo 8态"]:::n
+        GAIN["LowGain/HighGain/HlFuse 3AO"]:::n
+        IRSC --> GAIN --> PACK
     end
-    subgraph worker层["7 worker 实例（PAL 线程，硬件行为模拟）"]
-        W1[IrscWorker]:::w -->|"kFrameIrscOut"| IRSC
-        W2[UsbDmaWorker]:::w -->|"kFrameEof"| WRAP
-        W3[CmdDmaWorker]:::w -->|"kIrscDmaDone"| IRSC
-        W4[IspIrqWorker×2]:::w -->|"节点完成"| ENH
-        W5[SoutDmaWorker]:::w -->|"kSoutDone"| FSM
-        W6[MipiIrqWorker]:::w -->|"TX 中断"| MIPI
+    subgraph WL["7 worker 实例（PAL 线程，硬件行为模拟）"]
+        W1["IrscWorker"]:::w -->|"kFrameIrscOut"| IRSC
+        W2["UsbDmaWorker"]:::w -->|"kFrameEof"| WRAP
+        W3["CmdDmaWorker"]:::w -->|"kIrscDmaDone"| IRSC
+        W4["IspIrqWorker x2"]:::w -->|"节点完成"| ENH
+        W5["SoutDmaWorker"]:::w -->|"kSoutDone"| FSM
+        W6["MipiIrqWorker"]:::w -->|"TX 中断"| MIPI
     end
     classDef high fill:#fecaca,stroke:#dc2626
     classDef n fill:#dbeafe,stroke:#2563eb
