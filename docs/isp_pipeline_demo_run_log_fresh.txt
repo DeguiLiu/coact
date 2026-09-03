@@ -1,0 +1,725 @@
+[worker] cmd_dma started (depth=4)
+[worker] isp_irq started (depth=2)
+[worker] isp_irq started (depth=2)
+[worker] sout_dma started (depth=3)
+[worker] mipi_irq started (depth=2)
+[worker] usb_dma started (slot=1)
+=== isp_pipeline_demo (Preview Start emulation) ===
+  mode=4 arch=PIC_TEMP itf=MIPI_TX0_CSI_S0 1920x1442@30 sout=2 mode=1 fmt=0 direct=1
+[1594287948] e=1 s=0 a0=00000000 a1=00000000 a2=00000000 a3=00000000
+[orch] Phase1: data preload (bypass, pre_data_load_num=0)
+[orch] Phase3: data load (camera_preload_init_preview_data)
+[orch] Phase4: parameter application
+[1594287956] e=2 s=0 a0=00000000 a1=00000000 a2=00000000 a3=00000000
+[session] BOOT --(Phase4 parameter application)--> INIT
+[1594287956] e=3 s=0 a0=00000780 a1=000005a2 a2=00000000 a3=00000000
+[orch] IRSC: init -> start -> ctrl -> output_enable (KBC then IRSC order)[1594287956] e=4 s=4 a0=00000000 a1=00000000 a2=00000000 a3=00000000
+
+[orch] ISP pipeline: init 8 nodes forward
+[1594287956] e=15 s=0 a0=00000000 a1=00000001 a2=00000000 a3=00000000
+[orch] video(PIC) cmd=1
+[orch] video(PIC) cmd=0
+[orch] video(TEMP) cmd=0
+[orch] KBC_OUTPUT_ENABLE -> IRSC_OUTPUT_ENABLE
+[session] INIT --(streams enabled)--> RUNNING
+[hsm] video_fsm PIC --(7)--> REJECTED (illegal cmd in current state)
+[1594287963] e=15 s=0 a0=00000001 a1=00000002 a2=00000000 a3=00000000
+[orch] video(PIC) cmd=1
+[1594287963] e=12 s=0 a0=00000007 a1=00005069 a2=00000100 a3=00000000
+[orch] video(TEMP) cmd=1
+[worker] irsc started (frames=30, period=33333 us)
+[video/PIC] IDLE -> READY (7 nodes)
+[hsm] video_fsm PIC_I --(7)--> PIC_R
+[video/TEMP] IDLE -> READY (4 nodes)
+[1594287964] e=12 s=0 a0=00000007 a1=00005050 a2=00000000 a3=00000000
+[hsm] video_fsm TEMP_I --(7)--> TEMP_R
+[1594287964] e=7 s=0 a0=00000000 a1=00000007 a2=00000000 a3=00000000
+[video/PIC] READY -> RUNNING
+[1594287970] e=12 s=0 a0=00000007 a1=00005454 a2=00000000 a3=00000000
+[hsm] video_fsm PIC_R --(7)--> PIC_G
+[1594287970] e=7 s=1 a0=00000000 a1=00000004 a2=00000000 a3=00000000
+[video/TEMP] READY -> RUNNING
+[1594287970] e=12 s=0 a0=00000007 a1=00005050 a2=00000000 a3=00000000
+[hsm] video_fsm TEMP_R --(7)--> TEMP_G
+[1594287970] e=7 s=0 a0=00000001 a1=00000002 a2=00000000 a3=00000000
+[1594287970] e=12 s=0 a0=00000007 a1=00005454 a2=00000000 a3=00000000
+[1594287970] e=7 s=1 a0=00000001 a1=00000002 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288001] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288001] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288001] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288001] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[mipi(csi)] first TEMP frame: id=0 buf=0
+[1594288005] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[1594288006] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[1594288006] e=10 s=1 a0=00000000 a1=00000000 a2=00000002 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288006] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288035] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288035] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288035] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288035] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288035] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288035] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288036] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288070] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288070] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288070] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[1594288070] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288070] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[1594288071] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288071] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288099] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288099] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288099] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288099] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288099] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[1594288099] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288100] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288132] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288132] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288132] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288133] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288133] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[1594288133] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288134] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] enhance IrqPending --(27)--> Active
+[1594288166] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288166] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288166] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288166] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288166] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288166] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288167] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288199] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[1594288200] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288200] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288200] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288200] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288200] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288201] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288238] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288238] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288238] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288238] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288238] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288239] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288239] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] enhance IrqPending --(27)--> Active
+[1594288268] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288268] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288268] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288268] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288268] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288268] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288269] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hl_fuse] frames_fused=10 (last frame_id=9)
+[1594288300] e=9 s=0 a0=0000000a a1=00000009 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288300] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[pack] path=pic frames_packed=10 (frame_id=9)
+[1594288300] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288300] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[pack] path=temp frames_packed=10 (frame_id=9)
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288300] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288300] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288301] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288302] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] enhance IrqPending --(27)--> Active
+[1594288340] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288340] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288344] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288344] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288344] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288344] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288345] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288371] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[1594288371] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288371] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288371] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288371] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288378] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[1594288378] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288402] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288402] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288403] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288403] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288403] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288403] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[1594288410] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288435] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288435] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288443] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[1594288443] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288443] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[1594288443] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288444] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288468] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288468] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288469] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288469] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288469] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288469] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288470] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[1594288502] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[hsm] tpd IrqPending --(27)--> Active
+[1594288502] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288502] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288502] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288502] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288502] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288503] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288536] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[1594288536] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288536] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[1594288536] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288536] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288536] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288537] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288569] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[1594288569] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288569] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[1594288569] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288569] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288570] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288570] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288603] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[1594288603] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288603] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288603] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288603] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288603] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288604] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hl_fuse] frames_fused=20 (last frame_id=19)
+[1594288636] e=9 s=0 a0=00000014 a1=00000013 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[pack] path=pic frames_packed=20 (frame_id=19)
+[1594288636] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288636] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[pack] path=temp frames_packed=20 (frame_id=19)
+[1594288636] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288637] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288637] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288637] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288638] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288670] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288670] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288670] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288670] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288670] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288670] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288671] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288703] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[1594288703] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288704] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288704] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288704] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288704] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288705] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288737] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[1594288737] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288737] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288738] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288738] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[1594288738] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288738] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288771] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[1594288771] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288771] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288771] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288771] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288771] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288772] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] tpd IrqPending --(27)--> Active
+[1594288804] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288804] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288804] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288804] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288804] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288804] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288805] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288838] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[1594288838] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288838] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288838] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288838] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288838] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288839] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288871] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[1594288871] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[1594288872] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288872] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288872] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288872] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288873] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288905] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[1594288905] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288905] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288905] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288905] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288905] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288906] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[hsm] tpd IrqPending --(27)--> Active
+[hsm] enhance IrqPending --(27)--> Active
+[1594288939] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[1594288939] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[1594288939] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288939] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[1594288939] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288939] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288940] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+[irsc] emitted 30 DN frames @ 33333 us
+[hl_fuse] frames_fused=30 (last frame_id=29)
+[1594288972] e=8 s=0 a0=0000001e a1=00008235 a2=00000000 a3=00000000
+[1594288972] e=9 s=0 a0=0000001e a1=0000001d a2=00000000 a3=00000000
+[hsm] enhance IrqPending --(27)--> Active
+[pack] path=pic frames_packed=30 (frame_id=29)
+[1594288972] e=12 s=2 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack PIC_A --(31)--> PIC_SOUT
+[hsm] tpd IrqPending --(27)--> Active
+[1594288972] e=12 s=4 a0=0000001f a1=00005050 a2=00000000 a3=00000000
+[pack] path=temp frames_packed=30 (frame_id=29)
+[1594288972] e=12 s=3 a0=0000001b a1=00004941 a2=00000000 a3=00000000
+[hsm] pack TEMP_A --(32)--> TEMP_SOUT
+[hsm] pack PIC_SOUT --(33)--> PIC_A
+[1594288972] e=12 s=4 a0=00000020 a1=00005454 a2=00000000 a3=00000000
+[1594288972] e=12 s=4 a0=00000021 a1=00005050 a2=00000000 a3=00000000
+[hsm] pack TEMP_SOUT --(34)--> TEMP_A
+[1594288973] e=12 s=4 a0=00000022 a1=00005454 a2=00000000 a3=00000000
+[hsm] mipi TX_PENDING --(29)--> ACTIVE
+[1594288973] e=12 s=5 a0=0000001d a1=00005441 a2=00000000 a3=00000000
+
+=== runtime reconfiguration (AI SR X1 -> X2) ===
+[session] RUNNING --(kRecfgReq accepted)--> RUNNING.RECFG_TXN
+[1594288995] e=15 s=0 a0=00000002 a1=00000003 a2=00000000 a3=00000000
+[recfg] PRECHECK REJECT: magx=4 unsupported
+[hsm] recfg Idle --(19)--> REJECTED (X4 unsupported (capability matrix))
+[hsm] recfg Quiescing --(21)--> Applying
+[session] RUNNING.RECFG_TXN --(recfg txn terminal (self))--> RUNNING
+[hsm] recfg PrecheckOrCommit --(20)--> Idle
+[1594288995] e=13 s=0 a0=00000001 a1=00000004 a2=00000000 a3=00000000
+[1594288995] e=12 s=6 a0=00000013 a1=00004958 a2=00000100 a3=00000000
+[1594288995] e=12 s=6 a0=00000015 a1=00005141 a2=00000000 a3=00000000
+[1594288995] e=15 s=0 a0=00000003 a1=00000002 a2=00000000 a3=00000000
+[1594288995] e=12 s=6 a0=00000014 a1=00005049 a2=00000000 a3=00000000
+[recfg] pass 1b: DMO mode request (full rebuild required)
+[session] RUNNING --(kRecfgReq accepted)--> RUNNING.RECFG_TXN
+[1594288997] e=15 s=0 a0=00000002 a1=00000003 a2=00000000 a3=00000000
+[recfg] PRECHECK REJECT: stream_mode=DMO (passive quiesce unverified, full rebuild required)
+[hsm] recfg Idle --(19)--> REJECTED (stream_mode=DMO (full rebuild))
+[hsm] recfg Quiescing --(21)--> Applying
+[1594288997] e=13 s=0 a0=00000001 a1=000000fe a2=00000000 a3=00000000
+[session] RUNNING.RECFG_TXN --(recfg txn terminal (self))--> RUNNING
+[1594288997] e=12 s=6 a0=00000013 a1=00004973 a2=00000100 a3=00000000
+[hsm] recfg PrecheckOrCommit --(20)--> Idle
+[1594288997] e=12 s=6 a0=00000015 a1=00005141 a2=00000000 a3=00000000
+[1594288997] e=15 s=0 a0=00000003 a1=00000002 a2=00000000 a3=00000000
+[1594288997] e=12 s=6 a0=00000014 a1=00005049 a2=00000000 a3=00000000
+[session] RUNNING --(kRecfgReq accepted)--> RUNNING.RECFG_TXN
+[hsm] recfg Idle --(19)--> Quiescing
+[1594288999] e=15 s=0 a0=00000002 a1=00000003 a2=00000000 a3=00000000
+[recfg] precheck OK (magx x2): 1920x1442 -> 3840x2884
+[1594288999] e=12 s=6 a0=00000013 a1=00004951 a2=00000000 a3=00000000
+[hsm] recfg Quiescing --(21)--> Applying
+[1594288999] e=13 s=0 a0=00000002 a1=00000002 a2=078005a2 a3=0f000b44
+[recfg] FAULT: SOUT frames 5537280 B (stale X1) but stream is 22149120 B (X2) -> truncated
+[1594288999] e=12 s=6 a0=00000015 a1=00005141 a2=00000000 a3=00000000
+[recfg] sync: layout_version 1 -> 2 (stale address records die on first query)
+[1594288999] e=13 s=0 a0=00000003 a1=00547e00 a2=0151f800 a3=00000000
+[hsm] recfg Resuming --(22)--> Commit
+[1594288999] e=13 s=0 a0=00000004 a1=00000001 a2=00000002 a3=00000000
+[recfg] RECOVER: frame 5537280 B != authority 22149120 B -> rollback to old snapshot
+[1594288999] e=12 s=6 a0=00000016 a1=00005243 a2=00000000 a3=00000000
+[session] RUNNING.RECFG_TXN --(recfg txn terminal (self))--> RUNNING
+[1594288999] e=13 s=0 a0=00000005 a1=00547e00 a2=0151f800 a3=00000000
+[hsm] recfg PrecheckOrCommit --(20)--> Idle
+[1594288999] e=15 s=0 a0=00000003 a1=00000002 a2=00000000 a3=00000000
+[1594288999] e=12 s=6 a0=00000014 a1=00005049 a2=00000000 a3=00000000
+[cache] stale address query after reconfig: MISS (forced reload) (version guard killed the old record)
+[session] RUNNING --(kRecfgReq accepted)--> RUNNING.RECFG_TXN
+[hsm] recfg Idle --(19)--> Quiescing
+[1594289001] e=15 s=0 a0=00000002 a1=00000003 a2=00000000 a3=00000000
+[recfg] precheck OK (magx x2): 1920x1442 -> 3840x2884
+[1594289001] e=12 s=6 a0=00000013 a1=00004951 a2=00000000 a3=00000000
+[hsm] recfg Quiescing --(21)--> Applying
+[1594289001] e=13 s=0 a0=00000002 a1=00000002 a2=078005a2 a3=0f000b44
+[recfg] sync: layout_version 2 -> 3 (stale address records die on first query)
+[1594289001] e=12 s=6 a0=00000015 a1=00005141 a2=00000000 a3=00000000
+[hsm] recfg Resuming --(22)--> Commit
+[1594289001] e=13 s=0 a0=00000004 a1=00000002 a2=00000003 a3=00000000
+[recfg] COMMIT: active=x2 3840x2884 (22149120 B), observed frame = 22149120 B (authority match)
+[1594289001] e=12 s=6 a0=00000016 a1=00005243 a2=00000000 a3=00000000
+[session] RUNNING.RECFG_TXN --(recfg txn terminal (self))--> RUNNING
+[1594289001] e=13 s=0 a0=00000006 a1=00000002 a2=0f000b44 a3=0151f800
+[hsm] recfg PrecheckOrCommit --(20)--> Idle
+[1594289001] e=15 s=0 a0=00000003 a1=00000002 a2=00000000 a3=00000000
+[1594289001] e=12 s=6 a0=00000014 a1=00005049 a2=00000000 a3=00000000
+[recfg] summary: committed=1 failed=3 layout_version=3
+
+=== T37 UVC X2 premature-EOF + Identity Zoom ===
+[1594289003] e=13 s=0 a0=00000007 a1=00000001 a2=00000003 a3=00000003
+  profile: fixed 1280x1024@30, streamVldNum=1310720, bulkXSF=16384 B
+[t37] phase 2: X2 without workaround (WRAPE stale X1 framing)
+[wrape] frame 30: actual 2621440 B > configured 655360 B -> ERR+EOF at 655360 B (25% of frame)
+[wrape] frame 31: actual 2621440 B > configured 655360 B -> ERR+EOF at 655360 B (25% of frame)
+[wrape] frame 32: actual 2621440 B > configured 655360 B -> ERR+EOF at 655360 B (25% of frame)
+[t37] phase 3: X2 with Identity Zoom (framing fixed at 2621440 B)
+[t37] phase 4: X1<->X2 x10 rounds, zoom always active, downstream 1280x1024 constant
+[t37] summary: framed=15 err_eof=3 complete=12 | winhost frames=45 truncated=3 gaps=0
+
+=== register-cache consistency ===
+[audit] after bare bypass: reg 2 drift cache=0x1002 hw=0xbeef
+[audit] after bare bypass: reg 5 drift cache=0x1005 hw=0xcafe
+[cache] scenario A: full repush overwrote tuned hw 0xbeef -> 0x1002 (silent param backflow)
+[cache] scenario B: paired bypass resynced (total drift=2, new drift=0)
+[cache] scenario C: sync during freeze refused=1 (precondition assert)
+[cache] scenario C: sync at boundary ok=1 (frame-atomic commit)
+[cache] scenario D: mirror box raw=[100,50..200,150] stale(same)=[100,50..200,150] fixed=[439,50..539,150]
+[cache] scenario E: SOUT_CTRL shadow=0x12a7 (opcode=10 mode=2 enable=1), AI_CTRL shadow=0x1004 (magx=2 bypass=0); hw=0x12a7/0x1004
+
+=== error-signal injection (one interrupt per chain) ===
+[warn] isp FIFO_OVERFLOW: node=0 frame=0 dropped (error counted, pipeline continues)
+[warn] mipi stream error interrupt: frame=29 (counted, FSM unchanged per §9 rule)
+[1594289240] e=14 s=0 a0=00000001 a1=00000001 a2=00000000 a3=00000000
+[warn] usb error interrupt: frame=29 (driver counts, EOF data path unaffected)
+
+=== display anomalies (garbled / dropped / flicker) ===
+[anomaly] garbled: 8-bit data x 16-bit DMA -> 32/32 pixel pairs corrupted (two-pixels-merged)
+[anomaly] garbled (fixed): shared width authority -> 0 corrupted
+[anomaly] dropped: window=99999 us (3buf x 33ms); steady=0 drops, 250ms-spike=4 drops (peak, not average)
+[anomaly] dropped (fix): 8-buffer window=266664 us -> 0 drops
+[anomaly] flicker: restart without idle ack -> first frame 655360 B (OLD geometry) vs expected 2621440 B -> flash
+[anomaly] flicker (fixed): quiesced restart -> first frame 2621440 B (new geometry, aligned)
+
+[orch] STOP_PREVIEW: reverse order
+[session] RUNNING --(STOP_PREVIEW)--> DEINIT
+[1594289241] e=11 s=0 a0=00000001 a1=00000000 a2=00000000 a3=00000000
+[orch] video(TEMP) cmd=2
+[1594289241] e=15 s=0 a0=00000002 a1=00000004 a2=00000000 a3=00000000
+[orch] video(PIC) cmd=2
+[orch] video(TEMP) cmd=3
+[orch] video(PIC) cmd=3
+[video/TEMP] RUNNING -> READY
+[hsm] video_fsm TEMP_G --(7)--> TEMP_R
+[1594289241] e=12 s=0 a0=00000007 a1=00005454 a2=00000000 a3=00000000
+[video/PIC] RUNNING -> READY
+[hsm] video_fsm PIC_G --(7)--> PIC_R
+[video/TEMP] READY -> IDLE (deinit reverse)
+[1594289241] e=12 s=0 a0=00000007 a1=00005050 a2=00000000 a3=00000000
+[hsm] video_fsm TEMP_R --(7)--> TEMP_I
+[video/PIC] deinit quiesce: SOUT event-driven (3 ioctls, 3000 us) | FMT888 poll (26 ioctls, 25000 us) -> INCONSISTENT mechanisms
+[1594289241] e=12 s=0 a0=00000007 a1=00005454 a2=00000000 a3=00000000
+[video/PIC] deinit quiesce (unified fix): FMT888 event-driven (3 ioctls, 25000 us) -> consistent
+[1594289241] e=7 s=1 a0=00000003 a1=00000005 a2=00000000 a3=00000000
+[video/PIC] READY -> IDLE (deinit reverse)
+[hsm] video_fsm PIC_R --(7)--> PIC_I
+[1594289241] e=12 s=0 a0=00000007 a1=00005050 a2=00000000 a3=00000000
+[1594289241] e=7 s=0 a0=00000003 a1=00000008 a2=00000000 a3=00000000
+[session] DEINIT --(all segments deinit'd)--> STOPPED
+[worker] mipi_irq draining (queued=0)
+[1594289242] e=15 s=0 a0=00000004 a1=00000005 a2=00000000 a3=00000000
+[worker] mipi_irq exited (executed=30, rejected=0)
+[worker] isp_irq draining (queued=0)
+[worker] isp_irq exited (executed=30, rejected=0)
+[worker] isp_irq draining (queued=0)
+[worker] isp_irq exited (executed=30, rejected=0)
+[worker] sout_dma draining (queued=0)
+[worker] sout_dma exited (executed=60, rejected=0)
+[worker] cmd_dma draining (queued=0)
+[worker] cmd_dma exited (executed=4, rejected=0)
+[worker] usb_dma exited (transactions=6840)
+[1594289243] e=14 s=0 a0=00001ab8 a1=00000000 a2=00000000 a3=00000000
+[1594289243] e=14 s=1 a0=00000004 a1=00000000 a2=00000000 a3=00000000
+[1594289243] e=14 s=2 a0=0000001e a1=00000000 a2=00000000 a3=00000000
+[1594289243] e=14 s=3 a0=0000001e a1=00000000 a2=00000000 a3=00000000
+[1594289243] e=14 s=4 a0=0000003c a1=00000000 a2=00000000 a3=00000000
+[1594289243] e=14 s=5 a0=0000001e a1=00000000 a2=00000000 a3=00000000
+[1594289243] e=14 s=6 a0=0000001e a1=00000000 a2=00000000 a3=00000000
+
+=== per-node latency ===
+  low_gain  : total=12000 frames=30 avg=400 (sim=400)
+  high_gain : total=18000 frames=30 avg=600 (sim=600)
+  hl_fuse   : total=6000 frames=30 avg=200
+  enhance   : total=9000 frames=30 avg=300 (sim=300)
+  tpd_chain : total=15000 frames=30 avg=500 (sim=500)
+  pic_pack  : frames=30 last_pack_us=400 sout_subs=30 done=30
+  temp_pack : frames=30 last_pack_us=300 sout_subs=30 done=30
+  wrape     : framed=45 complete=42 err_eof=3 byte_mismatch=0 tag_mismatch=0
+  winhost   : frames=45 complete=42 truncated=3 min_payload=655360 max_payload=2621440 gaps=0
+  usb_sink  : idle (T37 moved the PIC data plane to WRAPE)
+  mipi_sink : frames=30 first=0 last=29 total_us=18000 tag_mismatch=0 byte_mismatch=0 overrun=0
+  ddr       : write_ops=225 read_ops=315 overrun_drops=0 ownership_skips=0 (data plane through DDR)
+  irsc_drv  : step_count=4 ready=1
+  orch      : irsc_ready=4 isp_ready=8 pic_video_ready=1 temp_video_ready=1 last_irsc_step=3
+  video_fsm : pic=IDLE temp=IDLE (merged AO, rejects=1+0)
+  quiesce   : sout(event) ioctls=3 us=3000 | fmt888(poll) ioctls=26 us=25000
+  --- hardware workers (non-AO pthreads) ---
+  usb_dma   : transactions=6840 (WRAPE bulk engine)
+  cmd_dma   : executed=4 rejected=0 (vdcmd register channel)
+  isp_irq_enh: executed=30 rejected=0 (enhance node-done irq)
+  isp_irq_tpd: executed=30 rejected=0 (tpd node-done irq)
+  sout_dma  : executed=60 rejected=0 (SOUT writeback)
+  mipi_irq  : executed=30 rejected=0 (MIPI CSI TX done)
+  irsc      : emitted 30 DN frames (producer pthread)
+  session   : final=STOPPED
+  pool.used=0 (expect 0), hwm=9
+
+=== verification ===
+  [PASS] PIC sink (WRAPE) received all frames
+  [PASS] TEMP sink received all frames
+  [PASS] PIC data plane byte-exact
+  [PASS] TEMP data plane byte-exact
+  [PASS] route tags correct
+  [PASS] DDR slot guard: zero overrun degradations
+  [PASS] DDR ownership protocol: writer never hit a reader-claimed slot
+  [PASS] data plane: every frame byte-verified (no overrun early-outs)
+  [PASS] T37: phase 2 premature-EOF frames (ERR+EOF)
+  [PASS] T37: phase 3+4 frames complete at fixed geometry
+  [PASS] T37: Windows host saw the truncated payloads
+  [PASS] T37: Windows host received every frame EOF
+  [PASS] T37: no frame gaps on the host
+  [PASS] T37: truncated payload is the stale X1 length
+  [PASS] T37: complete payload is the fixed output length
+  [PASS] T37: zoom block never turned off
+  [PASS] T37: Stream SEL valid-pixel count constant (frame-length authority)
+  [PASS] T37: zoom step consistent with frame geometry throughout
+  [PASS] T37: downstream geometry constant across X1<->X2 rounds
+  [PASS] event pool fully reclaimed
+  [PASS] IRSC 4-step command sequence
+  [PASS] ISP 8-node init acks
+  [PASS] video FSM init acks (PIC + TEMP)
+  [PASS] video FSMs back to IDLE after reverse deinit
+  [PASS] video FSM: illegal START-in-IDLE rejected by guard arc
+  [PASS] session reached STOPPED
+  [PASS] IRSC async channel: 4 register writes, 4 completions, 0 rejects
+  [PASS] CmdDmaWorker: executed == IRSC step_count == 4 (vdcmd channel)
+  [PASS] IspIrqWorker(enhance): requests == completions == frames
+  [PASS] IspIrqWorker(tpd): requests == completions == frames
+  [PASS] IspIrqWorker: zero queue-full rejects
+  [PASS] SoutDmaWorker: writebacks == packed frames (PIC and TEMP)
+  [PASS] SoutDmaWorker: zero queue-full rejects
+  [PASS] MipiIrqWorker: TX completions == frames shipped
+  [PASS] IspIrqWorker: TPD chain never hit a FIFO_OVERFLOW (normal run)
+  [PASS] IspIrqWorker: injected FIFO_OVERFLOW counted once (frame dropped)
+  [PASS] MipiIrqWorker: injected stream error counted once, FSM unaffected
+  [PASS] UsbDmaWorker: injected error interrupt counted on both sides
+  [PASS] reconfig: exactly one commit
+  [PASS] reconfig: X4 precheck reject + DMO full-rebuild reject + X2 fault rollback
+  [PASS] reconfig: DMO partial-reconfig rejected at precheck (full rebuild)
+  [PASS] reconfig: committed frame matches authority geometry
+  [PASS] reconfig: layout_version advanced
+  [PASS] SOUT quiesce: 3 ioctls (event)
+  [PASS] FMT888 quiesce: poll costs more ioctls than event path
+  [PASS] stale address record invalidated
+  [PASS] scenario A: bare bypass forked the tuned hw value
+  [PASS] scenario A: repush backflow overwrote tuned hw
+  [PASS] scenario B env: bare-bypass drift was observed (cumulative)
+  [PASS] scenario B fix: paired bypass introduces zero new drift
+  [PASS] scenario B: paired bypass left zero drift
+  [PASS] scenario C: sync during freeze is refused
+  [PASS] scenario C: exactly one sync commit
+  [PASS] scenario C: dirty set fully flushed
+  [PASS] scenario D: mirror transform maps [100,200]->[439,539]
+  [PASS] scenario E: SOUT opcode RMW left mode/enable fields untouched
+  [PASS] scenario E: AI magx RMW left bypass untouched; shadow==hardware
+  [PASS] recfg path: SOUT_CTRL opcode re-issued via BitFieldView, mode/enable lanes preserved across transactions
+  [PASS] garbled: width mismatch corrupts pixels
+  [PASS] garbled: shared width authority is lossless
+  [PASS] dropped: steady latency never drops
+  [PASS] dropped: latency spike breaks the window
+  [PASS] dropped (fix): deep window never drops
+  [PASS] flicker: un-quiesced restart carries old geometry
+  [PASS] flicker: quiesced restart aligns the first frame
+RESULT: ALL PASS (fails=0)
