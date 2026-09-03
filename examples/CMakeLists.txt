@@ -45,7 +45,7 @@ add_executable(isp_pipeline_demo
     isp_pipeline/recfg_session.cpp
     ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp
     ${CMAKE_SOURCE_DIR}/src/diag/log_rtthread.cpp)
-target_compile_definitions(isp_pipeline_demo PRIVATE COACT_RTT_STUB)
+target_compile_definitions(isp_pipeline_demo PRIVATE COACT_RTT_STUB ISP_DEMO_CORO)
 target_include_directories(isp_pipeline_demo PRIVATE
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR})
