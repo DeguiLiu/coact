@@ -7,6 +7,15 @@
 // selection (SMP bounded MPSC). POSIX has no interrupt masking; irq_save /
 // irq_restore are documented no-ops. See design 13 and implementation
 // contract 4.8.
+//
+// xxxOps sync-primitive extension (pal.hpp SemOps family): POSIX uses
+// pthread primitives directly — a counting semaphore emulated over
+// mutex+cond (sem_t would also work, but the mutex+cond form is shared with
+// the CondOps implementation and stays clean under -fno-exceptions), plain
+// pthread_mutex_t, pthread_cond_t, and pthread_create/join for ThreadOps.
+// release_from_isr is the documented host ISR simulation: pthread_cond_signal
+// is not async-signal-safe, so callers must be normal threads (the same
+// limitation as signal_dispatcher_from_isr, P2-11).
 #pragma once
 
 #include <cstddef>
@@ -20,8 +29,39 @@
 namespace coact {
 namespace pal {
 
+
 class Posix {
 public:
+    // ---------------------------------------------------------------------------
+    // POSIX sync handles (SemOps family). Self-contained values filled in by the
+        // PAL's init methods; the `pal` back-pointer lets lambdas and free
+        // functions call back into the PAL through the handle.
+    // ---------------------------------------------------------------------------
+    struct SemHandle {
+        pthread_mutex_t mtx;
+        pthread_cond_t  cond;
+        uint32_t        count;
+        Posix*          pal;       // set by Posix::sem_init
+    };
+
+    struct MutexHandle {
+        pthread_mutex_t mtx;
+        Posix*          pal;       // set by Posix::mutex_init
+    };
+
+    struct CondHandle {
+        pthread_cond_t  cond;
+        Posix*          pal;       // set by Posix::cond_init
+    };
+
+    struct ThreadHandle {
+        pthread_t       tid;
+        bool            valid;
+        ThreadEntry     entry;     // filled by thread_create; read by the trampoline
+        void*           context;
+        Posix*          pal;       // set by Posix::thread_create
+    };
+
     Posix() noexcept;
 
     // -- Interrupt masking: no-op on POSIX (tokens are opaque) --
@@ -78,8 +118,43 @@ public:
     template <typename T, uint16_t Cap>
     using QueueBackend = coact::BoundedMpscQueue<T, Cap>;
 
+    // -- SemOps family (pal.hpp): counting semaphore over mutex + cond -------
+    // init/take/release may be called from any task thread; take(0) is a
+    // non-blocking try, take(kWaitForever) blocks until a token exists.
+    bool sem_init(SemHandle& sem, uint32_t initial) noexcept;
+    bool sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept;
+    void sem_release(SemHandle& sem) noexcept;
+    // Host ISR simulation (pthread cond_signal is not async-signal-safe);
+    // identical to sem_release on POSIX.
+    void sem_release_from_isr(SemHandle& sem) noexcept;
+    void sem_deinit(SemHandle& sem) noexcept;
+
+    // -- MutexOps family (pal.hpp): plain pthread_mutex_t ---------------------
+    bool mutex_init(MutexHandle& m) noexcept;
+    void mutex_lock(MutexHandle& m) noexcept;
+    void mutex_unlock(MutexHandle& m) noexcept;
+    void mutex_deinit(MutexHandle& m) noexcept;
+
+    // -- CondOps family (pal.hpp): hand-off condition variable ----------------
+    bool cond_init(CondHandle& c) noexcept;
+    // timeout_ms 0 = wait forever (the Dispatcher wait convention).
+    void cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexcept;
+    void cond_signal(CondHandle& c) noexcept;
+    void cond_broadcast(CondHandle& c) noexcept;
+    void cond_deinit(CondHandle& c) noexcept;
+
+    // -- ThreadOps family (pal.hpp): pthread create/join ----------------------
+    bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
+    void thread_join(ThreadHandle& t) noexcept;
+
+    // -- Sleep (SemOps family companion): block the calling thread ------------
+    // microsecond granularity; POSIX uses nanosleep (usleep is obsolete per
+    // POSIX.1-2008). Used by the demo workers' hardware-latency simulation.
+    void sleep_us(uint32_t us) noexcept;
+
 private:
     static void* dispatcher_entry(void* arg) noexcept;
+    static void* thread_trampoline(void* arg) noexcept;
 
     pthread_mutex_t mutex_;
     pthread_cond_t cond_;

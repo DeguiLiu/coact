@@ -18,6 +18,14 @@ target_link_libraries(test_integration PRIVATE Threads::Threads)
 target_include_directories(test_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # RT-Thread PAL host test: RT-Thread API backed by pthreads via stub header.
+coact_add_test(test_pal_sync
+    test_pal_sync.cpp
+    pal_posix.cpp
+    pal_rtthread.cpp)
+target_link_libraries(test_pal_sync PRIVATE Threads::Threads)
+target_compile_definitions(test_pal_sync PRIVATE COACT_RTT_STUB)
+target_include_directories(test_pal_sync PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
 coact_add_test(test_rtt_pal
     test_rtt_pal.cpp
     pal_rtthread.cpp)
@@ -47,6 +55,14 @@ coact_add_test(test_coordinator
     test_coordinator.cpp)
 target_link_libraries(test_coordinator PRIVATE Threads::Threads)
 target_include_directories(test_coordinator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# TimerScheduler (event-source timer adapted from newosp osp::timer.hpp):
+# ManualTickSource poll() mode end-to-end through the full coact pipeline.
+coact_add_test(test_timer
+    test_timer.cpp
+    pal_posix.cpp)
+target_link_libraries(test_timer PRIVATE Threads::Threads)
+target_include_directories(test_timer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # Static-lifetime Runtime test (review P1): global .bss Runtime runs end-to-end
 # under the RT-Thread stub; Config->PAL stack pass-through; memory footprint.
@@ -95,3 +111,8 @@ target_link_libraries(bench_hotpath PRIVATE coact_core Threads::Threads)
 target_compile_options(bench_hotpath PRIVATE -O2 -g -fno-omit-frame-pointer)
 target_link_options(bench_hotpath PRIVATE -rdynamic)
 target_include_directories(bench_hotpath PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# coact::coro: task registry / combinators / stackful executor (Linux PAL
+# cooperative layer). Registration lives in the standalone fragment so the
+# component can land independently of other in-flight src/core changes.
+include(${CMAKE_CURRENT_SOURCE_DIR}/test_coro.cmake)

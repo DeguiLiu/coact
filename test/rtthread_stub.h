@@ -186,6 +186,48 @@ inline rt_err_t rt_sem_release(rt_sem_t s) noexcept
     return RT_EOK;
 }
 
+/* --- Mutex (SemOps MutexOps support) ------------------------------------- */
+struct rt_mutex {
+    pthread_mutex_t mtx;
+    bool            init_done;   /* host-only: guard against double pthread init */
+};
+typedef struct rt_mutex *rt_mutex_t;
+
+inline rt_err_t rt_mutex_init(rt_mutex_t m, const char*, rt_uint8_t) noexcept
+{
+    if (nullptr == m) { return -RT_EINVAL; }
+    if (!m->init_done) {
+        pthread_mutex_init(&m->mtx, nullptr);
+        m->init_done = true;
+    }
+    return RT_EOK;
+}
+inline rt_err_t rt_mutex_detach(rt_mutex_t m) noexcept
+{
+    if (nullptr == m) { return -RT_EINVAL; }
+    pthread_mutex_destroy(&m->mtx);
+    m->init_done = false;
+    return RT_EOK;
+}
+inline rt_err_t rt_mutex_take(rt_mutex_t m, rt_int32_t ticks) noexcept
+{
+    if (nullptr == m) { return -RT_EINVAL; }
+    if (RT_WAITING_NO == ticks) {
+        return (0 == pthread_mutex_trylock(&m->mtx)) ? RT_EOK : -RT_ETIMEOUT;
+    }
+    if (RT_WAITING_FOREVER == ticks) {
+        return (0 == pthread_mutex_lock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
+    }
+    /* bounded take: not exercised by the coact paths (mutex_lock uses
+       forever); approximate with a lock (host convenience only). */
+    return (0 == pthread_mutex_lock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
+}
+inline rt_err_t rt_mutex_release(rt_mutex_t m) noexcept
+{
+    if (nullptr == m) { return -RT_EINVAL; }
+    return (0 == pthread_mutex_unlock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
+}
+
 /* --- Thread ------------------------------------------------------------- */
 struct rt_thread {
     pthread_t   tid;
@@ -254,6 +296,17 @@ inline rt_tick_t rt_tick_get() noexcept
     return static_cast<rt_tick_t>(
         static_cast<uint64_t>(ts.tv_sec) * 1000U
         + static_cast<uint64_t>(ts.tv_nsec) / 1000000U);
+}
+
+/* --- Delay (PAL sleep_us backing) ----------------------------------------- */
+/* rt_thread_mdelay: milliseconds (the real 1 kHz tick resolution). Host stub
+   rounds sub-millisecond requests up to 1 ms to match PAL::sleep_us. */
+inline void rt_thread_mdelay(int ms) noexcept
+{
+    if (ms <= 0) { ms = 1; }
+    const long ns = static_cast<long>(ms) * 1000000L;
+    struct timespec ts{ns / 1000000000L, ns % 1000000000L};
+    nanosleep(&ts, nullptr);
 }
 
 /* --- Memory / console --------------------------------------------------- */

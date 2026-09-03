@@ -18,10 +18,12 @@ namespace pal {
 namespace {
 
 /* Host-test convenience resource for the default ctor. Production boards pass
-   explicit RtThreadResources so this 16 KiB static never exists in firmware. */
-RtThreadResources<16384U, 8U>& default_resources() noexcept
+   explicit RtThreadResources so this 16 KiB static never exists in firmware.
+   Worker slots: 8 x 2 KiB stacks so host tests of the ThreadOps table run
+   without explicit resources. */
+RtThreadResources<16384U, 8U, 8U, 2048U>& default_resources() noexcept
 {
-    static RtThreadResources<16384U, 8U> res;
+    static RtThreadResources<16384U, 8U, 8U, 2048U> res;
     return res;
 }
 
@@ -422,6 +424,243 @@ void RtThread::leave_direct() noexcept
     if (nullptr != ctx && ctx->direct_depth > 0U) {
         --ctx->direct_depth;
     }
+}
+
+/* ---------------------------------------------------------------------------
+ * SemOps family: static rt_semaphore (embedded in the handle; rt_sem_init /
+ * rt_sem_detach in task context only). timeout_ms: 0 = non-blocking try,
+ * kWaitForever = RT_WAITING_FOREVER, other = ms converted to ticks.
+ * ------------------------------------------------------------------------- */
+
+bool RtThread::sem_init(SemHandle& sem, uint32_t initial) noexcept
+{
+    if (RT_EOK != rt_sem_init(&sem.sem, "coact_sem", initial, RT_IPC_FLAG_PRIO)) {
+        return false;
+    }
+    sem.pal = this;
+    return true;
+}
+
+bool RtThread::sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept
+{
+    rt_int32_t ticks;
+    if (0U == timeout_ms) {
+        ticks = RT_WAITING_NO;              /* non-blocking try */
+    }
+    else if (kWaitForever == timeout_ms) {
+        ticks = static_cast<rt_int32_t>(RT_WAITING_FOREVER);
+    }
+    else {
+        ticks = detail::dispatcher_wait_ticks(timeout_ms);
+    }
+    return (RT_EOK == rt_sem_take(&sem.sem, ticks));
+}
+
+void RtThread::sem_release(SemHandle& sem) noexcept
+{
+    rt_sem_release(&sem.sem);
+}
+
+void RtThread::sem_release_from_isr(SemHandle& sem) noexcept
+{
+    /* rt_sem_release IS ISR-safe in RT-Thread (release never allocates and
+       the wait list splice is irq-masked inside the kernel). No init path
+       runs here: rt_sem_init is task-context only. */
+    rt_sem_release(&sem.sem);
+}
+
+void RtThread::sem_deinit(SemHandle& sem) noexcept
+{
+    rt_sem_detach(&sem.sem);
+}
+
+/* ---------------------------------------------------------------------------
+ * MutexOps family: static rt_mutex (embedded in the handle). rt_mutex_init /
+ * rt_mutex_detach in task context only.
+ * ------------------------------------------------------------------------- */
+
+bool RtThread::mutex_init(MutexHandle& m) noexcept
+{
+    if (RT_EOK != rt_mutex_init(&m.mtx, "coact_mtx", RT_IPC_FLAG_PRIO)) {
+        return false;
+    }
+    m.pal = this;
+    return true;
+}
+
+void RtThread::mutex_lock(MutexHandle& m) noexcept
+{
+    rt_mutex_take(&m.mtx, static_cast<rt_int32_t>(RT_WAITING_FOREVER));
+}
+
+void RtThread::mutex_unlock(MutexHandle& m) noexcept
+{
+    rt_mutex_release(&m.mtx);
+}
+
+void RtThread::mutex_deinit(MutexHandle& m) noexcept
+{
+    rt_mutex_detach(&m.mtx);
+}
+
+/* ---------------------------------------------------------------------------
+ * CondOps family: the WAKE semaphore pattern. Ownership discipline (differs
+ * from pthread_cond_wait — documented in pal_rtthread.hpp):
+ *   waiter:  mutex_lock; while (!condition) { cond_wait(c, m, 0); } ...
+ *            cond_wait BLOCKS the thread while m stays HELD, so the signaler
+ *            must NOT hold m while signaling (or the waiter cannot wake).
+ *   signaler: set state under m; mutex_unlock; cond_signal(c).
+ * The demo probe (test_pal_sync) exercises exactly this shape; the WorkerBase
+ * Phase-2 port must follow it.
+ * ------------------------------------------------------------------------- */
+
+bool RtThread::cond_init(CondHandle& c) noexcept
+{
+    if (RT_EOK != rt_sem_init(&c.sem, "coact_cond", 0U, RT_IPC_FLAG_PRIO)) {
+        return false;
+    }
+    c.waiters.store(0U, std::memory_order_relaxed);
+    c.pal = this;
+    return true;
+}
+
+void RtThread::cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexcept
+{
+    /* pthread_cond_wait semantics emulated on RT-Thread primitives: release
+       the caller's mutex, block on the wake semaphore, re-acquire the mutex
+       before returning (the standard RT-Thread condition-variable pattern).
+       timeout 0 = forever, matching the Dispatcher convention. */
+    const rt_int32_t ticks = (0U == timeout_ms || kWaitForever == timeout_ms)
+        ? static_cast<rt_int32_t>(RT_WAITING_FOREVER)
+        : detail::dispatcher_wait_ticks(timeout_ms);
+    rt_mutex_release(&m.mtx);
+    c.waiters.fetch_add(1U, std::memory_order_relaxed);
+    (void)rt_sem_take(&c.sem, ticks);
+    c.waiters.fetch_sub(1U, std::memory_order_relaxed);
+    rt_mutex_take(&m.mtx, static_cast<rt_int32_t>(RT_WAITING_FOREVER));
+}
+
+void RtThread::cond_signal(CondHandle& c) noexcept
+{
+    rt_sem_release(&c.sem);
+}
+
+void RtThread::cond_broadcast(CondHandle& c) noexcept
+{
+    /* rt_sem has no broadcast: release exactly one token per current waiter
+       (the counter is incremented before the blocking take, so a racing
+       signaler's release is never lost; extra releases beyond the waiter set
+       would leave stray tokens that break the next wait's blocking). */
+    const uint32_t n = c.waiters.load(std::memory_order_relaxed);
+    for (uint32_t i = 0U; i < n; ++i) {
+        rt_sem_release(&c.sem);
+    }
+}
+
+void RtThread::cond_deinit(CondHandle& c) noexcept
+{
+    rt_sem_detach(&c.sem);
+}
+
+/* ---------------------------------------------------------------------------
+ * ThreadOps family: static worker thread table (the wake/join precedent
+ * extended). create() borrows a free WorkerThreadSlot (rt_thread_init, task
+ * context only); the trampoline runs the user entry, releases the slot's
+ * join semaphore, and parks. join() takes the join sem, calls rt_thread_
+ * detach-equivalent cleanup (rt_thread_delete on the STATIC TCB is NOT called
+ * — the slot is simply freed for reuse), and returns.
+ * ------------------------------------------------------------------------- */
+
+void RtThread::worker_thread_entry(void* param) noexcept
+{
+    WorkerThreadSlot* slot = static_cast<WorkerThreadSlot*>(param);
+    /* user_ctx points at the caller's ThreadHandle (which stores entry +
+       context and is guaranteed to outlive the thread: join() is mandatory
+       before the handle's storage may go away). Zero heap. */
+    ThreadHandle* handle = static_cast<ThreadHandle*>(slot->user_ctx);
+    handle->entry(handle->context);
+    /* Release the join waiter. */
+    rt_sem_release(&slot->join_sem);
+}
+
+bool RtThread::thread_create(ThreadHandle& t, ThreadEntry entry,
+                             void* context) noexcept
+{
+    if (nullptr == res_ || nullptr == res_->worker_slots
+        || 0U == res_->worker_slot_count) {
+        return false;   /* no static worker table bound */
+    }
+    /* find a free slot under the irq mask (same registration discipline as
+       register_current_task) */
+    const rt_base_t key = rt_hw_interrupt_disable();
+    WorkerThreadSlot* slot = nullptr;
+    uint16_t slot_idx = 0U;
+    for (uint16_t i = 0U; i < res_->worker_slot_count; ++i) {
+        if (!res_->worker_slots[i].in_use) {
+            slot     = &res_->worker_slots[i];
+            slot_idx = i;
+            break;
+        }
+    }
+    if (nullptr != slot) {
+        slot->in_use = true;
+        if (slot_idx >= res_->worker_slot_used) {
+            res_->worker_slot_used = static_cast<uint16_t>(slot_idx + 1U);
+        }
+    }
+    rt_hw_interrupt_enable(key);
+    if (nullptr == slot) {
+        return false;   /* table exhausted */
+    }
+
+    /* Fill the handle first: the slot's user_ctx points back at it, and the
+       handle is caller storage that outlives the thread (join() mandatory). */
+    t.pal      = this;
+    t.entry    = entry;
+    t.context  = context;
+    t.slot_idx = slot_idx;
+    t.valid    = false;
+    slot->user_ctx = &t;
+
+    if (RT_EOK != rt_sem_init(&slot->join_sem, "coact_wjoin", 0U,
+                              RT_IPC_FLAG_PRIO)) {
+        slot->in_use = false;
+        return false;
+    }
+    if (RT_EOK != rt_thread_init(&slot->thread, "coact_worker",
+                                 &RtThread::worker_thread_entry, slot,
+                                 slot->stack_base, slot->stack_bytes,
+                                 10U, 10U)) {
+        slot->in_use = false;
+        return false;
+    }
+    if (RT_EOK != rt_thread_startup(&slot->thread)) {
+        slot->in_use = false;
+        return false;
+    }
+    t.valid = true;
+    return true;
+}
+
+void RtThread::thread_join(ThreadHandle& t) noexcept
+{
+    if (!t.valid) {
+        return;
+    }
+    WorkerThreadSlot* slot = &res_->worker_slots[t.slot_idx];
+    rt_sem_take(&slot->join_sem, static_cast<rt_int32_t>(RT_WAITING_FOREVER));
+    rt_sem_detach(&slot->join_sem);
+    slot->in_use = false;   /* free for reuse */
+    t.valid = false;
+}
+
+void RtThread::sleep_us(uint32_t us) noexcept
+{
+    /* rt_thread_mdelay takes milliseconds (1 kHz tick); round up so a
+       requested latency is never under-slept (the drain loops' timing
+       windows must not shrink). */
+    const rt_int32_t ms = static_cast<rt_int32_t>((us + 999U) / 1000U);
+    rt_thread_mdelay((0 == ms) ? 1 : ms);
 }
 
 }  // namespace pal

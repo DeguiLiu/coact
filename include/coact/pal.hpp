@@ -151,6 +151,65 @@ using ThreadEntry = void (*)(void* context);
 //   void watchdog_progress(uint32_t marker) noexcept;
 //   void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;   // may be no-op
 //   void set_clock_ops(ClockOps ops) noexcept;                  // optional (§7.5)
+//
+// Sync-primitive extension (SemOps family, see below): a concrete PAL also
+// provides sem_init/sem_take/sem_release/sem_release_from_isr/sem_deinit,
+// mutex_init/lock/unlock/deinit, cond_init/wait/signal/broadcast/deinit and
+// thread_create/thread_join so examples with worker threads (isp_pipeline)
+// run unmodified on Linux host and RT-Thread targets. The handle types
+// (SemHandle / MutexHandle / CondHandle / ThreadHandle) are per-PAL; only the
+// method names are contract.
+
+// ---------------------------------------------------------------------------
+// Sync-primitive policy family (design §7.5): PAL strategy interfaces carry
+// the xxxOps suffix (ClockOps precedent) and are static function tables or
+// concrete-PAL method sets resolved at COMPILE time (Runtime<Config, Pal>
+// template parameter) — never a runtime if.
+//
+// SemOps contract (counting semaphore, static allocation only):
+//   init(handle, initial_count)   task context only (RT-Thread rt_sem_init is
+//                                 NOT ISR-safe; both platforms)
+//   take(handle, timeout_ms)      0 = non-blocking try, kWaitForever = block
+//                                 forever; returns false on timeout/empty
+//   release(handle)               task context
+//   release_from_isr(handle)      ISR-safe: RT-Thread rt_sem_release IS
+//                                 ISR-safe; POSIX host simulates ISR with a
+//                                 normal thread (documented limitation —
+//                                 pthread_cond_signal is not async-signal-safe)
+//   deinit(handle)                task context
+//
+// MutexOps contract (binary, may be priority-inheriting on target):
+//   init / lock / unlock / deinit
+//
+// CondOps contract (hand-off condition variable, always paired with a
+// MutexOps mutex):
+//   init / wait(handle, mutex, timeout_ms) / signal / broadcast / deinit
+//   wait(timeout 0) = block until signaled (pthread_cond_wait /
+//   RT_WAITING_FOREVER on rt_sem — the "0 means forever" convention the
+//   Dispatcher wait already uses).
+//
+// ThreadOps contract (create/join, static allocation philosophy):
+//   create(handle, entry, context)  Posix: pthread_create. RtThread: static
+//                                   thread table (rt_thread_init over caller
+//                                   storage, no rt_thread_create/heap).
+//   join(handle)                    block until the thread entry returns.
+// ---------------------------------------------------------------------------
+
+// Blocking-wait sentinel for the xxxOps take/wait timeouts. Distinct from the
+// SemOps non-blocking value 0 so a caller cannot conflate "try once" with
+// "wait forever" (the Dispatcher's wait_dispatcher uses raw 0 = forever; that
+// legacy contract is unchanged — these Ops use the explicit constant).
+constexpr uint32_t kWaitForever = 0xFFFFFFFFU;
+
+// Semaphore/mutex/condvar/thread handles: the concrete TYPE is defined by
+// each PAL header (pal_posix.hpp / pal_rtthread.hpp) — POSIX embeds pthread
+// objects, RT-Thread embeds static rt_semaphore / rt_mutex / a slot
+// reference. Only the METHOD names (init/take/release/...) are contract here.
+// (The handle types are therefore NOT forward-declared in this header: the
+// concrete definitions live in the concrete PAL headers.)
+
+// Thread entry signature shared with the Dispatcher (pal::ThreadEntry).
+// ThreadHandle is likewise concrete per-PAL (pthread_t vs static slot idx).
 
 }  // namespace pal
 }  // namespace coact

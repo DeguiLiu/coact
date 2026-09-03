@@ -1,14 +1,16 @@
 # examples — 示例说明
 
-本目录包含 coact 的 3 个 host 端示例（POSIX PAL）。它们由浅入深，共同走通框架的完整事件管线：**EventPool 分配 → Coordinator 提交 → Staging 三级队列 → Dispatcher 单线程派发 → Ao 分发 → HSM 转移 → 回收入池**，是理解与上手本框架的最佳入口。
+本目录包含 coact 的 4 个 host 端示例（POSIX PAL）。它们由浅入深，共同走通框架的完整事件管线：**EventPool 分配 → Coordinator 提交 → Staging 三级队列 → Dispatcher 单线程派发 → Ao 分发 → HSM 转移 → 回收入池**，是理解与上手本框架的最佳入口。
 
 | 示例 | 定位 | 展示的核心能力 |
 |---|---|---|
 | `hsm_protocol_demo.cpp` | 入门：单 AO | 层次状态机父状态事件继承、全事件管线 |
 | `node_manager_demo.cpp` | 进阶：多 AO | 一个 Runtime 下多主动对象、TargetId 路由、表序 guard |
+| `flash_proxy_demo.cpp` | 进阶：拥有者 AO + 硬件代理 | 设备独占串行化、非 AO worker、中断回调计时、引用计数扇出、请求/响应查询 |
+| `isp_pipeline_demo.cpp` | 综合：完整 RS500 视频系统模拟 | Preview Start 出图 + ISP 流水 + DDR 数据面 + T37 UVC 出流（Identity Zoom/提前封帧）+ 运行态重配 + 缓存一致性 + 停稳机制 + 三类画面异常 |
 | `serial_ota/` | 综合：工业级集成 | coact + newosp 混合架构、串口 OTA、桥接 Ao |
 
-前两个示例单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外 newosp 头文件，为**可选构建**。
+前四个示例单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外 newosp 头文件，为**可选构建**。
 
 ---
 
@@ -27,6 +29,8 @@ cmake --build build -j
 |---|---|
 | `./build/examples/hsm_protocol_demo` | 运行协议状态机 demo，秒级退出 |
 | `./build/examples/node_manager_demo` | 运行节点管理 demo，秒级退出 |
+| `./build/examples/flash_proxy_demo` | 运行拥有者 AO + NAND 代理 demo，约 0.2s 退出 |
+| `./build/examples/isp_pipeline_demo` | 运行 ISP 视频流水线 demo，约 1.5s 退出（经 coact 日志通道输出） |
 | `./build/examples/serial_ota_demo` | 运行串口 OTA demo（需先开启可选构建） |
 
 `serial_ota_demo` 默认**不参与构建**，需显式开启并准备好 newosp 头文件：
@@ -38,7 +42,7 @@ cmake --build build -j
 
 开启后，CMake 会在 `$HOME/newosp/include/osp/hsm.hpp`（或 `/home/dgliu/newosp`）查找 newosp；找不到时打印 WARNING 并跳过该示例。它依赖 newosp 的 `StateMachine / BehaviorTree / SpscRingbuffer / TimerScheduler / AsyncBus / WorkerPool / DebugShell` 等 12 个组件。
 
-> 三个 demo 均已纳入 host 测试：`serial_ota_demo` 在可选构建下作为独立 ctest 用例，其余两个为普通可执行文件（无需断言即视为通过，返回 0 且日志正确即为验证成功）。
+> 四个 demo 均已纳入 host 测试：`serial_ota_demo` 在可选构建下作为独立 ctest 用例，其余三个为普通可执行文件（无需断言即视为通过，返回 0 且日志正确即为验证成功）。
 
 ---
 
@@ -109,6 +113,110 @@ Node 102: connected=true missed=0 total=3 [Connected]
 Node 103: connected=true missed=0 total=2 [Connected]
 Node 104: connected=true missed=0 total=3 [Connected]
 pool.used: 0
+```
+
+---
+
+## flash_proxy_demo — 拥有者 AO + NAND 硬件代理（进阶）
+
+**作用**：演示**共享设备（NAND Flash）的拥有者 AO 串行化**——设备与数据只有一个专属 AO，其余 AO 通过事件请求读写、查询、接收写完通知，全程无锁、无黑板。核心代码又额外演示了两个工程级机制：非 AO 硬件 worker 与中断回调计时。
+
+**架构**：
+
+```mermaid
+flowchart LR
+    W["Writer AO(写者)"] -->|kWriteReq| Q["coact 队列"]
+    R["Reader AO(查询)"] -->|kReadReq| Q
+    Q -->|串行派发| O["Owner AO(唯一拥有 NAND)"]
+    O -->|共享 DMA 缓冲| H["非 AO Worker(NAND+DMA 模拟)"]
+    H -->|kHwDone 中断回调| O
+    O -->|kDataUpdated 扇出| W
+    O -->|kDataUpdated 扇出| R
+    O -->|kDataReady 快照| R
+    O --> NAND[("Flash 数据<br/>唯一 home")]
+```
+
+**展示的框架能力**：
+
+- **拥有者 AO 串行化**：NAND 由一个 `OwnerAo` 独占，读写请求经事件队列单线程串行处理——互斥由"单执行上下文 + 队列"保证，而非 mutex。
+- **非 AO worker 硬件代理**（对照 `qactive_demo_nonblock` 的 StorageProxy）：owner AO 状态机内从不阻塞，把擦写/读操作交给独立 pthread worker 模拟物理延迟（擦写 40ms、读 5ms），完成后再以事件回传。这种"代理线程 + 事件回传"是 AO 非阻塞的关键模式。
+- **中断回调计时**：worker 完成硬件操作后，在非 dispatcher 上下文提交 `kHwDone`，分别测量「硬件完成耗时」与「IRQ→submit 耗时」两段独立延迟，映射到真实 `try_submit_from_isr` 路径。
+- **资源竞争**：worker 与 owner 共享一块 DMA 对齐缓冲区（单一资源），单飞（single-flight）语义由 owner 的单执行性 + worker 单在途任务保证；故意收紧事件池（24 blocks）演示扇出时的背压丢弃。
+- **引用计数扇出 + 请求/响应**：写提交后向所有订阅者扇出 `kDataUpdated`；查询方在请求事件里带自己的 `TargetId`，owner 以 `kDataReady` 内联快照回传（零共享）。
+
+**关键结构**：统一 `EventBlockLayout<IoMeta, Payload, 64>` + `alloc_typed` 组合式类型分配（`event` 在 offset 0、`meta` 路由头、`payload` DMA 数据区），一个池服务所有事件类型，是现代 C++17 的编译期类型安全写法。
+
+**验证输出要点**（运行尾部）：
+
+```text
+[nand] IRQ: ERASE+PROG done 40072us, irq->submit 4us    <- 两段独立计时
+[owner] write committed addr=0x40 len=16
+[writer] <- data-updated (total=2)                      <- 扇出通知
+[reader] <- data-ready addr=0x40 len=16 first=0xb0      <- 请求/响应查询
+=== final state ===
+writer: writes=2 updates=2
+reader: reads=2 updates=2
+pool.used=0          <- 事件全部回收入池
+```
+
+---
+
+## isp_pipeline_demo — ISP 视频流水线模拟（红外主链 + PIC/TEMP + Video 打包，综合）
+
+**定位**：由 RS500 业务场景驱动的 Host 端架构模型与故障注入演示——验证 coact 的 AO/HSM/异步事件/一致性协议表达能力，**非复刻 RS500 业务实现**。模拟深度为"消息发生级"：命令流/数据流/事件流三条链路按 RS500 结构建模（含 T37/WRAPE 故障边界的字节级精确复现），但控制时序、参数内容、图像算法为代理模型（ISP 节点为伪完成事件、增益为数学变换、帧为 8x8 玩具尺寸）。
+
+**架构**：
+
+```mermaid
+flowchart LR
+    IR["IRSC producer<br/>pthread · 30fps 产帧"] -->|kFrameIrscOut| LG["LowGain AO<br/>KBC/BPVHBC/RMVC/TNR/HBCDPC/VBC"]
+    IR -->|kFrameIrscOut| HG["HighGain AO<br/>KBC/BPVHBC/RMVC×2/TNR/HBCDPC/DDBP/VBC"]
+    LG -->|kLowGainDone| HL["HL 融合 AO<br/>fan-in 两路"]
+    HG -->|kHighGainDone| HL
+    HL -->|kHlFused| EN["Enhance AO<br/>SNR/AGC/LAG/DDEP/EE/BC/GAMMA/MIRROR"]
+    HL -->|kHlFused| TPD["TPD 链 AO<br/>TECLESS/TPD/CORRECT/TNR/SNR"]
+    EN -->|kEnhanceDone| PV["PIC Video AO<br/>Cut/Zoom→PSD→OSD→SOUT→OUT"]
+    TPD -->|kTempChainDone| TV["TEMP Video AO<br/>Cut/Zoom→PSD→OUT"]
+    PV -->|kPicPacked| US["USB sink AO<br/>UVC"]
+    TV -->|kTempPacked| MI["MIPI sink AO<br/>CSI TX"]
+```
+
+**RS500 → coact 映射**：
+
+| RS500 实体 | coact 形态 |
+|---|---|
+| `app_start_preview_sync` / `camera_stream_config_service` | 主线程 `Orchestrator`：Phase1/3/4 管道 |
+| IRSC 4 步命令 init/start/ctrl/output_enable | `IrscDriverAo` 分别处理 + ack 回 `OrchestratorAo` |
+| ISP Pipeline + 节点 init 正序 | Orchestrator 合成 8 个 `kIspReady` ack |
+| Video FSM `IDLE→READY→RUNNING` 逆序 deinit | `VideoFsmPicAo` / `VideoFsmTempAo`（`VideoCtx`） |
+| 三帧循环 DMA 缓冲 | `StreamDmaBuffer`（`address0/1/2` + `length` + atomic 索引） |
+| ISP stream / SOUT 节点链 | `PicVideoAo` / `TempVideoAo` 拥有者 AO |
+| 高/低增益双路并行 + HL 融合 | `LowGainAo`+`HighGainAo` 并行 → `HlFuseAo` fan-in |
+| KBC→IRSC output enable 关键顺序 | Orchestrator 固定两步先后 |
+
+**展示的框架能力**：
+- 11 个 AO + 1 个 pthread worker，主流水线实时出流 30 帧
+- **高/低增益双路并行 + HL 融合**（fan-in：等两路同 frame 对齐）
+- 三帧循环缓冲 + 拥有者 AO，DMA 域零共享
+- **coact::diag 日志通道**：运行时事件经 `g_log.record_from_task<Level,kEvt*>` 写入静态日志线程，异步渲染为 `e=<id> a0=..` 行
+
+**验证输出要点**：
+
+```text
+[video/PIC] IDLE -> READY (7 nodes)      <- Video FSM init forward
+[video/TEMP] READY -> RUNNING            <- stream enable
+[usb(uvc)] first PIC frame: id=0 buf=0    <- 主图出流
+[mipi(csi)] first TEMP frame: id=0 buf=0  <- 测温出流
+[video/PIC] RUNNING -> READY -> IDLE     <- 逆序 deinit
+=== per-node latency ===
+  low_gain  : frames=30 avg=464 (sim=400) <- 每节点处理 30 帧，avg 贴合 sim
+  high_gain : frames=30 avg=666 (sim=600)
+  hl_fuse   : frames=30 avg=262
+  usb_sink  : frames=30 first=0 last=29
+  mipi_sink : frames=30 tag_mismatch=0
+  orch      : irsc_ready=4 isp_ready=8 pic_video_ready=1 temp_video_ready=1
+  video_fsm : pic=IDLE temp=IDLE
+  pool.used=0          <- 事件全部回收入池
 ```
 
 ---
