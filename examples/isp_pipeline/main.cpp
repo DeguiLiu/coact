@@ -189,6 +189,13 @@ int main()
 
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
+    // SoftIrq prerequisite, FIRST thread-related act of main(): block the
+    // completion signal in this thread so every pthread spawned later (pump /
+    // dispatcher / workers / log writer / softirq consumer) inherits the
+    // blocked mask — a raise can then never hit an unblocked thread's default
+    // disposition. No-op on the RT-Thread build (SoftIrq path off).
+    softirq_block_completion_signal();
+
     // Dual-platform PAL: DemoPal is coact::pal::Posix on the host build and
     // coact::pal::RtThread under ISP_DEMO_USE_RTT (the RT-Thread compile
     // path); the RT-Thread variant references board-provided static
@@ -1085,6 +1092,11 @@ int main()
         6U, kFrameCount, 0U);   // irsc producer
     rt.stop();
     g_log.stop();
+    // SoftIrq completion path: the winhost EOF drain above already awaited
+    // every delivery; usb_dma.stop() (which joins the softirq consumer) has
+    // meanwhile printed its own delivered count. Report the reconciliation
+    // here so the ISR-path evidence sits next to the winhost counters.
+    usb_dma.print_softirq_stat();
 #ifdef ISP_DEMO_CORO
     isp_demo_coro::stop_executor();
     std::printf("[coro] executor stopped: single-thread cooperative mode "
@@ -1299,6 +1311,22 @@ int main()
     check(winhost.context().error_interrupts == 1U
               && usb_dma.error_interrupts == 1U,
           "UsbDmaWorker: injected error interrupt counted on both sides");
+    // SoftIrq completion path (the real ISR->thread->AO shape): every raise
+    // the engine made was taken by the consumer (SIGRTMIN queues per instance,
+    // never coalesces), every take produced exactly one host-visible EOF, and
+    // the delivered count reconciles with the WRAPE framing side.
+#ifndef ISP_DEMO_USE_RTT
+    check(usb_dma.softirq_delivered.load() == usb_dma.softirq_raises
+              && usb_dma.softirq_raises
+                     == wrape.context().frames_framed,
+          "SoftIrq: raises == takes == framed frames (zero-loss ISR path)");
+    check(usb_dma.softirq_delivered.load()
+              == winhost.context().frames_received,
+          "SoftIrq: every take delivered exactly one host EOF");
+#else
+    check(usb_dma.transactions_done > 0U,
+          "USB DMA engine shipped its bulk transactions (direct path)");
+#endif
     // Runtime reconfiguration: fault injection recovered, clean pass committed.
     check(recfg.context().recfgs_committed == 1U, "reconfig: exactly one commit");
     check(recfg.context().recfgs_failed == 3U,

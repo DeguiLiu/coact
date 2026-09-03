@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <signal.h>
 
 // PAL alias switch (see the DemoPal alias below): pull the RT-Thread PAL
 // header BEFORE the coact framework headers (pal_rtthread.hpp needs the
@@ -98,6 +99,34 @@ using DemoPal = coact::pal::Posix;
 // The single PAL instance main() constructs; late-bound (workers and helpers
 // reach sleep_us / monotonic_ns through it without carrying a reference).
 inline DemoPal* g_pal{nullptr};
+
+// ---------------------------------------------------------------------------
+// SoftIrq completion gate (SINGLE point, task: USB DMA completion -> soft
+// IRQ -> consumer pthread -> kFrameEof). Non-RTT builds route the UsbDmaWorker
+// completion through the SoftIrqOps family; the RT-Thread build keeps the
+// direct submit (board-level rt_signal semantics unverified). Workers and
+// consumers branch on this constant with if constexpr — no scattered #ifdefs.
+// ---------------------------------------------------------------------------
+#ifdef ISP_DEMO_USE_RTT
+inline constexpr bool kUseSoftIrqCompletion = false;
+inline void softirq_block_completion_signal() noexcept {}
+#else
+inline constexpr bool kUseSoftIrqCompletion = true;
+// Process-wide prerequisite for the SoftIrq path: block the completion signal
+// in the CALLING thread BEFORE any other thread is created. Every pthread
+// spawned later (pump / dispatcher / workers / log writer / softirq consumer)
+// inherits the blocked mask, so a raise can never be delivered to an unblocked
+// thread with its default (terminate) disposition — the queued signal can only
+// surface through the consumer's signalfd. Must be the first thread-related
+// act of main(). No-op under the RTT build (path disabled).
+inline void softirq_block_completion_signal() noexcept
+{
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, coact::pal::Posix::SoftIrqSignal);
+    (void)pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+}
+#endif
 
 // ---------------------------------------------------------------------------
 // coact::diag log channel. Uses the RT-Thread static log adapter with the
