@@ -140,7 +140,7 @@ flowchart LR
     W5 -->|kSoutDone| DSP
     W6 -->|kMipiTxDone| DSP
     DSP -->|派发到目标 AO 事件队列| CHAIN
-    WRAPE -.->|submit(job)| Q3
+    WRAPE -.->|"submit(job)"| Q3
     IRSC -.->|submit| Q4
     PICV -.->|submit| Q5
     MIPI -.->|submit| Q6
