@@ -52,6 +52,13 @@
 #if defined(RT_USING_SMP) || !defined(RT_CPUS_NR) || (RT_CPUS_NR != 1)
 #error "coact::pal::RtThread requires one non-SMP CPU; use a Linux/SMP PAL with HostSmpProfile instead"
 #endif
+
+/* SoftIrqOps needs SIGUSR1 — board configs that build without RT_USING_SIGNALS
+   may not pull in the signal-header definitions; fall back to RT-Thread's
+   standard number (also used by the host stub). */
+#ifndef SIGUSR1
+#define SIGUSR1 10
+#endif
 #endif
 
 #include "coact/config.hpp"
@@ -116,6 +123,17 @@ struct ContextSlot {
     rt_thread_t tid;           // nullptr == free slot
     ExecutionContext ctx;
 };
+
+// SoftIrqOps mailbox capacity (the shared ring embedded in SoftIrqHandle).
+// 8 slots is a compile-time constant — keep SoftIrqHandle layout deterministic
+// and force callers that want a larger queue to chain multiple handles (the
+// SoftIrqOps contract is SPSC, not MPSC).
+inline constexpr uint32_t kSoftIrqRingSlots = 8U;
+// Lock-free discipline (convention item 22): the SPSC ring only ever crosses
+// two threads; tag the atomic width so a non-lock-free atomics port fails at
+// compile time, not at runtime through libatomic.
+static_assert(std::atomic<uint32_t>::is_always_lock_free,
+             "SoftIrq ring indices must stay lock-free (no libatomic fallback)");
 
 
 // ---------------------------------------------------------------------------
@@ -288,6 +306,20 @@ public:
         bool                valid;
     };
 
+    // SoftIrqHandle (SoftIrqOps family): a fixed-capacity SPSC mailbox
+    // (head/tail atomic indices + int32_t ring) embedded in caller storage.
+    // The signal (SIGUSR1) is a wake hint only — rt_thread_kill does not
+    // carry data on RT-Thread, so the payload is published through the ring
+    // before the signal is raised. The handler registered in init() is empty;
+    // take() polls the ring on a 1 ms tick (see implementation).
+    struct SoftIrqHandle {
+        std::atomic<uint32_t> head;   // producer write index (wraps)
+        std::atomic<uint32_t> tail;   // consumer read index (wraps)
+        int32_t               ring[kSoftIrqRingSlots];
+        rt_thread_t           consumer;
+        RtThread*             pal;
+    };
+
     // Host-test convenience: references an internal static RtThreadResources.
     // Production boards MUST pass explicit RtThreadResources.
     RtThread() noexcept;
@@ -414,6 +446,18 @@ public:
        return, then frees the slot for reuse. */
     bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
     void thread_join(ThreadHandle& t) noexcept;
+
+    // -- SoftIrqOps family (pal.hpp): SPSC mailbox + rt_thread_kill wake ------
+    // See the SoftIrqOps contract in pal.hpp. The signal (SIGUSR1) is a wake
+    // hint only — the payload travels in the embedded ring. init() installs
+    // an EMPTY handler; raise() publishes to the ring (busy-reject when full)
+    // and pokes the consumer with rt_thread_kill; take() polls the ring on a
+    // 1 ms tick and returns the payload or -1 on timeout. Board-level
+    // verification of the real rt_signal_wait wakeup path is pending.
+    bool softirq_init(SoftIrqHandle& h) noexcept;
+    bool softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept;
+    int32_t softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept;
+    void softirq_deinit(SoftIrqHandle& h) noexcept;
 
     // -- Sleep (SemOps family companion): block the calling thread ------------
     // rt_thread_mdelay rounds to whole milliseconds (1 kHz tick), which is the

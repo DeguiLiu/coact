@@ -62,6 +62,15 @@ public:
         Posix*          pal;       // set by Posix::thread_create
     };
 
+    // SoftIrqHandle (SoftIrqOps family): the consumer's signalfd fd plus the
+    // pthread_t of the installing (consumer) thread. fd defaults to -1 so a
+    // not-yet-installed handle cannot accidentally read from fd 0.
+    struct SoftIrqHandle {
+        int          fd = -1;
+        pthread_t    consumer{};
+        Posix*       pal = nullptr;
+    };
+
     Posix() noexcept;
 
     // -- Interrupt masking: no-op on POSIX (tokens are opaque) --
@@ -146,6 +155,23 @@ public:
     // -- ThreadOps family (pal.hpp): pthread create/join ----------------------
     bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
     void thread_join(ThreadHandle& t) noexcept;
+
+    // -- SoftIrqOps family (pal.hpp): signalfd-backed ISR simulation ---------
+    // No signal handler is ever registered (see the SoftIrqOps contract in
+    // pal.hpp). init() runs on the consumer thread; raise() may run from any
+    // producer thread (it blocks SoftIrqSignal in the producer so the queued
+    // signal can only surface through the consumer's signalfd); take() returns
+    // the payload or -1 on timeout; deinit() restores the consumer's signal
+    // mask. SoftIrqSignal is a fixed Linux real-time number (the kernel range
+    // SIGRTMIN..SIGRTMAX is reserved for RT signals that never carry a
+    // handler; glibc exposes SIGRTMIN as a runtime call, so we hardcode a
+    // documented constant instead). Tests use this symbol to inspect the
+    // consumer's restored signal mask.
+    static constexpr int SoftIrqSignal = 34;
+    bool softirq_init(SoftIrqHandle& h) noexcept;
+    bool softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept;
+    int32_t softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept;
+    void softirq_deinit(SoftIrqHandle& h) noexcept;
 
     // -- Sleep (SemOps family companion): block the calling thread ------------
     // microsecond granularity; POSIX uses nanosleep (usleep is obsolete per

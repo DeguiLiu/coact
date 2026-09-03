@@ -158,7 +158,8 @@ using ThreadEntry = void (*)(void* context);
 // thread_create/thread_join so examples with worker threads (isp_pipeline)
 // run unmodified on Linux host and RT-Thread targets. The handle types
 // (SemHandle / MutexHandle / CondHandle / ThreadHandle) are per-PAL; only the
-// method names are contract.
+// method names are contract. The SoftIrqOps family (below) extends the same
+// contract with software-interrupt simulation for the ISR completion path.
 
 // ---------------------------------------------------------------------------
 // Sync-primitive policy family (design §7.5): PAL strategy interfaces carry
@@ -193,6 +194,45 @@ using ThreadEntry = void (*)(void* context);
 //                                   thread table (rt_thread_init over caller
 //                                   storage, no rt_thread_create/heap).
 //   join(handle)                    block until the thread entry returns.
+//
+// SoftIrqOps contract (software interrupt simulation, the ISR -> completion
+// event path made explicit):
+//   init(handle)                     consumer side, task context. Linux: block
+//                                    SIGRTMIN via pthread_sigmask, then
+//                                    signalfd(-1, mask) so no handler ever
+//                                    runs; the installing thread is the
+//                                    consumer. RT-Thread: install an empty
+//                                    handler for SIGUSR1 + a shared payload
+//                                    mailbox (the handler itself carries no
+//                                    data — see KEY DESIGN POINT below).
+//   raise(handle, payload)           producer side (worker thread standing
+//                                    in for the ISR). Linux: sigqueue(pid,
+//                                    SIGRTMIN, {.sival_int = payload}) — the
+//                                    producer blocks SIGRTMIN in itself first
+//                                    so the queued signal can only surface
+//                                    through the consumer's signalfd.
+//                                    RT-Thread: push payload into the shared
+//                                    fixed ring, then rt_thread_kill(consumer,
+//                                    SIGUSR1) as a wake hint only.
+//   take(handle, timeout_ms)         consumer side. Linux: poll(fd) + read
+//                                    signalfd_siginfo -> ssi_int; RT-Thread:
+//                                    poll the shared mailbox. timeout 0 ==
+//                                    kWaitForever (wait forever convention);
+//                                    returns -1 on timeout.
+//   deinit(handle)                   close fd / cleanup; restores the consumer
+//                                    thread's signal mask on Linux.
+//
+// KEY DESIGN POINT: on Linux NO signal handler is ever registered. POSIX
+// signal handlers are constrained to async-signal-safe functions (no malloc,
+// no locks), which would poison the consumer path the moment it needs to
+// observe other workers. signalfd sidesteps that by converting the signal
+// into an fd event: the signal stays blocked on every thread, and
+// consumption happens entirely in ordinary thread context where malloc /
+// locks are allowed. This is the essential advantage over the
+// pthread_kill+handler scheme. The RT-Thread port keeps the payload out of
+// the handler (the handler is empty; the shared fixed ring carries data) so
+// the handler only ever runs trivial code — board-level blocking delivery
+// (rt_signal_wait wakeups) is future work.
 // ---------------------------------------------------------------------------
 
 // Blocking-wait sentinel for the xxxOps take/wait timeouts. Distinct from the

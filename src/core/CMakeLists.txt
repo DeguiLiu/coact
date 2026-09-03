@@ -84,6 +84,18 @@ target_link_libraries(test_static_pal PRIVATE Threads::Threads)
 target_compile_definitions(test_static_pal PRIVATE COACT_RTT_STUB)
 target_include_directories(test_static_pal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
+# SoftIrqOps (signalfd + RT-Thread SPSC ring) test: real POSIX signal path +
+# stub-backed ring path. The RT-Thread side must compile under COACT_RTT_STUB
+# (board-level rt_signal_wait verification is pending — the stub makes
+# rt_signal_install / rt_thread_kill no-ops and the ring carries the payload).
+coact_add_test(test_softirq
+    test_softirq.cpp
+    pal_posix.cpp
+    pal_rtthread.cpp)
+target_link_libraries(test_softirq PRIVATE Threads::Threads)
+target_compile_definitions(test_softirq PRIVATE COACT_RTT_STUB)
+target_include_directories(test_softirq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
 # Negative compile contracts: RtThread::Profile is only valid on a real
 # single-core RT-Thread build. Each target compiles with a minimal synthetic
 # RT-Thread configuration and CTest inverts the expected compiler failure.
