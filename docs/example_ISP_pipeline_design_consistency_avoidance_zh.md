@@ -46,7 +46,7 @@ RS500 各复盘文档反复出现同一类结构性病灶：**多模块对同一
 
 | 编号 | 异常 | 来源文档 | 不一致的两端 | 示例规避 |
 |---|---|---|---|---|
-| U1 | 口径漂移 | 原子重配 §2.3 模式一 | video 层倍率计算 vs SOUT 层原始值 | 单一权威 `FrameGeometry` |
+| U1 | 计算口径不一致 | 原子重配 §2.3 模式一 | video 层倍率计算 vs SOUT 层原始值 | 单一权威 `FrameGeometry` |
 | U2 | 新旧交替 | 原子重配 §2.3 模式二 | 已改模块新几何 vs 未改模块旧几何 | 重配事务冻结窗口（HSM / 层次状态机 + 会话守卫，当前 guard 仅覆盖 IRSC 通道） |
 | U3 | X2 提前封帧 | T37 UVC 文档 | WRAPE 封帧几何 vs 实际流几何 | Identity Zoom 固定下游 1280x1024 |
 | U4 | 参数回灌 | 缓存一致性 §2.1 | 软件影子缓存 vs 产测直写的寄存器 | regmap 三标志协议 + RAII `BypassGuard` |
@@ -106,7 +106,7 @@ IRSC 探测器 → 高/低增益 ISP 双链 → HL 融合 → 增强（PIC）/TP
 
 ## 2. 事件与状态管理
 
-传统固件里，更新配置往往是一串函数调用。中间态会造成新旧交替，遗漏更新会造成口径漂移，旁路调用会造成缓存分叉。
+传统固件里，更新配置往往是一串函数调用。中间态会造成新旧交替，遗漏更新会造成计算口径不一致，旁路调用会造成缓存分叉。
 
 coact 把同一件事变成**一次事件事务**：业务层提交一个携带完整目标配置的事件；拥有该设备的 AO 在单线程 RTC 步骤里按依赖序应用全部变更，然后在一个声明的提交边界（首帧字节校验通过）之后才更新软件权威状态（重配事务由 RecfgOrch / 重配编排器 AO 持有，见 3.2）。**三个层次的概念必须区分**：
 
@@ -168,7 +168,7 @@ IRSC 探测器的多步初始化用命令表驱动（`kIrscCmdSequence`），每
 
 本章是文档主体，九类异常各一节，均含故障机理、架构对策、示例落点与测试证据。
 
-### 3.1 U1 口径漂移：单一权威 FrameGeometry
+### 3.1 U1 计算口径不一致：单一权威 FrameGeometry
 
 **故障事实**（出自《嵌入式显示链路原子重配设计》§2.3 模式一）：同一份配置下发到两层，video 层自己乘了倍率、SOUT 层直接读原始值，两层各自算出不同的帧字节数，实际输出按错误一端截断。现象是出图尺寸与预期不符且无错误日志；根因一句话——**帧长公式被实现了两次**。
 
@@ -198,7 +198,7 @@ flowchart LR
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
 ```
 
-*图 3（红=错误，绿=修复）：口径漂移的本质是公式复制；单一权威把公式收敛为一个函数，全部下游层读同一结构。*
+*图 3（红=错误，绿=修复）：计算口径不一致的本质是公式复制；单一权威把公式收敛为一个函数，全部下游层读同一结构。*
 
 ### 3.2 U2 新旧交替：重配事务冻结窗口（HSM）
 
@@ -559,7 +559,7 @@ sequenceDiagram
 | 示例 | 覆盖异常 | 验证的不变量 | 对应 RS500 文档 | 自检断言 | ctest |
 |---|---|---|---|---|---|
 | `isp_pipeline_demo`（数据面/编排面） | 全链路基线 | 每帧字节保真（变换链逐字节复算）、路由标签正确、帧数不缺、事件池零泄漏 | 复盘踩坑 Preview Start 流程 | `PIC/TEMP data plane byte-exact`、`route tags correct`、`event pool fully reclaimed` 等 | 通过 |
-| `isp_pipeline_demo`（U1） | 口径漂移 | 提交帧长 == 权威公式输出 | 原子重配 §2.3 模式一 | `reconfig: committed frame matches authority geometry` | 通过 |
+| `isp_pipeline_demo`（U1） | 计算口径不一致 | 提交帧长 == 权威公式输出 | 原子重配 §2.3 模式一 | `reconfig: committed frame matches authority geometry` | 通过 |
 | `isp_pipeline_demo`（U2） | 新旧交替 | 恰好一次提交、X4 拒绝 + DMO 模式拒绝 + X2 回滚、版本推进 | 原子重配 §4.5 / §5.2 | `reconfig: exactly one commit` / `X4 precheck reject + DMO full-rebuild reject + X2 fault rollback` / `DMO partial-reconfig rejected at precheck` / `layout_version advanced` | 通过 |
 | `isp_pipeline_demo`（U3，T37 阶段） | 提前封帧 | 四点观察（配置/计数/payload/帧序）+ 10 轮切换稳定性 | T37 UVC 文档 §6 板测要求 | `err_eof==3`、`complete==42`、`truncated==3 / frames==45 / gaps==0`、`min/max payload`、`zoom 恒 active`、`WRAPE 配置恒定` 等 | 通过 |
 | `isp_pipeline_demo`（U4/U5/U6） | 参数回灌 / 废弃地址 / 坐标失同步 | 旁路配对零漂移、冻结窗前置拒绝、脏集全提交、旧地址查即作废、镜像映射正确 | 缓存一致性 §2.1 / §2.2 / §2.3 | scenario B/C/D 组断言、`stale address record invalidated` | 通过 |
@@ -576,7 +576,7 @@ sequenceDiagram
 ```mermaid
 flowchart TB
     subgraph BYWRITEPATH["写者不唯一（含两份拷贝具象）→ 单一权威归纳"]
-        U1a["U1 口径漂移"]:::bad
+        U1a["U1 计算口径不一致"]:::bad
         U4a["U4 参数回灌"]:::bad
         U3a["U3 提前封帧"]:::bad
         U6a["U6 坐标失同步"]:::bad

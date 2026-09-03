@@ -106,7 +106,7 @@ demo 的定位是复现 RS500 文档中的同步与一致性问题，并记录�
 
 | RS500 反馈的问题 | 解决机制（架构层） | 验证 |
 |---|---|---|
-| 超分口径漂移（X2 出图剩 1/4） | 单一 FrameGeometry 权威 + 事务冻结窗口 | FAULT 复现 + rollback 断言 |
+| 超分计算口径不一致（X2 出图剩 1/4） | 单一 FrameGeometry 权威 + 事务冻结窗口 | FAULT 复现 + rollback 断言 |
 | 新旧帧交替 / 提前封帧（T37 655360B ERR+EOF） | 重配 8 态 HSM 冻结 + Identity Zoom 固定下游几何 | 字节级复现 + 10 轮切换稳定断言 |
 | 参数回灌（旧参数回写寄存器） | regmap 三标志协议 + RAII BypassGuard（Linux regcache 同构） | 0xBEEF→0x1002 覆盖复现 + 零新漂移断言 |
 | 废弃地址（DMA 用旧布局） | layout_version 查即作废 | stale query MISS 断言 |
