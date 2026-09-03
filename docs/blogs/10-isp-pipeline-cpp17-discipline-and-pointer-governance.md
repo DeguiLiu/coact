@@ -49,35 +49,59 @@ flowchart LR
 
 由此得到核心主张：**把一致性假设尽量变成编译期错误**。规约层面，每条规则写成“可判定”形式（评审时回答是/否，不存在模糊表述）；工程层面，以 `constexpr`、`static_assert`、类型萃取、模板与表驱动，把运行期才会暴露的隐患前移到构建期必然失败的位置。
 
-## 三、十三项编译期约束
+## 三、一致性约束的三类机制
 
-约束清单把示例的全部编译期约束与设计模式收进一张表：
+把第二章的目标落到代码，示例的一致性约束可归为三类：布局与接口契约、编译期多态与表驱动、所有权与生命周期。它们分别回答三个问题——跨模块传递什么、行为如何表达、内存由谁负责。
 
-| 约束 | 落点 | 检查方式 |
-|---|---|---|
-| 协议常量 constexpr | 帧字节数 / 恒等倍率步长 / 流有效计数 | `static_assert` 锁定文档证据值 |
-| 布局约束 | `FrameGeometry` / `UvcMeta` / `FrameStamp` | `static_assert(is_standard_layout && is_trivially_copyable)` |
-| 移动约束 | `FrameGeometry` 事务快照交换 | `static_assert(is_nothrow_move_constructible)` |
-| 无锁假设 | DDR 环索引、运行标志 | `static_assert(atomic<T>::is_always_lock_free)` |
-| 无堆热路径 | `EventPool` + `std::array` 定容块 | 全局无堆分配；运行期断言 `pool.used()==0` |
-| placement new + std::launder | DDR 槽位 `FrameStamp`、地址缓存记录 | 生命周期在槽位内开始，`std::launder` 合法化访问 |
-| CRTP | `GainNodeBase<Policy>` / `FusedNodeBase<Policy>` | 编译期多态，零虚函数开销 |
-| 编译期策略 | `Policy::apply`、`QuiescePolicy` | `if constexpr` 路径选择，运行期零分支 |
-| 命令模式 | `kIrscCmdSequence` 表 | 多步硬件初始化退化为表驱动 + 事件回执 |
-| 宏静态 HSM 表 | `COACT_HSM_STATES` / `COACT_HSM_TRANS` | 状态/转移表编译期生成 |
-| std::exchange 提交 | 几何提交、版本推进、槽位戳交换 | 读旧与写新一体、旧副本不留 |
-| RAII | `BypassGuard` | 旁路配对由析构保证 |
-| 接口标注 | 全接口 `[[nodiscard]]` / `noexcept` | 返回值不可忽略、动作函数不抛 |
+### 3.1 布局与接口契约：让跨模块字节流有合同
 
-表中每一项都对应一种运行期缺陷的编译期前置。以“布局约束”为例：跨 AO 边界的事件载荷一旦被当作字节流传递，就必须在定义处声明 `is_standard_layout && is_trivially_copyable`；违约即编译失败，而非等接收方读到错位字段后才暴露。“无锁假设”同理：`is_always_lock_free` 断言使 `std::atomic` 在目标平台回退到 libatomic（即隐藏的锁与堆依赖）时于构建期失败。
+多个 AO 之间传递的事件载荷本质是字节流。一旦 `FrameGeometry` 在封帧侧与接收侧的布局不一致，或一次重配在旧几何与新几何之间留下歧义，帧长就会错位，表现为提前 EOF 或首帧尺寸错误。示例在结构体定义处用类型萃取把契约固定下来：
+
+```cpp
+static_assert(std::is_standard_layout_v<FrameGeometry>);
+static_assert(std::is_trivially_copyable_v<FrameGeometry>);
+static_assert(std::is_nothrow_move_constructible_v<FrameGeometry>);
+```
+
+`is_standard_layout` 保证内存布局可预测；`is_trivially_copyable` 保证结构体可按位表示、跨边界传输；`is_nothrow_move_constructible` 保证重配提交或回滚路径不抛出。三者任一违约都在构建期失败，而不是等接收方读到错位字段后延迟暴露。
+
+同一类契约还包括三项：(1) 无锁假设——跨线程标志断言 `std::atomic<T>::is_always_lock_free`，否则 `std::atomic` 在部分目标会回退到 libatomic，即一条隐藏的锁与堆依赖；(2) 协议常量——帧字节数、恒等倍率步长、流有效计数以 `constexpr` 定值，并以 `static_assert` 对齐文档证据值，避免代码与文档各持一套数；(3) 接口标注——`[[nodiscard]]` 保证返回值不可忽略，`noexcept` 保证动作函数不抛。
+
+### 3.2 编译期多态与表驱动：把行为与拓扑变成数据
+
+帧流水线的公共路径只有一条，但两条增益链与两条处理链的变换各不相同。差异不在运行期以虚函数或分支区分，而在编译期解析：
+
+```cpp
+template <typename Policy>
+struct GainNodeBase {
+    // 公共帧路径：原始帧 → DDR → 策略变换 → DDR → 完成事件。
+    // 策略变换在编译期按 Policy 解析（if constexpr）。
+};
+using LowGainNode  = GainNodeBase<LowGainPolicy>;
+using HighGainNode = GainNodeBase<HighGainPolicy>;
+```
+
+CRTP 使 `LowGainNode` 与 `HighGainNode` 共用同一骨架却无虚表开销；`Policy::apply` 以无状态策略表达单点可替换算法，`if constexpr` 不实例化未选分支。
+
+状态拓扑同样固化为数据。十余个 AO 的状态表与转移表由 `COACT_HSM_STATES` / `COACT_HSM_TRANS` 在编译期生成 `constexpr` 数组，运行期零装配。以重配 AO 为例：`kRecfgStates` 为 Root 加 7 个业务状态，`kRecfgTransitions` 为 11 条弧（含 4 条吸收旧阶段的 stale 弧）。转移动作与入口动作分离，硬件命令只在入口动作发出，从而规避“在转移动作中自提交事件而与其拓扑竞争”的隐蔽竞态。多步硬件初始化同样退化为 `kIrscCmdSequence` 命令表，顺序即约定，编排器只统计回执并向上传递结果。
+
+### 3.3 所有权与生命周期：让内存责任单义
+
+DDR 槽位、事件池块与地址缓存槽都是复用内存。写入帧戳用 placement new 在目的地就地构造，读取用 `std::launder` 重建“指针—对象”关系，全程零拷贝且不触发未定义行为：
+
+```cpp
+::new (static_cast<void*>(slot_mem)) FrameStamp{...};               // 写：槽内构造
+*std::launder(reinterpret_cast<const FrameStamp*>(slot));           // 读：重建对象
+```
+
+跨窗口的所有权交接以 `std::exchange` 表达“读旧 + 写新”一体——旧值被移出、不留副本。重配提交 `active_geom = std::exchange(target_geom, FrameGeometry{})` 即其一例；须注意它是单线程前提下的表达，并不提供线程安全。事件块来自定容 `EventPool`（`std::array` 存储），热路径零堆分配。成对操作由 RAII 承保：`BypassGuard` 进入即置位、析构即 resync，任何提前 return 都不会漏掉对账。
 
 ```mermaid
 flowchart TB
     subgraph COMPILE["编译期（错误在此暴露）"]
-        C1["constexpr 协议常量<br/>+ static_assert"]:::c
+        C1["布局 / 接口契约<br/>static_assert"]:::c
         C2["CRTP / Policy<br/>编译期多态"]:::c
         C3["宏静态 HSM 表<br/>状态拓扑固化"]:::c
-        C4["is_standard_layout /<br/>trivially_copyable /<br/>always_lock_free"]:::c
     end
     subgraph RUNTIME["运行期（最小化）"]
         R1["EventPool 定容块<br/>零堆分配"]:::r
@@ -90,32 +114,7 @@ flowchart TB
     classDef r fill:#dcfce7,stroke:#16a34a,color:#14532d
 ```
 
-*图 2（蓝=编译期，绿=运行期）：工程约束的分工——一致性假设尽量在编译期成为类型错误，运行期只保留无法编译化的少量动作。*
-
-### 3.1 CRTP：编译期多态
-
-低增益与高增益两路链共用 `GainNodeBase<Policy>` 骨架，变换策略经 CRTP 在编译期解析；公共帧路径（原始帧 → DDR → 策略变换 → DDR → 完成事件）只编写一次：
-
-```cpp
-template <typename Policy>
-struct GainNodeBase {
-    // Common frame path: DN -> DDR -> policy transform -> DDR -> done event.
-    // Policy transform is resolved at compile time (if constexpr).
-};
-using LowGainNode  = GainNodeBase<LowGainPolicy>;
-using HighGainNode = GainNodeBase<HighGainPolicy>;
-```
-
-CRTP 的收益是复用骨架并拒绝虚表：同一生命周期以模板参数分发策略，运行期不存在虚函数查找。它的红线同时约束使用范围——钩子面超过 7 个即表明骨架在过早推测未来需求，基类不得持有派生专属状态。
-
-### 3.2 宏静态 HSM 表
-
-```cpp
-COACT_HSM_STATES(kIrscStates, IrscCtx, "Root", "Active");
-COACT_HSM_TRANS(kIrscTransitions, IrscCtx, Sig::kIrscCmd, onIrscCmd);
-```
-
-重配 AO 是最完整的应用：`kRecfgStates`（Root + 7 个业务状态，8 表项）与 `kRecfgTransitions`（11 条弧——7 条业务弧 + 4 条吸收旧 `kRecfgStage` 的 stale 弧）均为 `inline const` 数组。转移动作与入口动作分离，硬件命令仅在入口动作发出；这一约束用于规避“在转移动作中自提交事件而与其拓扑竞争”的隐蔽竞态。
+*图 2（蓝=编译期，绿=运行期）：一致性约束的分工——可静态判定的部分前移到编译期，运行期只保留无法编译化的少量动作。*
 
 ## 四、指针与所有权治理
 

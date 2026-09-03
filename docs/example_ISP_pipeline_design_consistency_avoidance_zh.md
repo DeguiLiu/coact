@@ -226,7 +226,7 @@ Quiescing --kRecfgStage/rcGoHome--> Idle（拒绝终局弧）
 
 三点诚实的结构说明（经最终源码逐条核实）：
 
-1. **Precheck 在状态表中声明但没有任何转移进入，是不可达状态**——预检实际发生在 `Idle → Quiescing` 弧的转移动作 `rcEnterPrecheck` 内部（只读校验 + 快照），被拒绝的请求（X4 能力拒绝、DMO 模式拒绝）在 action 内置位拒绝路径并经 `kRecfgStage` 自驱从 Quiescing 终局弧回到 Idle。重构后的改进：终局弧按镜像姿态 guard（`at_reject_home`/`at_commit_home` 只放行当前事务自身的自驱事件），陈旧 `kRecfgStage`（前一笔事务遗留）落到四条 Internal 吸收弧，不再能误杀活事务——这正是压力跑暴露过的交错。`rcGoHome` 已只挂 `kRcCommit→kRcIdle` 与 `kRcQuiesce→kRcIdle` 两条终局弧（`Syncing→Resuming` 弧原曾误用 `rcGoHome`，已于 2026-09-03 修复移除）。剩余架构债：拒绝路径仍是 action 内隐藏分支而非转移表可见弧；评审建议的终局 action 按 Commit/Recover/Reject 拆分尚未落地。
+1. **Precheck 在状态表中声明但没有任何转移进入，是不可达状态**——预检实际发生在 `Idle → Quiescing` 弧的转移动作 `rcEnterPrecheck` 内部（只读校验 + 快照），被拒绝的请求（X4 能力拒绝、DMO 模式拒绝）在 action 内置位拒绝路径并经 `kRecfgStage` 自驱从 Quiescing 终局弧回到 Idle。重构后的改进：终局弧按镜像姿态 guard（`at_reject_home`/`at_commit_home` 只放行当前事务自身的自驱事件），陈旧 `kRecfgStage`（前一笔事务遗留）落到四条 Internal 吸收弧，不再能误杀活事务——这正是压力跑暴露过的交错。`rcGoHome` 已只挂 `kRcCommit→kRcIdle` 与 `kRcQuiesce→kRcIdle` 两条终局弧（`Syncing→Resuming` 弧原曾误用 `rcGoHome`，已修复移除）。剩余架构债：拒绝路径仍是 action 内隐藏分支而非转移表可见弧；评审建议的终局 action 按 Commit/Recover/Reject 拆分尚未落地。
 2. **`RecfgStage` 镜像枚举与 HSM 状态不是一一对应**：镜像有 `kCommitted`/`kFailed` 两个终局值，HSM 没有对应状态（Commit 成功/失败在 `rcEnterCommit` 内直接置 `stage = kIdle`）；`kPrecheck` 值从未被设置（预检发生在弧动作里）。镜像的真实角色是**诊断摘要枚举**（供 `recfg_stage_name()` 与恢复代码 switch 使用），不是第二套状态机——但两套词汇并存本身仍是一致性风险。
 3. **`layout_version` 在 Syncing 阶段推进**（见 3.5），先于首帧校验和 Commit——失败尝试也会使旧地址记录失效。这是**有意的保守失效策略**：回滚过程中复用旧布局地址比多一次 cache miss 危险得多。
 
@@ -247,7 +247,7 @@ stateDiagram-v2
 
 图 5 补充：`Quiescing → Applying` 只认 `kSoutIdle`（`at_quiesce` 守卫）——这条弧是 3.9 节 U9 停稳约束的载体；`Resuming → Commit` 只认 `kFirstFrame`（`at_resume` 守卫），提交边界不可绕过；`rcQuiescingEntry`/`rcResumeEntry` 是仅有的两个入口动作（硬件命令只在入口动作发出，转移动作在状态切换之前运行、从那里自提交 ack 会与拓扑竞走）。
 
-**事务窗口的终局自驱关闭**（已落地）：每笔事务的终局路径（X4 Precheck REJECT、DMO 模式拒绝、Commit RECOVER 回滚、clean COMMIT）在终局 action 置 `ctx.stage = kIdle` 后自提交 `kRecfgStage`，汇流至 `rcGoHome` 转移动作，经 `session_advance(kRunning, "recfg txn terminal (self)")` 原子归位；窗口的打开随 `kRecfgReq` 受理（主线程）。四个 pass 各关一次窗（仅窗口打开时 exchange），无双关；coro 运行输出可见 4 次 `recfg txn terminal (self)` 轨迹。窗口由终局动作自驱关闭（评审指出时曾由 demo driver 在 main 侧轮询关闭，该遗留债已于 2026-09-03 修复）。
+**事务窗口的终局自驱关闭**（已落地）：每笔事务的终局路径（X4 Precheck REJECT、DMO 模式拒绝、Commit RECOVER 回滚、clean COMMIT）在终局 action 置 `ctx.stage = kIdle` 后自提交 `kRecfgStage`，汇流至 `rcGoHome` 转移动作，经 `session_advance(kRunning, "recfg txn terminal (self)")` 原子归位；窗口的打开随 `kRecfgReq` 受理（主线程）。四个 pass 各关一次窗（仅窗口打开时 exchange），无双关；coro 运行输出可见 4 次 `recfg txn terminal (self)` 轨迹。窗口由终局动作自驱关闭（评审指出时曾由 demo driver 在 main 侧轮询关闭，该问题已修复）。
 
 **测试证据**：demo 注入了文档原始故障（SOUT 按旧 X1 几何封帧，`inject_stale_sout` 标志），事务终局走回滚弧（当前 coro 模式输出）：
 
