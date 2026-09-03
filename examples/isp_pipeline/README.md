@@ -48,9 +48,9 @@ flowchart LR
         W5["SoutDmaWorker"]:::w -->|"kSoutDone"| FSM
         W6["MipiIrqWorker"]:::w -->|"TX 中断"| MIPI
     end
-    classDef high fill:#fecaca,stroke:#dc2626
-    classDef n fill:#dbeafe,stroke:#2563eb
-    classDef w fill:#dcfce7,stroke:#16a34a
+    classDef high fill:#fecaca,stroke:#dc2626,color:#000000
+    classDef n fill:#dbeafe,stroke:#2563eb,color:#000000
+    classDef w fill:#dcfce7,stroke:#16a34a,color:#000000
 ```
 
 - **AO 侧**：事件驱动状态推进（HSM），只做决策不做阻塞；读写寄存器/DDR 走等待态（提交→中断确认）
