@@ -583,7 +583,7 @@ int main()
     coact::AoBase* aos[] = { &orch, &irsc_drv, &low, &high, &hl, &enhance, &tpd,
                              &videofsm, &packvid,
                              &usb, &mipi, &recfg, &wrape, &winhost };
-    for (int w = 0; w < 3000; ++w) {
+    for (uint32_t w = 0U; w < 3000U; ++w) {
         bool drained = true;
         for (coact::AoBase* a : aos) {
             if (0U != a->pending().load()) { drained = false; }
@@ -631,7 +631,7 @@ int main()
     // guaranteed reachable (the recfg AO's own stage chain self-submits to
     // it), so this converges without a hard timeout.
     auto wait_txn_closed = [&recfg]() {
-        for (int w = 0; w < 500; ++w) {
+        for (uint32_t w = 0U; w < 500U; ++w) {
             if (SessionState::kRunning == g_session.load(std::memory_order_relaxed)) {
                 return;
             }
@@ -654,7 +654,7 @@ int main()
     // reject, then the mode is restored to Active (3LOOP stands in: the
     // demo's passes run the active-mode quiesce sequence).
     std::printf("[recfg] pass 1b: DMO mode request (full rebuild required)\n");
-    for (int w = 0; w < 200; ++w) {
+    for (uint32_t w = 0U; w < 200U; ++w) {
         if (0U == rt.monitor().ao(kRecfgId).pending.load()
             && RecfgStage::kIdle == recfg.context().stage) {
             break;
@@ -683,7 +683,7 @@ int main()
     // reset waits for the recfg AO to be fully DRAINED (pending == 0): a
     // ctx write racing the AO's own commit exchange is the same class of
     // interleaving the arc guards below eliminate on the event plane.
-    for (int w = 0; w < 200; ++w) {
+    for (uint32_t w = 0U; w < 200U; ++w) {
         if (0U == rt.monitor().ao(kRecfgId).pending.load()
             && RecfgStage::kIdle == recfg.context().stage) {
             break;
@@ -748,7 +748,7 @@ int main()
     // Drain: the USB DMA engine ships one frame in bulk transactions, so wait
     // for the Windows host to see the frame EOF (engine is single-job).
     auto t37_drain = [&]() {
-        for (int w = 0; w < 5000; ++w) {
+        for (uint32_t w = 0U; w < 5000U; ++w) {
             if (winhost.context().frames_received >= baseline_host + t37_fid - kFrameCount) {
                 return;
             }
@@ -936,7 +936,7 @@ int main()
         usb_dma.inject_error_interrupt(kFrameCount - 1U);
         // Drain: the three injected events must land before the counters are
         // read (pending-based, same contract as every other drain here).
-        for (int w = 0; w < 500; ++w) {
+        for (uint32_t w = 0U; w < 500U; ++w) {
             if (enhance.context().fifo_ovf >= 1U
                 && mipi.context().stream_errs >= 1U
                 && winhost.context().error_interrupts >= 1U) {
@@ -1025,7 +1025,7 @@ int main()
     // FSMs reached IDLE — a fixed sleep races the Dispatcher under load
     // (observed once in stress: the stop cmds were still queued when the
     // counters were read). Pending-based drain is the correct contract.
-    for (int w = 0; w < 3000; ++w) {
+    for (uint32_t w = 0U; w < 3000U; ++w) {
         bool drained = true;
         for (coact::AoBase* a : aos) {
             if (0U != a->pending().load()) { drained = false; }
@@ -1042,7 +1042,7 @@ int main()
     t37_drain();
     // Worker-drain guard: every async channel must have delivered ALL of its
     // completions (in-flight jobs are never dropped, only awaited).
-    for (int w = 0; w < 500; ++w) {
+    for (uint32_t w = 0U; w < 500U; ++w) {
         if (mipi.context().tx_done_count >= kFrameCount
             && packvid.context().pic_sout_done >= packvid.context().pic_frames
             && packvid.context().temp_sout_done >= packvid.context().temp_frames
@@ -1176,7 +1176,7 @@ int main()
     // Self-verification: every simulated scenario asserts its invariants.
     // Exit code carries the verdict so ctest can gate on it.
     // =====================================================================
-    int fails = 0;
+    uint32_t fails = 0U;
     auto check = [&fails](bool ok, const char* what) {
         std::printf("  [%s] %s\n", ok ? "PASS" : "FAIL", what);
         if (!ok) { ++fails; }
@@ -1376,8 +1376,7 @@ int main()
     check(clean_bytes == target_bytes,
           "flicker: quiesced restart aligns the first frame");
 
-    std::printf("RESULT: %s (fails=%d)\n", (0 == fails) ? "ALL PASS" : "FAILURES",
-                fails);
-    return (0 == fails) ? 0 : 1;
+    std::printf("RESULT: %s (fails=%u)\n", (0U == fails) ? "ALL PASS" : "FAILURES",
+                static_cast<unsigned>(fails));
+    return (0U == fails) ? 0 : 1;
 }
-

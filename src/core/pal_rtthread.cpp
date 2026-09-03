@@ -733,10 +733,10 @@ bool RtThread::softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept
     }
     h.ring[head % kSoftIrqRingSlots] = payload;
     h.head.store(head + 1U, std::memory_order_release);
-    /* Wake hint: the payload already lives in the ring, so rt_thread_kill
-       only needs to wake a polling take(). RT_EOK is the documented success
-       path on real targets and on the host stub. */
-    return (RT_EOK == rt_thread_kill(h.consumer, SIGUSR1));
+    /* Wake hint: the payload already lives in the ring. A failed wake hint
+       does not invalidate the committed payload; take() still polls it. */
+    (void)rt_thread_kill(h.consumer, SIGUSR1);
+    return true;
 }
 
 int32_t RtThread::softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept

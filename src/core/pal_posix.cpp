@@ -416,6 +416,11 @@ bool Posix::softirq_init(SoftIrqHandle& h) noexcept
     h.consumer = pthread_self();
     h.pal      = this;
     h.fd       = signalfd(-1, &mask, SFD_CLOEXEC);
+    if (-1 == h.fd) {
+        (void)pthread_sigmask(SIG_UNBLOCK, &mask, nullptr);
+        h.consumer = pthread_t{};
+        h.pal = nullptr;
+    }
     return (-1 != h.fd);
 }
 

@@ -757,7 +757,7 @@ inline constexpr const char* kSigNames[] = {
     "kSessionState", "?31", "?32", "?33", "?34", "kIspFifoOvf",
     "kMipiStreamErr", "kUsbErrInt", "kStreamDone", "kPassiveDataLoss",
 };
-constexpr const char* sig_name(uint16_t s) noexcept
+inline constexpr const char* sig_name(uint16_t s) noexcept
 {
     return (s < std::size(kSigNames)) ? kSigNames[s] : "sig?";
 }
