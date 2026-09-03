@@ -326,3 +326,28 @@ inline int rt_snprintf(char* buf, rt_size_t size, const char* fmt, ...) noexcept
     const int n = std::vsnprintf(buf, static_cast<size_t>(size), fmt, ap);
     va_end(ap); return n;
 }
+
+/* --- Signals (SoftIrq SoftIrqOps support) --------------------------------- */
+/* BOARD VERIFICATION PENDING: rt_signal_install / rt_thread_kill / rt_signal_wait
+   are not emulated here. The SoftIrqOps port treats the signal as a wake hint
+   only — the shared mailbox ring (in SoftIrqHandle) carries the payload, so
+   the stub installs handlers as no-ops and rt_thread_kill returns RT_EOK
+   without poking the receiver. Polling in softirq_take() makes the host tests
+   deterministic without signal emulation; on a real RT-Thread target, take()
+   can be re-implemented on rt_signal_wait for true signal-driven wake. */
+#ifndef SIGUSR1
+#define SIGUSR1 10
+#endif
+typedef void (*rt_sighandler_t)(int);
+inline rt_sighandler_t rt_signal_install(int /*signo*/,
+                                        rt_sighandler_t handler) noexcept
+{
+    /* Install/remove are no-ops on host: the handler never runs, and the
+       shared ring carries the data either way. */
+    return handler;
+}
+inline rt_err_t rt_thread_kill(rt_thread_t /*tid*/, int /*sig*/) noexcept
+{
+    /* Wake-hint only; the mailbox ring is the actual data path. */
+    return RT_EOK;
+}

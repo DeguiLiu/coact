@@ -5,12 +5,19 @@
 #include <cstring>
 #include <ctime>
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <sys/signalfd.h>
 #include <time.h>
+#include <unistd.h>
 
 namespace coact {
 namespace pal {
+
+/* SoftIrqSignal is declared in pal_posix.hpp as Posix::SoftIrqSignal — keep
+   the value in one place so header users and the .cpp cannot drift. */
 
 /* pthread void*(void*) -> ThreadEntry void(void*) adapter. Reads entry and
    context from the ThreadHandle the create call passed as arg. */
@@ -378,6 +385,98 @@ void Posix::sleep_us(uint32_t us) noexcept
     while (0 != nanosleep(&ts, &ts) && EINTR == errno) {
         /* resume the remainder after a signal */
     }
+}
+
+/* ---------------------------------------------------------------------------
+ * SoftIrqOps family: signalfd-backed software interrupt simulation.
+ *
+ * NO signal handler is ever registered: SIGRTMIN stays blocked on every
+ * thread that touches this path, and signalfd converts the queued signal
+ * into an fd event. Consumption therefore happens entirely in thread context
+ * where malloc / locks are allowed (the async-signal-safe limitation that
+ * would poison a pthread_kill+handler design never applies). sigqueue
+ * carries the payload in sival_int; standard-realtime signal queuing
+ * semantics apply — consecutive identical raises may be COALESCED by the
+ * kernel if the consumer has not drained the earlier one yet (see
+ * test_softirq.cpp for the documented in-order delivery contract).
+ * ------------------------------------------------------------------------- */
+
+bool Posix::softirq_init(SoftIrqHandle& h) noexcept
+{
+    /* Block SIGRTMIN BEFORE creating the signalfd: without the mask an
+       unhandled SIGRTMIN would take its default action and kill the process
+       on the first raise. The mask is recorded on the installing (consumer)
+       thread so deinit() can restore it. */
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SoftIrqSignal);
+    if (0 != pthread_sigmask(SIG_BLOCK, &mask, nullptr)) {
+        return false;
+    }
+    h.consumer = pthread_self();
+    h.pal      = this;
+    h.fd       = signalfd(-1, &mask, SFD_CLOEXEC);
+    return (-1 != h.fd);
+}
+
+bool Posix::softirq_raise(SoftIrqHandle& /*h*/, int32_t payload) noexcept
+{
+    /* Block SIGRTMIN in the producer too: an unblocked producer thread would
+       synchronously consume the queued signal itself before the consumer's
+       signalfd could observe it. The sigmask write is per-thread and cheap.
+       NOTE: the handle does not carry the consumer's PID; sigqueue targets
+       this process (getpid()), which is the only supported topology — the
+       softirq producer and consumer always live in one process. */
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SoftIrqSignal);
+    if (0 != pthread_sigmask(SIG_BLOCK, &mask, nullptr)) {
+        return false;
+    }
+    siginfo_t si;
+    std::memset(&si, 0, sizeof(si));
+    si.si_code  = SI_QUEUE;
+    si.si_pid   = static_cast<pid_t>(getpid());
+    si.si_uid   = static_cast<uid_t>(geteuid());
+    si.si_value.sival_int = payload;
+    return (0 == sigqueue(getpid(), SoftIrqSignal, si.si_value));
+}
+
+int32_t Posix::softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept
+{
+    struct pollfd pfd;
+    pfd.fd      = h.fd;
+    pfd.events  = POLLIN;
+    pfd.revents = 0;
+    int timeout = (kWaitForever == timeout_ms) ? -1
+                                               : static_cast<int>(timeout_ms);
+    const int pret = poll(&pfd, 1, timeout);
+    if (pret <= 0) {
+        return -1;   /* timeout (0) or poll error (-1): same caller contract */
+    }
+    struct signalfd_siginfo ssi;
+    const ssize_t n = read(h.fd, &ssi, sizeof(ssi));
+    if (n != static_cast<ssize_t>(sizeof(ssi))) {
+        return -1;
+    }
+    return static_cast<int32_t>(ssi.ssi_int);
+}
+
+void Posix::softirq_deinit(SoftIrqHandle& h) noexcept
+{
+    if (-1 != h.fd) {
+        close(h.fd);
+        h.fd = -1;
+    }
+    /* Restore the consumer thread's mask so the caller's process-wide signal
+       state is unchanged after the test (contract: "deinit ... restores the
+       consumer thread's signal mask on Linux"). SIG_UNBLOCK unblocks every
+       signal present in `mask`; we build `mask` with the one signal we
+       blocked during init(). */
+    sigset_t mask;
+    sigemptyset(&mask);
+    sigaddset(&mask, SoftIrqSignal);
+    (void)pthread_sigmask(SIG_UNBLOCK, &mask, nullptr);
 }
 
 }  // namespace pal

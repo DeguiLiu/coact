@@ -12,6 +12,8 @@
 // No rt_sem_create / rt_thread_create / rt_malloc are used.
 #include "coact/pal_rtthread.hpp"
 
+#include <cstdint>
+
 namespace coact {
 namespace pal {
 
@@ -661,6 +663,119 @@ void RtThread::sleep_us(uint32_t us) noexcept
        windows must not shrink). */
     const rt_int32_t ms = static_cast<rt_int32_t>((us + 999U) / 1000U);
     rt_thread_mdelay((0 == ms) ? 1 : ms);
+}
+
+/* ---------------------------------------------------------------------------
+ * SoftIrqOps family: SPSC mailbox ring + rt_thread_kill(SIGUSR1) wake.
+ *
+ * The signal carries no payload on RT-Thread (rt_thread_kill only delivers a
+ * number), so the payload rides a fixed-capacity ring embedded in the handle
+ * (kSoftIrqRingSlots = 8, sufficient for the demo's worker completion stream).
+ * The handler registered in softirq_init() is deliberately EMPTY: it must run
+ * in restricted thread context on the receiver, and the only state it would
+ * touch is already visible through the SPSC ring. The signal itself is a
+ * wake hint; take() polls the ring on a 1 ms tick so the host path does not
+ * require rt_signal_wait emulation in the stub.
+ *
+ * BOARD VERIFICATION PENDING: on a real RT-Thread 5.2.x target the empty
+ * handler runs in the receiver's thread context. The polling take() is the
+ * safe baseline; replacing it with rt_signal_wait is a follow-up that needs
+ * to validate signal masking + siginfo payload propagation in the kernel.
+ * ------------------------------------------------------------------------- */
+namespace {
+
+/* Trivially-empty signal handler. rt_signal_install's prototype varies by RT-Thread
+   minor version; the (void*) cast neutralises int-vs-signo mismatches on the
+   stub's permissive signature without touching the real-target semantics. */
+void softirq_empty_handler(int /*signo*/) noexcept
+{
+    /* Intentionally empty: data lives in the mailbox, not in the handler. */
+}
+
+}  // namespace
+
+bool RtThread::softirq_init(SoftIrqHandle& h) noexcept
+{
+    /* The handle layout is caller-owned (zero heap): reset indices and capture
+       the installing thread as the consumer. head/tail start at 0 so the
+       first raise() publishes at slot 0. */
+    h.head.store(0U, std::memory_order_relaxed);
+    h.tail.store(0U, std::memory_order_relaxed);
+    h.consumer = rt_thread_self();
+    h.pal      = this;
+    /* The empty handler stays installed for the lifetime of the receiver
+       thread. deinit() removes it on the real target so no signal can fire
+       into a stale callback (the host stub ignores both install and remove). */
+    (void)rt_signal_install(SIGUSR1, &softirq_empty_handler);
+    return true;
+}
+
+bool RtThread::softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept
+{
+    /* SPSC ring: the producer's head.write needs a release barrier that pairs
+       with the consumer's head.load(acquire) in take(); relaxed tail.load is
+       fine because the consumer never writes tail until it has already
+       consumed the slot. */
+    const uint32_t head = h.head.load(std::memory_order_relaxed);
+    const uint32_t tail = h.tail.load(std::memory_order_acquire);
+    if (head - tail >= kSoftIrqRingSlots) {
+        return false;   /* mailbox full: the producer must drop, not block */
+    }
+    h.ring[head % kSoftIrqRingSlots] = payload;
+    h.head.store(head + 1U, std::memory_order_release);
+    /* Wake hint: the payload already lives in the ring, so rt_thread_kill
+       only needs to wake a polling take(). RT_EOK is the documented success
+       path on real targets and on the host stub. */
+    return (RT_EOK == rt_thread_kill(h.consumer, SIGUSR1));
+}
+
+int32_t RtThread::softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept
+{
+    const bool forever = (0U == timeout_ms)
+                      || (kWaitForever == timeout_ms);
+    /* Convert ms -> RT-Thread ticks using the same routine the Dispatcher
+       wait uses (pal_rtthread.hpp::detail::dispatcher_wait_ticks): at the
+       1 kHz stub tick this is identity, and on a real 100/1000 Hz target the
+       conversion stays correct. Reuse the helper rather than rolling our own
+       rounding. */
+    const uint32_t budget_ticks = (forever)
+        ? 0xFFFFFFFFU
+        : static_cast<uint32_t>(detail::dispatcher_wait_ticks(timeout_ms));
+    const rt_tick_t start_tick = rt_tick_get();
+    for (;;) {
+        const uint32_t tail = h.tail.load(std::memory_order_relaxed);
+        const uint32_t head = h.head.load(std::memory_order_acquire);
+        if (tail != head) {
+            const int32_t payload = h.ring[tail % kSoftIrqRingSlots];
+            /* Pair the producer's release: the slot is "owned" by the
+               consumer only after the tail publish. */
+            h.tail.store(tail + 1U, std::memory_order_release);
+            return payload;
+        }
+        if (!forever) {
+            /* Unsigned subtraction handles rt_tick_t wrap-around naturally. */
+            const rt_tick_t elapsed = rt_tick_get() - start_tick;
+            if (elapsed >= budget_ticks) {
+                return -1;
+            }
+        }
+        /* 1 ms tick: the smallest step that respects the drain-loop budget
+           without busy-spinning the receiver. rt_thread_mdelay rounds to
+           whole ms on the real 1 kHz tick. */
+        rt_thread_mdelay(1);
+    }
+}
+
+void RtThread::softirq_deinit(SoftIrqHandle& h) noexcept
+{
+    /* Drop the empty handler so the receiver thread does not retain a stale
+       callback pointer after the handle goes away. The stub silently accepts
+       the call (RT_NULL handler == install/remove no-op). */
+    (void)rt_signal_install(SIGUSR1, nullptr);
+    h.head.store(0U, std::memory_order_relaxed);
+    h.tail.store(0U, std::memory_order_relaxed);
+    h.consumer = nullptr;
+    h.pal      = nullptr;
 }
 
 }  // namespace pal
