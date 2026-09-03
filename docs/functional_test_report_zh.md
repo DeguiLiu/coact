@@ -1,6 +1,6 @@
 # isp_pipeline_demo 功能测试报告
 
-**结论**：52 项功能自检断言全 PASS（exit 0）。功能验证方法为"自检断言内嵌"，逐项核对 RS500 业务场景的架构级复现与修复（示例定位：架构模型与故障注入演示，非业务复刻）。
+**结论**：66 项功能自检断言全 PASS（exit 0）。功能验证方法为"自检断言内嵌"，逐项核对 RS500 业务场景的架构级复现与修复（示例定位：架构模型与故障注入演示，非业务复刻）。
 
 ## 1. 功能测试全景图
 
@@ -12,7 +12,7 @@ flowchart LR
         A2 --> A3["PIC/TEMP 双流打包<br/>节点序列→SOUT→OUT"]:::f1
         A3 --> A4["输出接口<br/>WRAPE→USB Bulk / MIPI TX"]:::f1
     end
-    subgraph ASSERT["自检断言五组（52 项 check）"]
+    subgraph ASSERT["自检断言五组（66 项 check）"]
         direction TB
         B1["链路不变量<br/>帧计数/帧序无间隙"]:::f2
         B2["数据面字节保真<br/>dn→lg/hg→fus→exp 公式"]:::f2
