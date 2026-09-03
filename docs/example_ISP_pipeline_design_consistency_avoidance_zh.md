@@ -89,16 +89,16 @@ flowchart LR
 
 ### 1.1 示例数据流
 
-示例（`examples/isp_pipeline/`，多文件模块 + `main.cpp` 编排）建模 RS500 Preview Start 的完整链路；与 RS500 真实模块（`camera_app.c`、`auto_preview_start`、`drv_irsc`、`drv_isp` 八节点、`video_lsv_stream_manager`、`video_com_*`、USB WRAPE / MIPI CSI TX）的逐项映射见架构文档 §3.5，本文不再重复。全链路为：
+示例（`examples/isp_pipeline/`，多文件模块 + `main.cpp` 编排）建模 RS500 Preview Start 的完整链路；与 RS500 真实模块（`camera_app.c`、`auto_preview_start`、`drv_irsc`、`drv_isp` 八节点、`video_lsv_stream_manager`、`video_com_*`、USB WRAPE / MIPI CSI TX）的逐项映射见架构文档 3.5 节，本文不再重复。全链路为：
 
 IRSC 探测器 → 高/低增益 ISP 双链 → HL 融合 → 增强（PIC）/TPD（TEMP）双链 → PIC/TEMP Video 打包 → WRAPE（USB 封帧，判断帧长并生成 EOF）/ MIPI 输出。在此之上叠加四组一致性实验：运行态原子重配（RecfgOrch / 重配编排器 AO）、regmap 缓存协议（PeriphRegCache）、deinit 停稳机制对比（QuiescePolicy）、三类画面异常（花屏/丢帧/闪屏）。
 
 #### 1.1.1 读第 3 章前需知的结构性事实
 
-示例装配了 **14 个 AO 与 7 个 worker 实例（6 类）**：AO 经 Dispatcher 单线程派发并持有全部业务状态；worker 只模拟"消息的发生"（异步往返、中断回调模拟），完成事件经 `submit_from_task()` 投回事件面。AO/worker 拓扑、两类队列（14 条 AO 事件队列 vs 6 条 worker 输入队列，`IrscWorker` 无输入队列）与逐模块 RS500 映射见架构文档 §3.1/§3.4/§3.5。与故障分析直接相关的三条结构性约束：
+示例装配了 **14 个 AO 与 7 个 worker 实例（6 类）**：AO 经 Dispatcher 单线程派发并持有全部业务状态；worker 只模拟"消息的发生"（异步往返、中断回调模拟），完成事件经 `submit_from_task()` 投回事件面。AO/worker 拓扑、两类队列（14 条 AO 事件队列 vs 6 条 worker 输入队列，`IrscWorker` 无输入队列）与逐模块 RS500 映射见架构文档 3.1 节/§3.4/§3.5。与故障分析直接相关的三条结构性约束：
 
 1. **写路径分工**：AO 写业务黑板，worker 只产生完成事件不写黑板——U1～U9 的"单一权威"对策都建立在写者唯一之上（各节就地说明写者约束）。
-2. **合并后的乘积状态**：`VideoFsmAo`（视频状态机）9 态、`VideoPackAo` 4 态；"两路同时停在写回窗口"是表中显式状态。配套 parking ring（按 `frame_id` 匹配释放）是 U2 事务隔离在写回窗口上的延伸（架构展开见架构文档 §3.3）。
+2. **合并后的乘积状态**：`VideoFsmAo`（视频状态机）9 态、`VideoPackAo` 4 态；"两路同时停在写回窗口"是表中显式状态。配套 parking ring（按 `frame_id` 匹配释放）是 U2 事务隔离在写回窗口上的延伸（架构展开见架构文档 3.3 节）。
 3. **数据面不经事件载荷**：`Payload` 只携带 DDR 槽位描述符与路由标签，像素走 DDR 黑板——数据与控制的分离使 U3/U8 的字节级校验与窗口计数成为可能。
 
 
@@ -151,7 +151,7 @@ flowchart TB
 
 ### 2.2 与提交边界直接相关的事件
 
-链路上所有跨模块交互都是类型化事件（`enum class Sig` 单一词汇表，完整事件表见架构文档 §3.4）。与本文故障机制直接相关的是提交边界的一组事件：
+链路上所有跨模块交互都是类型化事件（`enum class Sig` 单一词汇表，完整事件表见架构文档 3.4 节）。与本文故障机制直接相关的是提交边界的一组事件：
 
 | 事件 | 发出方 → 接收方 | 语义 |
 |---|---|---|
