@@ -14,8 +14,8 @@
 
 1. 先看第 1 章，了解三类一致性问题的成因框架与示例角色分工。
 2. 再看第 3 章，按 U1～U9 逐项阅读“故障现象→处理方式→断言”。
-3. 第 4～5 章说明 C++ 实现约束和指针/所有权规则。
-4. 第 6 章汇总验证矩阵；具体时序回到 `isp_pipeline_demo_run_log_fresh.txt` 查找对应阶段。
+3. 第 4 章汇总验证矩阵；C++ 实现约束和指针/所有权规则见 `example_ISP_pipeline_cpp_discipline_zh.md`。
+4. 具体时序回到 `isp_pipeline_demo_run_log_fresh.txt` 查找对应阶段。
 
 ---
 
@@ -357,7 +357,7 @@ pool.used=0（事件池零泄漏）
 RESULT: ALL PASS (fails=0)
 ```
 
-**自检验证**：`err_eof==3 / truncated==3` 且 `min_payload==655360B`（断言 `T37: truncated payload is the stale X1 length`）复现 T37 抓包的截断值（U3 的证据域是 T37 链路的 655360/2621440 字节边界，与 U1 运行态重配的 5537280/22149120 是不同场景，仅数学形态相同，见附录 6.4 裁决第 5 条）；`complete==42 / frames==45 / gaps==0`（断言 `T37: Windows host received every frame EOF` 与 `T37: no frame gaps on the host`）覆盖全部 45 帧含故障帧——提前封帧不等于丢帧，这是 T37 文档"禁止误解"第一条的语义区分，在测试里成立；`max_payload==2621440B`、`zoom 恒 active`（`g_zoom.active`）与 WRAPE 配置恒 2621440（`T37: downstream geometry constant across X1<->X2 rounds`）共同验证 Identity Zoom 让下游几何结构恒定。
+**自检验证**：`err_eof==3 / truncated==3` 且 `min_payload==655360B`（断言 `T37: truncated payload is the stale X1 length`）复现 T37 抓包的截断值（U3 的证据域是 T37 链路的 655360/2621440 字节边界，与 U1 运行态重配的 5537280/22149120 是不同场景，仅数学形态相同，见附录 4.4 裁决第 5 条）；`complete==42 / frames==45 / gaps==0`（断言 `T37: Windows host received every frame EOF` 与 `T37: no frame gaps on the host`）覆盖全部 45 帧含故障帧——提前封帧不等于丢帧，这是 T37 文档"禁止误解"第一条的语义区分，在测试里成立；`max_payload==2621440B`、`zoom 恒 active`（`g_zoom.active`）与 WRAPE 配置恒 2621440（`T37: downstream geometry constant across X1<->X2 rounds`）共同验证 Identity Zoom 让下游几何结构恒定。
 
 ```mermaid
 flowchart TB
@@ -615,143 +615,11 @@ sequenceDiagram
 
 ---
 
-## 4. C++17 约束与设计模式
+## 4. 验证结果
 
-示例使用 C++17 编译期检查、固定容量存储和明确的模块边界。
+**验证基线**：`isp_pipeline_demo` 当前默认构建即 coro 模式（`ISP_DEMO_CORO`），66 项自检断言 ALL PASS（exit 0）；`ctest --test-dir build` 52/52 通过。#41 协程修复的逐阶段运行证据见 `isp_pipeline_demo_run_log_fresh.txt`（"如何证明 #41 已解决"一节）。C++17 编译期约束与指针治理纪律见 `example_ISP_pipeline_cpp_discipline_zh.md`。
 
-### 4.1 纪律清单
-
-| 约束 | 落点 | 检查方式 |
-|---|---|---|
-| 协议常量 constexpr | 帧字节数 / 恒等 Zoom 步长 / streamVldNum | `static_assert` 锁定文档证据值 |
-| 布局约束 | `FrameGeometry` / `UvcMeta` / `FrameStamp` | `static_assert(is_standard_layout && is_trivially_copyable)`——跨 AO 边界的事件载荷可安全位表示 |
-| 移动约束 | `FrameGeometry` 事务快照交换 | `static_assert(is_nothrow_move_constructible)`——回滚/提交路径不抛 |
-| 无锁假设 | DDR 环索引、运行标志 | `static_assert(atomic<T>::is_always_lock_free)`——目标平台无隐式锁 |
-| 无堆热路径 | `EventPool` + `std::array` 定容块 | 全局无堆事件分配；运行期断言 `pool.used()==0`（零泄漏）；构建级 `-fno-exceptions -fno-rtti` |
-| placement new + std::launder | DDR 槽位 `FrameStamp`、地址缓存记录 | 对象生命周期在槽位内存内开始，`std::launder` 合法化访问（C++17 对象模型） |
-| CRTP | `GainNodeBase<Policy>` / `FusedNodeBase<Policy>` | 编译期多态，零虚函数开销；高低增益链、增强/TPD 链共用一套节点骨架 |
-| 编译期策略 | `Policy::apply`（节点变换）、`QuiescePolicy`（停稳门面） | `if constexpr` 路径选择，运行期零分支 |
-| 命令模式 | `kIrscCmdSequence` 表 | 多步硬件初始化退化为表驱动 + 事件回执，编排器只数 ack |
-| 宏静态 HSM 表 | `COACT_HSM_STATES` / `COACT_HSM_TRANS` | 十余个 AO 的状态/转移表全部编译期生成，无运行期构建 |
-| std::exchange 提交 | 几何提交、版本推进、槽位戳交换 | 提交点的所有权转移表达：单线程所有权前提下读旧值与写新值一步完成、旧副本不留——不是并发原子操作，不提供线程安全 |
-| RAII | `BypassGuard` | 旁路配对由析构保证，任何退出路径不漏 resync |
-| 接口标注 | 全接口 `[[nodiscard]]` / `noexcept` | 返回值不可忽略；动作函数不抛 |
-
-### 4.2 两个代表性片段
-
-CRTP 节点骨架——高低增益链共用 `GainNodeBase<Policy>`，变换策略经 CRTP 在编译期解析，公共帧路径（DN → DDR → 策略变换 → DDR → 完成事件）只写一遍：
-
-```cpp
-template <typename Policy>
-struct GainNodeBase {
-    // Common frame path: DN -> DDR -> policy transform -> DDR -> done event.
-    // Returns false when the pool is exhausted (event dropped).
-    // Policy transform (compile-time dispatch; if constexpr keeps the
-    // ...)
-};
-using LowGainNode  = GainNodeBase<LowGainPolicy>;
-using HighGainNode = GainNodeBase<HighGainPolicy>;
-```
-
-宏静态 HSM 表——每个 AO 的状态与转移在编译期固化为 `constexpr` 数组，Dispatcher 按表驱动：
-
-```cpp
-COACT_HSM_STATES(kIrscStates, IrscCtx, "Root", "Active");
-COACT_HSM_TRANS(kIrscTransitions, IrscCtx, Sig::kIrscCmd, onIrscCmd);
-```
-
-重配 AO 是最完整的应用：`kRecfgStates`（Root + 7 业务状态，8 表项）+ `kRecfgTransitions`（11 弧——7 条业务弧 + 4 条 stale `kRecfgStage` 吸收弧）全部为 `inline const` 数组，转移动作与入口动作分离（硬件命令只在入口动作发出，见 3.2）。
-
-```mermaid
-flowchart TB
-    subgraph COMPILE["编译期（错误在此暴露）"]
-        C1["constexpr 协议常量<br/>+ static_assert"]:::c
-        C2["CRTP / Policy<br/>编译期多态"]:::c
-        C3["宏静态 HSM 表<br/>状态拓扑固化"]:::c
-        C4["is_standard_layout /<br/>trivially_copyable /<br/>always_lock_free"]:::c
-    end
-    subgraph RUNTIME["运行期（最小化）"]
-        R1["EventPool 定容块<br/>零堆分配"]:::r
-        R2["std::exchange 提交<br/>所有权转移（非原子）"]:::r
-        R3["placement new + launder<br/>槽位内构造"]:::r
-        R4["RAII BypassGuard<br/>析构对账"]:::r
-    end
-    COMPILE ~~~ RUNTIME
-    classDef c fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
-    classDef r fill:#dcfce7,stroke:#16a34a,color:#14532d
-```
-
-*图 12（蓝=编译期，绿=运行期）：工程纪律的分工——一致性假设尽量在编译期变成类型错误，运行期只留不可编译化的少量动作。*
-
----
-
-## 5. 指针与所有权
-
-"边界清晰"的另一半是指针治理。嵌入式 C++ 无法完全消灭指针（硬件地址、DMA 缓冲本质就是内存位置），但示例把裸指针压缩到三类合法场景，其余全部用引用、移动语义与静态策略表达。
-
-### 5.1 裸指针的三类合法保留
-
-| 场景 | 示例 | 为什么必须是指针 |
-|---|---|---|
-| 可空句柄 | `pool->alloc_typed()` 返回 `nullptr` 表示池耗尽 | 可空性是协议的一部分（背压信号），引用无法表达 |
-| 硬件/DMA 地址 | `FrameStamp*` 指向 DDR 槽位 | 物理内存位置，无引用语义可用 |
-| 非拥有观察 | `ctx.pool` / `ctx.rt` 指向装配期绑定的单例 | AO 上下文默认构造 + 后绑定，指针可重置；coact 框架 `AoBase` 的非拥有契约 |
-
-除此之外的所有传参、返回、成员访问一律使用引用（`const T&` 入参、`T&` 出参）或值/移动语义。
-
-### 5.2 引用与移动的具体应用
-
-```cpp
-// DdrCtx::write: src is the caller's stack buffer, read-only borrow
-// (DMA semantics) -> const pointer, the documented hardware-address case.
-[[nodiscard]] uint16_t write(DdrId id, uint32_t frame_id, const uint8_t* src);
-
-// RecfgAoCtx commit: the old geometry is MOVED OUT, no dangling copy is
-// left behind -> std::exchange implements the move-commit.
-active_geom = std::exchange(target_geom, FrameGeometry{});
-
-// AddrCache::store: placement-new constructs IN PLACE inside the cache
-// slot — no temporary, no copy; same discipline the event pool uses.
-::new (static_cast<void*>(&rec)) AddrRecord{layout_version, addr, true};
-
-// QuiescePolicy: stateless compile-time policy, all-static functions —
-// no pointer, no reference, pure type-level dispatch.
-```
-
-### 5.3 治理规则
-
-1. **参数传递**：只读小对象按值（`TargetId` / `SrMagx`），大对象 `const&`，可空资源句柄才用指针并在命名上暴露（`pool` / `xxx_target` 这类"绑定槽"）。
-2. **返回值**：`[[nodiscard]]` 强制调用方处理；可空结果返回指针（池耗尽）并立即判空——这是唯一允许"裸"的返回。
-3. **成员所有权**：AO 上下文里的 `PoolT*` / `Rt*` 是**非拥有观察指针**，生命周期由 `main()` 的栈序保证；与裸拥有的区别在注释与命名上显式声明，不让读者猜。
-4. **禁止指针算术**：DDR 槽位访问经 `std::launder` 合法化，唯一的偏移运算（`slot_mem + kStampBytes`）封装在 `DdrCtx` 内部，外部只见 `read`/`write` 接口。
-
-```mermaid
-flowchart LR
-    subgraph RAW["裸指针合法域（三例，不可替代语义）"]
-        N1["可空句柄<br/>alloc 返回 nullptr<br/>（背压协议）"]:::ptr
-        N2["DMA/硬件地址<br/>FrameStamp* DDR 槽位"]:::ptr
-        N3["非拥有观察<br/>ctx.pool / ctx.rt"]:::ptr
-    end
-    subgraph MODERN["现代所有权表达（其余全部）"]
-        M1["const T& 借用<br/>（读大对象）"]:::ref
-        M2["std::exchange 移动提交<br/>（旧值不留副本，单线程前提）"]:::ref
-        M3["placement-new 原地构造<br/>（零拷贝零临时）"]:::ref
-        M4["静态策略函数<br/>（无状态类型级分发）"]:::ref
-    end
-    RAW ~~~ MODERN
-    classDef ptr fill:#fef3c7,stroke:#d97706,color:#78350f
-    classDef ref fill:#dcfce7,stroke:#16a34a,color:#14532d
-```
-
-*图 13（黄=裸指针合法域，绿=现代所有权）：指针治理边界。裸指针只保留三个不可替代的语义位，其余所有权表达全部现代化。*
-
----
-
-## 6. 验证结果
-
-**验证基线**：`isp_pipeline_demo` 当前默认构建即 coro 模式（`ISP_DEMO_CORO`），66 项自检断言 ALL PASS（exit 0）；`ctest --test-dir build` 52/52 通过。#41 协程修复的逐阶段运行证据见 `isp_pipeline_demo_run_log_fresh.txt`（"如何证明 #41 已解决"一节）。
-
-### 6.1 验证矩阵
+### 4.1 验证矩阵
 
 | 示例 | 覆盖异常 | 验证的不变量 | 对应 RS500 文档 | 自检断言 | ctest |
 |---|---|---|---|---|---|
@@ -766,7 +634,7 @@ flowchart LR
 
 自检断言按平面分组：数据面（收帧数、字节保真、路由标签、事件池零泄漏）、编排面（IRSC 4 步回执、ISP 8 节点 init ack、合并视频 FSM 回 IDLE）、重配面（恰好一次提交、X4/DMO 拒绝 + X2 回滚、提交帧匹配权威、版本推进）、停稳面（事件 3 ioctl vs 轮询更多）、缓存面（scenario A-D 四组）、异常面（花屏/丢帧/闪屏各故障与修复双侧）、T37 面（err_eof/complete/truncated/frames/gaps、min/max payload、zoom 恒 active、WRAPE 配置恒定）。
 
-### 6.2 九类异常的处理归纳
+### 4.2 九类异常的处理归纳
 
 九类异常按"分布式状态契约不一致"三分法（写者不唯一 / 更新不原子 / 确认不对等）归纳为三个机制——这是本文的核心论点，与第 1 章三分法一一对应：
 
@@ -798,9 +666,9 @@ flowchart TB
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
 ```
 
-*图 14（红=异常，绿=机制）：九类异常按“分布式状态契约不一致”三分法归纳为三个机制。归纳不是事后归类，而是示例设计的出发点——示例先定三个机制，再按机制反向构造九类异常的复现场景；对应表述见 6.3 结论第 2 条。*
+*图 14（红=异常，绿=机制）：九类异常按“分布式状态契约不一致”三分法归纳为三个机制。归纳不是事后归类，而是示例设计的出发点——示例先定三个机制，再按机制反向构造九类异常的复现场景；对应表述见 4.3 结论第 2 条。*
 
-### 6.3 结论
+### 4.3 结论
 
 1. **九类异常同源**：全部是"多模块对同一业务事实、更新时序或完成条件契约不一致"的结构性后果，其中六类具象为"同一事实两份记录、更新失同步"（U1/U2/U4/U5/U9 及花屏），U3/U7/U8 则是写者滞后、能力分叉与容量对等等其他契约不一致形态。花屏位宽错配（3.10）、闪屏首帧口径（3.9）、提前封帧（3.3）在数学形态上互相吻合（25% 截断）——形态相同是同一结构病灶的旁证，但 U1 与 U3 的证据域不同（运行态重配 vs T37 链路），不能等同根因。
 2. **事件驱动是结构性方案**：单一权威（每字段一个写者）、事件事务（整体化 + 提交边界）、统一确认语义（停稳弧/容量窗口）三个机制分别对应三类契约不一致，且都是结构性约束——Dispatcher 保证单 RTC 步骤不可被并发执行，跨事件隔离由停稳/守卫（IRSC 侧示范的门控模式，全流冻结待扩展）/提交边界/延后发布共同保证；违反单一写者的代码在审查中可机械识别，而非依赖运行期运气。
@@ -808,7 +676,7 @@ flowchart TB
 4. **验证是流程级而非单元级**：自检覆盖从数据面字节保真到事务终局（提交/回滚）的全链路不变量；isp_pipeline_demo T37 阶段的四点观察（配置/计数/payload/帧序）与 10 轮切换稳定性对应 T37 文档 §6 的板测要求。所有结论来自 host POSIX 模拟，RS500 板级验证尚未覆盖。
 5. **诚实的边界**：硬件无原子提交点（原子重配文档 §4.4 的平台现实）时，软件事务只能把不一致窗口压缩到不可观察，而非归零。示例的提交边界设计——软件权威最后落笔、失败快照回滚——正是这一工程现实的直接表达：宁可回滚一次，绝不提交一个被硬件否决的配置。示例的"回滚"指软件快照恢复，不含硬件寄存器逆序补偿。
 
-### 6.4 附录：评审回应与裁决表
+### 4.4 附录：评审回应与裁决表
 
 本附录已合并历史评审结论。当前实现以源码和最新构建结果为准，旧文件名、旧测试数量和旧结论不再作为验收依据。
 
@@ -817,7 +685,7 @@ flowchart TB
 | # | 评审条目 | 裁决 | 证据 | 处理 |
 |---|---|---|---|---|
 | 1 | 重配 HSM 文字/图/转移表不一致；事务窗口提前关闭 | **部分成立**（文档侧已修；代码侧已修复） | `kRecfgTransitions` 现为 11 弧（7 业务 + 4 stale 吸收）：Idle→Quiescing/kRecfgReq、Quiescing→Applying/kSoutIdle、Applying→Syncing、Syncing→Resuming、Resuming→Commit/kFirstFrame、Commit→Idle、Quiescing→Idle（终局），另 4 条 Internal 吸收弧；终局弧新增 `at_reject_home`/`at_commit_home` 姿态 guard，陈旧自驱事件不再误杀活事务（**已于重构修复**——这正是压力跑暴露的交错）。`rcGoHome` 曾复用于三条终局且 `Syncing→Resuming` 弧误挂该 action（打印 "PrecheckOrCommit -> Idle" 与实际转移不一致），**已于 2026-09-03 修复**：`rcGoHome` 现只挂两条终局弧，`Syncing→Resuming` 弧 action 改为 nullptr；事务窗口已由终局动作自驱关闭（**已修复**，见 3.2 事务窗口终局自驱）。`kRcPrecheck` 仍不可达、`RecfgStage::kCommitted/kFailed` 仍无 HSM 状态（如实描述，见 3.2 结构说明第 2 条） | 3.2 节重写为与源码逐弧一致并区分“已修复/未修复” |
-| 2 | Dispatcher 串行化与 `std::exchange` 保证过强，混淆 RTC 原子性/事务隔离/并发原子 | **仍成立**（原文表述如此） | 原文"任何其他执行流都无法在事件处理的间隙观察到半改状态"未限定单 RTC 步骤；`std::exchange` 非原子（C++ 标准无并发保证） | 第 2 章重写为三层概念区分 + 保证边界声明；4.1/图 12/图 13 相应措辞修正（文档侧修复） |
+| 2 | Dispatcher 串行化与 `std::exchange` 保证过强，混淆 RTC 原子性/事务隔离/并发原子 | **仍成立**（原文表述如此） | 原文"任何其他执行流都无法在事件处理的间隙观察到半改状态"未限定单 RTC 步骤；`std::exchange` 非原子（C++ 标准无并发保证） | 第 2 章重写为三层概念区分 + 保证边界声明；编程纪律文档纪律清单相应措辞修正（文档侧修复） |
 | 3 | 恒真断言、日志语义相反、修复侧未断言 | 初裁成立，后续已修复 | Scenario A/B/C 与 U8 均增加故障侧和处理侧断言 | 以当前源码和测试输出为准 |
 | 4 | "16 个 AO 与 4 个非 AO worker"数量不符 | **仍成立**（原文如此；评审引用的"14 AO/7 worker"与当前源码一致） | `rt.bind()` 共 14 个 AO；worker 实例 7 个（6 类）：IrscWorker（无输入 job 队列）、UsbDmaWorker（单槽），CmdDmaWorker/IspIrqWorker×2/SoutDmaWorker/MipiIrqWorker（WorkerBase 环深 4/2/3/2）；PIC/TEMP FSM 与打包器已合并 | 1.1.1 改为按角色分工与队列区分重写，完整映射表移至架构文档 §3.5 |
 | 5 | "九类都是两份拷贝"覆盖过窄；U1/U3 证据混用 | **仍成立** | U7（能力差异）、U8（容量预算）不存在两份记录；U1 证据域为 5537280/22149120B（运行态重配），U3 为 655360/2621440B（T37 链路），仅数学形态同为 25% | 第 1 章与 6.2 升级为"分布式状态契约不一致"三分法；两份拷贝降为具象案例；3.2/3.3 证据域表述分离（文档侧修复） |

@@ -22,7 +22,8 @@ EOF
 
 fail=0
 for md in "$@"; do
-    awk -v out="/tmp/mmchk" -v f="$md" '
+    awk -v out="/tmp/mmchk" '
+        BEGIN { f = 0; n = 0; buf = "" }
         /^```mermaid$/ { f=1; n++; buf=""; next }
         /^```$/ { if (f) { f=0; printf "%s", buf > (out "_" n ".mmd") } next }
         f { buf = buf $0 "\n" }
