@@ -536,7 +536,7 @@ inline const TransitionDef<RecfgAoCtx> kRecfgTransitions[] = {
     { kRcApply, static_cast<uint16_t>(Sig::kRecfgStage), kRcApply,
       TransitionKind::Internal, nullptr, nullptr },   // stale stage event
     { kRcSync, static_cast<uint16_t>(Sig::kRecfgStage), kRcResume,
-      TransitionKind::External, at_resuming, rcGoHome },
+      TransitionKind::External, at_resuming, nullptr },
     { kRcSync, static_cast<uint16_t>(Sig::kRecfgStage), kRcSync,
       TransitionKind::Internal, nullptr, nullptr },   // stale stage event
     // Terminal arcs: Quiescing (reject) / Commit (done) walk home to Idle.
@@ -744,4 +744,3 @@ using RecfgOrchAo    = coact::Ao<RecfgAoCtx, Hsm<RecfgAoCtx>, AoTrait<61>>;
 
 
 }  // namespace isp_demo
-

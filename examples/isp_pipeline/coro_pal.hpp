@@ -104,7 +104,7 @@ public:
     void thread_join(ThreadHandle& t) noexcept
     {
         PendingSlot* p = reinterpret_cast<PendingSlot*>(t.tid);
-        for (int pass = 0; pass < 2000000; ++pass) {
+        for (uint32_t pass = 0U; pass < 2000000U; ++pass) {
             if ((nullptr != p->co) && !p->co->is_running()) {
                 p->entry = nullptr;
                 p->co = nullptr;

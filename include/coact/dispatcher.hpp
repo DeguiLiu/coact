@@ -203,6 +203,7 @@ private:
                 target_breaker.on_rtc_ok();
             }
             ao->pending().decrement();
+            monitor_.record_pending(slot.target, ao->pending().load());
             target_breaker.on_dispatch_cycle();
             monitor_.record_disposition(SubmitDisposition::Queued);
         }
@@ -230,6 +231,7 @@ private:
                 AoBase* ao = registry_.lookup(slot.target);
                 if (ao != nullptr) {
                     ao->pending().decrement();
+                    monitor_.record_pending(slot.target, ao->pending().load());
                 }
                 reclaim.release(slot.event);
                 released = true;

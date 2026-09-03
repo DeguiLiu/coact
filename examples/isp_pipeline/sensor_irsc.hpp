@@ -572,7 +572,7 @@ struct IrscDoneStep {
     IrscDoneAction action;
 };
 
-constexpr IrscDoneStep kIrscDoneTable[] = {
+inline constexpr IrscDoneStep kIrscDoneTable[] = {
     { kIrscInit,         kAck },
     { kIrscStart,        kAck },
     { kIrscCtrl,         kAck },
@@ -696,4 +696,3 @@ using IrscDriverAo = coact::Ao<IrscCtx, Hsm<IrscCtx>, IrscTrait>;
 struct IrscTrait;
 
 }  // namespace isp_demo
-

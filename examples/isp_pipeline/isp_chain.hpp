@@ -576,7 +576,12 @@ struct FusedNodeBase {
             return;
         }
         Layout* done = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(ctx.done_signal);
-        if (nullptr == done) { return; }
+        if (nullptr == done) {
+            *hit = IoMeta{};
+            if (ctx.in_flight > 0U) { --ctx.in_flight; }
+            ++ctx.irq_rejects;
+            return;
+        }
         // Ownership transfer: the parked descriptor moves into the outgoing
         // event; the ring slot is reset in the same step (std::exchange).
         done->meta = std::exchange(*hit, IoMeta{});
@@ -742,4 +747,3 @@ using TempChainAo = coact::Ao<FusedNodeCtx, Hsm<FusedNodeCtx>, AoTrait<49>>;
 
 
 }  // namespace isp_demo
-

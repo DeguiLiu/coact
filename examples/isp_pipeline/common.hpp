@@ -157,7 +157,7 @@ struct PreviewCmdInfo {
 // Mode 1 -> MIPI 640x514@30 PIC_TEMP, NV12 SOUT, direct output.
 // Mode 4 -> MIPI 1920x1442@30 PIC_TEMP, NV12 SOUT, direct output.
 // Mode 5 -> USB  1920x1442@3  PIC_TEMP, NV12 SOUT, direct output (USB2 low-fps).
-constexpr PreviewCmdInfo kProductModes[] = {
+inline constexpr PreviewCmdInfo kProductModes[] = {
     { ArchStream::kPicTemp, Itf::kUsbS0,          640U,  514U,  30U, SoutMode::kNoSout,       StreamMode::kDmo, OutFmt::kYuv422, true  }, // 0
     { ArchStream::kPicTemp, Itf::kMipiTx0CsiS0,   640U,  514U,  30U, SoutMode::kYuv420spNv12, StreamMode::kDmo, OutFmt::kYuv422, true  }, // 1
     { ArchStream::kPicTemp, Itf::kUsbS0,          640U,  514U,  30U, SoutMode::kNoSout,       StreamMode::kDmo, OutFmt::kYuv422, false }, // 2
@@ -167,7 +167,7 @@ constexpr PreviewCmdInfo kProductModes[] = {
 };
 
 // Mirror of RS500_CALI branch (all PIC_ONLY Y16 3LOOP).
-constexpr PreviewCmdInfo kCaliModes[] = {
+inline constexpr PreviewCmdInfo kCaliModes[] = {
     { ArchStream::kPicOnly, Itf::kUsbS0,          640U,  512U,  30U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16, true }, // 0
     { ArchStream::kPicOnly, Itf::kMipiTx0CsiS0,   1920U, 1440U, 30U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16, true }, // 1
     { ArchStream::kPicOnly, Itf::kUsbS0,          1920U, 1440U, 5U,  SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16, true }, // 2
@@ -276,7 +276,7 @@ struct NodeLatency {
     uint32_t pic_video_us;
     uint32_t temp_video_us;
 };
-constexpr NodeLatency kLat{300, 400, 600, 200, 300, 500, 400, 300};
+inline constexpr NodeLatency kLat{300, 400, 600, 200, 300, 500, 400, 300};
 
 // Async-channel latencies (modeled by the non-AO workers; see WorkerBase).
 constexpr uint32_t kIrscCmdLatencyUs = 500U;   // vdcmd rt_device_control
@@ -747,7 +747,7 @@ private:
 };
 
 // Compiled enum name tables: value -> label at compile time.
-constexpr const char* kSigNames[] = {
+inline constexpr const char* kSigNames[] = {
     "?0", "kBoot", "kInitPreview", "kStopPreview", "kPhaseEnter", "kIrscCmd",
     "kIspCmd", "kVideoCmd", "kIrscReady", "kIspReady", "kVideoReady",
     "kFrameIrscOut", "kLowGainDone", "kHighGainDone", "kHlFused",
@@ -947,4 +947,3 @@ struct DmoQuiescePolicy {
 using DmoQuiesce = DmoQuiescePolicy<kDmoQuiesceVerified>;
 
 }  // namespace isp_demo
-

@@ -192,6 +192,7 @@ InitError RtThread::initialize() noexcept
     }
     if (RT_EOK != rt_sem_init(res_->join_sem_obj, "coact_join", 0U,
                               RT_IPC_FLAG_PRIO)) {
+        rt_sem_detach(res_->wake_sem_obj);
         last_error_ = InitError::kSemInitFailed;
         state_      = Lifecycle::kInitFailed;
         return last_error_;
@@ -201,6 +202,8 @@ InitError RtThread::initialize() noexcept
         res_->thread_obj, "coact_disp", &RtThread::dispatcher_thread_entry,
         this, res_->stack_base, stack, 10U, 10U);
     if (RT_EOK != terr) {
+        rt_sem_detach(res_->join_sem_obj);
+        rt_sem_detach(res_->wake_sem_obj);
         last_error_ = InitError::kThreadInitFailed;
         state_      = Lifecycle::kInitFailed;
         return last_error_;
@@ -533,8 +536,8 @@ void RtThread::cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noe
     const rt_int32_t ticks = (0U == timeout_ms || kWaitForever == timeout_ms)
         ? static_cast<rt_int32_t>(RT_WAITING_FOREVER)
         : detail::dispatcher_wait_ticks(timeout_ms);
-    rt_mutex_release(&m.mtx);
     c.waiters.fetch_add(1U, std::memory_order_relaxed);
+    rt_mutex_release(&m.mtx);
     (void)rt_sem_take(&c.sem, ticks);
     c.waiters.fetch_sub(1U, std::memory_order_relaxed);
     rt_mutex_take(&m.mtx, static_cast<rt_int32_t>(RT_WAITING_FOREVER));
@@ -542,7 +545,9 @@ void RtThread::cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noe
 
 void RtThread::cond_signal(CondHandle& c) noexcept
 {
-    rt_sem_release(&c.sem);
+    if (0U != c.waiters.load(std::memory_order_acquire)) {
+        rt_sem_release(&c.sem);
+    }
 }
 
 void RtThread::cond_broadcast(CondHandle& c) noexcept
@@ -551,7 +556,7 @@ void RtThread::cond_broadcast(CondHandle& c) noexcept
        (the counter is incremented before the blocking take, so a racing
        signaler's release is never lost; extra releases beyond the waiter set
        would leave stray tokens that break the next wait's blocking). */
-    const uint32_t n = c.waiters.load(std::memory_order_relaxed);
+    const uint32_t n = c.waiters.load(std::memory_order_acquire);
     for (uint32_t i = 0U; i < n; ++i) {
         rt_sem_release(&c.sem);
     }
@@ -625,17 +630,22 @@ bool RtThread::thread_create(ThreadHandle& t, ThreadEntry entry,
     if (RT_EOK != rt_sem_init(&slot->join_sem, "coact_wjoin", 0U,
                               RT_IPC_FLAG_PRIO)) {
         slot->in_use = false;
+        slot->user_ctx = nullptr;
         return false;
     }
     if (RT_EOK != rt_thread_init(&slot->thread, "coact_worker",
                                  &RtThread::worker_thread_entry, slot,
                                  slot->stack_base, slot->stack_bytes,
                                  10U, 10U)) {
+        rt_sem_detach(&slot->join_sem);
         slot->in_use = false;
+        slot->user_ctx = nullptr;
         return false;
     }
     if (RT_EOK != rt_thread_startup(&slot->thread)) {
+        rt_sem_detach(&slot->join_sem);
         slot->in_use = false;
+        slot->user_ctx = nullptr;
         return false;
     }
     t.valid = true;

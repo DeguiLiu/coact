@@ -116,7 +116,7 @@ inline void coro_sleep_us(coact::coro::posix::Coroutine& co,
 {
     (void)co.yield(coact::coro::posix::YieldRequest{
         coact::coro::posix::WaitReason::kSleep,
-        now_us() + static_cast<uint64_t>(us), 0U});
+        now_us() * 1000ULL + static_cast<uint64_t>(us) * 1000ULL, 0U});
 }
 
 // Hook the PAL installs so the pump materializes deferred thread_create
@@ -135,7 +135,7 @@ inline void* pump_trampoline(void* /*arg*/) noexcept
         }
     }
     /* Drain: retire every remaining coroutine after stop was requested. */
-    for (int pass = 0; pass < 20000; ++pass) {
+    for (uint32_t pass = 0U; pass < 20000U; ++pass) {
         if (0U == g_exec->run_once()) {
             break;
         }

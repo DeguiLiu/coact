@@ -714,7 +714,12 @@ struct PicPackNode : VideoPackNode<PicPackNode> {
         if (nullptr == hit) { ++ctx.pic_sout_stale; return; }
         Layout* out = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(
             static_cast<uint16_t>(Sig::kPicPacked));
-        if (nullptr == out) { return; }
+        if (nullptr == out) {
+            *hit = IoMeta{};
+            if (ctx.pic_in_flight > 0U) { --ctx.pic_in_flight; }
+            ++ctx.pic_sout_rejects;
+            return;
+        }
         out->meta = std::exchange(*hit, IoMeta{});   // ownership moves out
         out->meta.payload_kind = 1U;
         Payload* p = reinterpret_cast<Payload*>(&out->payload[0]);
@@ -766,7 +771,12 @@ struct TempPackNode : VideoPackNode<TempPackNode> {
         if (nullptr == hit) { ++ctx.temp_sout_stale; return; }
         Layout* out = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(
             static_cast<uint16_t>(Sig::kTempPacked));
-        if (nullptr == out) { return; }
+        if (nullptr == out) {
+            *hit = IoMeta{};
+            if (ctx.temp_in_flight > 0U) { --ctx.temp_in_flight; }
+            ++ctx.temp_sout_rejects;
+            return;
+        }
         out->meta = std::exchange(*hit, IoMeta{});   // ownership moves out
         out->meta.payload_kind = 2U;
         Payload* p = reinterpret_cast<Payload*>(&out->payload[0]);
@@ -931,4 +941,3 @@ using VideoPackAo = coact::Ao<VideoPackCtx, Hsm<VideoPackCtx>, AoTrait<45>>;
 
 
 }  // namespace isp_demo
-
