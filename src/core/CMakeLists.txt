@@ -11,6 +11,11 @@ target_include_directories(test_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 coact_add_test(test_expected test_expected.cpp)
 target_include_directories(test_expected PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
+# Vocabulary types (NewType / ScopeGuard / optional / FixedFunction /
+# function_ref / FixedString / FixedVector), adapted from newosp.
+coact_add_test(test_vocabulary test_vocabulary.cpp)
+target_include_directories(test_vocabulary PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
 coact_add_test(test_integration
     test_integration.cpp
     pal_posix.cpp)

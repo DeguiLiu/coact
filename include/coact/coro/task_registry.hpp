@@ -107,7 +107,7 @@ public:
                 slots_[i].waiter_signal = signal;
                 slots_[i].qos = qos;
                 const TaskId id =
-                    TaskId::make(TaskSlotId(i), slots_[i].generation);
+                    make_task_id(TaskSlotId(i), slots_[i].generation);
                 TaskPair pair{TaskT(*this, id), PromiseT(*this, id)};
                 return Expected<TaskPair, TaskError>::success(
                     std::move(pair));
@@ -313,7 +313,7 @@ private:
         if (kInvalidTaskId == id) {
             return nullptr;
         }
-        const uint16_t index = id.slot().value;
+        const uint16_t index = slot_of(id).value;
         if (index >= Capacity) {
             return nullptr;
         }
@@ -321,7 +321,7 @@ private:
         if (detail::TaskSlotState::kFree == slot.state) {
             return nullptr;
         }
-        if (slot.generation != id.generation()) {
+        if (slot.generation != generation_of(id)) {
             return nullptr;  // stale handle from a released incarnation
         }
         return &slot;
@@ -352,7 +352,7 @@ private:
             slot.release();
             return Expected<void, TaskError>::error(TaskError::kPoolExhausted);
         }
-        block->meta.task_id = id.raw();
+        block->meta.task_id = id.value();
         block->meta.status = static_cast<uint8_t>(status);
         block->meta.reserved = 0U;
         block->meta.error_code = static_cast<uint32_t>(err);

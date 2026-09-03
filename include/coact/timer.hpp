@@ -60,22 +60,17 @@
 #include "coact/event.hpp"
 #include "coact/expected.hpp"
 #include "coact/pool.hpp"
+#include "coact/vocabulary.hpp"
 
 namespace coact {
 
 // ---------------------------------------------------------------------------
-// Timer task identity. Lightweight explicit wrapper in the TargetId style:
-// explicit construction keeps arbitrary integers from silently becoming a
-// timer id; kInvalidTimerTaskId (0) is never handed out by schedule_*().
+// Timer task identity. NewType alias in the TargetId style: explicit
+// construction keeps arbitrary integers from silently becoming a timer id;
+// kInvalidTimerTaskId (0) is never handed out by schedule_*().
 // ---------------------------------------------------------------------------
-struct TimerTaskId {
-    uint32_t value = 0U;
-    constexpr TimerTaskId() noexcept = default;
-    constexpr explicit TimerTaskId(uint32_t v) noexcept : value(v) {}
-    constexpr uint32_t raw() const noexcept { return value; }
-    constexpr bool operator==(TimerTaskId o) const noexcept { return value == o.value; }
-    constexpr bool operator!=(TimerTaskId o) const noexcept { return value != o.value; }
-};
+struct TimerTaskTag {};
+using TimerTaskId = coact::NewType<uint32_t, TimerTaskTag>;
 inline constexpr TimerTaskId kInvalidTimerTaskId(0U);
 static_assert(sizeof(TimerTaskId) == 4U, "coact: TimerTaskId must be zero-overhead");
 
@@ -241,7 +236,7 @@ public:
     {
         std::lock_guard<std::mutex> lock(mutex_);
         for (uint32_t i = 0U; i < MaxTasks; ++i) {
-            if (slots_[i].active && slots_[i].id == task_id.raw()) {
+            if (slots_[i].active && slots_[i].id == task_id.value()) {
                 slots_[i].active = false;
                 return Expected<void, TimerError>::success();
             }
