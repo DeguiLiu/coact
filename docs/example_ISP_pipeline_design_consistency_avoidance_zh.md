@@ -83,6 +83,8 @@ flowchart LR
     PROBLEM ==>|"结构性归纳"| ANSWER
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style PROBLEM color:#1f2937
+    style ANSWER color:#1f2937
 ```
 
 *图 1（首张彩色图，图例：红=问题/错误/回滚，黄=输入/等待/停稳，蓝=处理/编排/AO，青=数据/DDR，紫=Dispatcher/检查/寄存器镜像，绿=输出/成功/提交；后续各图沿用）：病灶与对策的对应——U1～U9 在后续章节分别给出具体输入、输出和断言。*
@@ -135,6 +137,8 @@ flowchart TB
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
     classDef new fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style OLD color:#1f2937
+    style NEW color:#1f2937
 ```
 
 *图 2（黄=传统调用序列，红=错误，蓝=事件事务处理，绿=隔离防线）：调用序列 vs 事件事务。单 RTC 步骤的原子性来自执行模型串行化；跨事件的隔离来自停稳/守卫/延后发布四道防线，不来自串行化本身。*
@@ -176,7 +180,7 @@ IRSC 探测器的多步初始化用命令表驱动（`kIrscCmdSequence`），每
 
 **规避数据流**：权威结构 `active_geom` 由 `RecfgOrchestrator` 独占——`rcEnterPrecheck`（Idle→Quiescing 弧动作）快照 `old_geom_snap`、推算 `target_geom = apply_magx(active_geom, m)`；Applying 阶段 `rcEnterApply` 注释明言"SINGLE-AUTHORITY rule: every layer reads target_geom"，寄存器写入只引用 `target_geom`；Commit 阶段 `std::exchange` 最后落笔。下游消费者（DDR 环容量、打包器、WRAPE 封帧、Sink 校验）全部读同一结构，`active_geom` 的写者只有事务终局一处。
 
-**自检验证**：断言 `reconfig: committed frame matches authority geometry`（`observed_frame_bytes == active_geom.bytes_per_frame()`）把硬件观测帧长与权威公式输出对齐——任何一层私自重算都会在此暴露。另有 T37 侧 `T37: downstream geometry constant across X1<->X2 rounds`（`g_wrape.configured_frame_bytes == kOutFrameBytes`）从输出端再次锁定口径唯一。
+**自检验证**：断言 `reconfig: committed frame matches authority geometry`（`observed_frame_bytes == active_geom.bytes_per_frame()`）把硬件观测帧长与唯一帧长公式的输出对齐——任何一层私自重算都会在此暴露。另有 T37 侧 `T37: downstream geometry constant across X1<->X2 rounds`（`g_wrape.configured_frame_bytes == kOutFrameBytes`）从输出端再次锁定口径唯一。
 
 ```mermaid
 flowchart LR
@@ -196,6 +200,8 @@ flowchart LR
     DRIFT ~~~ AUTHORITY
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style DRIFT color:#1f2937
+    style AUTHORITY color:#1f2937
 ```
 
 *图 3（红=错误，绿=修复）：计算口径不一致的本质是公式复制；单一权威把公式收敛为一个函数，全部下游层读同一结构。*
@@ -265,6 +271,8 @@ flowchart LR
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
     classDef warn fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style FAULT color:#1f2937
+    style CLEAN color:#1f2937
 ```
 
 *图 5（红=错误/回滚侧，黄=等待校验，绿=成功提交）：同一事务的两条终局。错误配置被硬件证据否决，正确配置才被软件承认；两条泳道的分叉点只有注入标志的有无。*
@@ -316,6 +324,8 @@ flowchart TB
     classDef zoom fill:#ede9fe,stroke:#7c3aed,color:#3b0764
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef out fill:#ffedd5,stroke:#ea580c,color:#7c2d12
+    style MODES color:#1f2937
+    style ZOOM color:#1f2937
 ```
 
 *图 6（蓝=输入/处理，紫=变换块，绿=成功/恒定输出）：Identity Zoom 让"不一致"无从发生——下游几何在模式切换前后是同一个值。*
@@ -481,6 +491,7 @@ flowchart LR
     classDef w8 fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef ok fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    style WINDOW color:#1f2937
 ```
 
 *图 9（蓝=稳态，红=尖峰/丢帧，黄=3 缓冲窗，绿=8 缓冲窗/通过）：峰值破窗模型。同一个尖峰，不同缓冲深度两种命运——丢帧是容量问题，不是平均性能问题。*
@@ -546,7 +557,7 @@ sequenceDiagram
 [anomaly] garbled (fixed): shared width authority -> 0 corrupted
 ```
 
-**自检验证**：断言 `garbled: width mismatch corrupts pixels`（`garbled_pairs > 0`）与 `garbled: shared width authority is lossless`（`garbled_fixed == 0`）PASS。数据面全程经 DDR 环的字节保真校验（断言 `PIC data plane byte-exact` / `TEMP data plane byte-exact`，即 `wrape.byte_mismatch == 0 && mipi.byte_mismatch == 0`）把这一类故障纳入每一次运行的常规检查。
+**自检验证**：断言 `garbled: width mismatch corrupts pixels`（`garbled_pairs > 0`）与 `garbled: shared width authority is lossless`（`garbled_fixed == 0`）PASS。数据面全程经 DDR 环的字节级校验（断言 `PIC data plane byte-exact` / `TEMP data plane byte-exact`，即 `wrape.byte_mismatch == 0 && mipi.byte_mismatch == 0`）把这一类故障纳入每一次运行的常规检查。
 
 ---
 
@@ -558,8 +569,8 @@ sequenceDiagram
 
 | 示例 | 覆盖异常 | 验证的不变量 | 对应 RS500 文档 | 自检断言 | ctest |
 |---|---|---|---|---|---|
-| `isp_pipeline_demo`（数据面/编排面） | 全链路基线 | 每帧字节保真（变换链逐字节复算）、路由标签正确、帧数不缺、事件池零泄漏 | 复盘踩坑 Preview Start 流程 | `PIC/TEMP data plane byte-exact`、`route tags correct`、`event pool fully reclaimed` 等 | 通过 |
-| `isp_pipeline_demo`（U1） | 计算口径不一致 | 提交帧长 == 权威公式输出 | 原子重配 §2.3 模式一 | `reconfig: committed frame matches authority geometry` | 通过 |
+| `isp_pipeline_demo`（数据面/编排面） | 全链路基线 | 每帧字节级校验（变换链逐字节复算）、路由标签正确、帧数不缺、事件池零泄漏 | 复盘踩坑 Preview Start 流程 | `PIC/TEMP data plane byte-exact`、`route tags correct`、`event pool fully reclaimed` 等 | 通过 |
+| `isp_pipeline_demo`（U1） | 计算口径不一致 | 提交帧长 == 唯一帧长公式输出 | 原子重配 §2.3 模式一 | `reconfig: committed frame matches authority geometry` | 通过 |
 | `isp_pipeline_demo`（U2） | 新旧交替 | 恰好一次提交、X4 拒绝 + DMO 模式拒绝 + X2 回滚、版本推进 | 原子重配 §4.5 / §5.2 | `reconfig: exactly one commit` / `X4 precheck reject + DMO full-rebuild reject + X2 fault rollback` / `DMO partial-reconfig rejected at precheck` / `layout_version advanced` | 通过 |
 | `isp_pipeline_demo`（U3，T37 阶段） | 提前封帧 | 四点观察（配置/计数/payload/帧序）+ 10 轮切换稳定性 | T37 UVC 文档 §6 板测要求 | `err_eof==3`、`complete==42`、`truncated==3 / frames==45 / gaps==0`、`min/max payload`、`zoom 恒 active`、`WRAPE 配置恒定` 等 | 通过 |
 | `isp_pipeline_demo`（U4/U5/U6） | 参数回灌 / 废弃地址 / 坐标失同步 | 旁路配对零漂移、冻结窗前置拒绝、脏集全提交、旧地址查即作废、镜像映射正确 | 缓存一致性 §2.1 / §2.2 / §2.3 | scenario B/C/D 组断言、`stale address record invalidated` | 通过 |
@@ -567,7 +578,7 @@ sequenceDiagram
 | `isp_pipeline_demo`（U8/U9/花屏） | 峰值破窗 / 半停闪屏 / 位宽错配 | 故障发生侧 + 修复消除侧双侧对照 | 花屏丢帧闪屏文档 §三 / §四 | `dropped`、`flicker`、`garbled` 三组各两条断言 | 通过 |
 | `flash_proxy_demo` | 资源独占串行化、请求/响应、扇出 | 单一权威的拥有者模式基础（与本文九类问题无直接证据关系，作为扩展阅读） | — | 输出验证 | ctest 通过 |
 
-自检断言按平面分组：数据面（收帧数、字节保真、路由标签、事件池零泄漏）、编排面（IRSC 4 步回执、ISP 8 节点 init ack、合并视频 FSM 回 IDLE）、重配面（恰好一次提交、X4/DMO 拒绝 + X2 回滚、提交帧匹配权威、版本推进）、停稳面（事件 3 ioctl vs 轮询更多）、缓存面（scenario A-D 四组）、异常面（花屏/丢帧/闪屏各故障与修复双侧）、T37 面（err_eof/complete/truncated/frames/gaps、min/max payload、zoom 恒 active、WRAPE 配置恒定）。
+自检断言按平面分组：数据面（收帧数、字节级校验、路由标签、事件池零泄漏）、编排面（IRSC 4 步回执、ISP 8 节点 init ack、合并视频 FSM 回 IDLE）、重配面（恰好一次提交、X4/DMO 拒绝 + X2 回滚、提交帧匹配权威、版本推进）、停稳面（事件 3 ioctl vs 轮询更多）、缓存面（scenario A-D 四组）、异常面（花屏/丢帧/闪屏各故障与修复双侧）、T37 面（err_eof/complete/truncated/frames/gaps、min/max payload、zoom 恒 active、WRAPE 配置恒定）。
 
 ### 4.2 九类异常的处理归纳
 
@@ -599,6 +610,9 @@ flowchart TB
     BYCONFIRM ==> A3
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
     classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style BYWRITEPATH color:#1f2937
+    style BYPROPAGATION color:#1f2937
+    style BYCONFIRM color:#1f2937
 ```
 
 *图 11（红=异常，绿=机制）：九类异常按“分布式状态契约不一致”三分法归纳为三个机制。归纳不是事后归类，而是示例设计的出发点——示例先定三个机制，再按机制反向构造九类异常的复现场景；对应表述见 4.3 结论第 2 条。*
@@ -608,7 +622,7 @@ flowchart TB
 1. **九类异常同源**：全部是"多模块对同一业务事实、更新时序或完成条件契约不一致"的结构性后果，其中六类具象为"同一事实两份记录、更新失同步"（U1/U2/U4/U5/U9 及花屏），U3/U7/U8 则是写者滞后、能力分叉与容量对等等其他契约不一致形态。花屏位宽错配（3.10）、闪屏首帧口径（3.9）、提前封帧（3.3）在数学形态上互相吻合（25% 截断）——形态相同是同一结构病灶的旁证，但 U1 与 U3 的证据域不同（运行态重配 vs T37 链路），不能等同根因。
 2. **事件驱动是结构性方案**：单一权威（每字段一个写者）、事件事务（整体化 + 提交边界）、统一确认语义（停稳弧/容量窗口）三个机制分别对应三类契约不一致，且都是结构性约束——Dispatcher 保证单 RTC 步骤不可被并发执行，跨事件隔离由停稳/守卫（IRSC 侧示范的门控模式，全流冻结待扩展）/提交边界/延后发布共同保证；违反单一写者的代码在审查中可机械识别，而非依赖运行期运气。
 3. **故障先复现，再验证处理结果**：示例注入 X2 截断、裸旁路回灌、竞走重启、位宽错配和时延尖峰，并对故障侧和处理侧分别设置断言。
-4. **验证是流程级而非单元级**：自检覆盖从数据面字节保真到事务终局（提交/回滚）的全链路不变量；isp_pipeline_demo T37 阶段的四点观察（配置/计数/payload/帧序）与 10 轮切换稳定性对应 T37 文档 §6 的板测要求。所有结论来自 host POSIX 模拟，RS500 板级验证尚未覆盖。
+4. **验证是流程级而非单元级**：自检覆盖从数据面字节级校验到事务终局（提交/回滚）的全链路不变量；isp_pipeline_demo T37 阶段的四点观察（配置/计数/payload/帧序）与 10 轮切换稳定性对应 T37 文档 §6 的板测要求。所有结论来自 host POSIX 模拟，RS500 板级验证尚未覆盖。
 5. **诚实的边界**：硬件无原子提交点（原子重配文档 §4.4 的平台现实）时，软件事务只能把不一致窗口压缩到不可观察，而非归零。示例的提交边界设计——软件权威最后落笔、失败快照回滚——正是这一工程现实的直接表达：宁可回滚一次，绝不提交一个被硬件否决的配置。示例的"回滚"指软件快照恢复，不含硬件寄存器逆序补偿。
 
 

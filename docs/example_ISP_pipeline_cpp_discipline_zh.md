@@ -68,6 +68,8 @@ flowchart TB
     COMPILE ~~~ RUNTIME
     classDef c fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef r fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style COMPILE color:#1f2937
+    style RUNTIME color:#1f2937
 ```
 
 *图 1（蓝=编译期，绿=运行期）：工程纪律的分工——一致性假设尽量在编译期变成类型错误，运行期只留不可编译化的少量动作。*
@@ -128,6 +130,8 @@ flowchart LR
     RAW ~~~ MODERN
     classDef ptr fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef ref fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style RAW color:#1f2937
+    style MODERN color:#1f2937
 ```
 
 *图 2（黄=裸指针合法域，绿=现代所有权）：指针治理边界。裸指针只保留三个不可替代的语义位，其余所有权表达全部现代化。*

@@ -160,6 +160,9 @@ flowchart LR
     classDef hardware fill:#fef3c7,stroke:#d97706,color:#78350f
     classDef frame fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef register fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    style WORKERS color:#1f2937
+    style AOS color:#1f2937
+    style BB color:#1f2937
 ```
 
 *图 3：AO 与三块黑板的读写关系。编排器/重配 AO 写入配置，数据 AO 写入 DDR，输出 AO 主要读取；寄存器镜像通过版本号和审计结果支持重配判断。*
@@ -254,6 +257,8 @@ flowchart LR
     classDef control fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef data fill:#cffafe,stroke:#0891b2,color:#083344
     classDef sink fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style WORKERS color:#1f2937
+    style AOS color:#1f2937
 ```
 
 *图 4：AO action 将 job 写入 WQ，WQ 再连接到 6 个接收任务的 worker；IrscWorker 不连接 WQ，因为它自主产帧。所有 worker 完成后再将事件送入消息中心，进入 14 个 AO 的事件队列。*

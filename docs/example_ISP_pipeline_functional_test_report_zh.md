@@ -19,7 +19,7 @@ flowchart LR
     subgraph ASSERT["自检断言五组（66 项 check）"]
         direction TB
         B1["链路不变量<br/>帧计数/帧序无间隙"]:::f2
-        B2["数据面字节保真<br/>dn→lg/hg→fus→exp 公式"]:::f2
+        B2["数据面字节级校验<br/>dn→lg/hg→fus→exp 公式"]:::f2
         B3["一致性异常复现+修复<br/>U1-U9 + 花屏"]:::f3
         B4["worker 交互协议<br/>命令-中断确认闭环"]:::f2
         B5["资源回收<br/>pool.used==0"]:::f2
@@ -30,6 +30,8 @@ flowchart LR
     classDef f1 fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef f2 fill:#dcfce7,stroke:#16a34a,color:#14532d
     classDef f3 fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    style BOOT color:#1f2937
+    style ASSERT color:#1f2937
 ```
 
 被测功能链（蓝）逐环节映射到断言组（绿=不变量核对，红=故障复现与修复验证）。
@@ -41,7 +43,7 @@ flowchart LR
 示例程序在 main() 末尾执行自检，逐项核对运行终态和不变量；任一失败打印 `[FAIL]` 并以非零退出码结束。断言分五组：
 
 1. **链路不变量**：各 AO 帧计数（IRSC 30 帧 → 双增益链 → HL 融合 → enhance/tpd → PIC/TEMP 打包 → WRAPE 封帧 45 帧 → WinHost 收帧 45），帧序连续无间隙（gaps==0）。
-2. **数据面字节保真**：确定性字节公式贯穿全链（dn/lg/hg/fus/exp 逐级变换），WRAPE 校验 byte_mismatch==0；DDR 槽位帧戳（placement new FrameStamp）读侧 frame_id 守卫。
+2. **数据面字节级校验**：确定性字节公式贯穿全链（dn/lg/hg/fus/exp 逐级变换），WRAPE 校验 byte_mismatch==0；DDR 槽位帧戳（placement new FrameStamp）读侧 frame_id 守卫。
 3. **一致性异常复现与规避**：U1-U9 + 花屏逐类"先复现故障、再验证修复"（如 Scenario A 参数回灌断言 hw 0xBEEF→0x1002 被旧参数覆盖、B 修复侧 new drift==0、C 冻结期 sync 拒绝 refused==1、T37 提前封帧 payload==655360 精确复现）。
 4. **worker 交互协议**：7 实例 executed/rejected 计数、CmdDmaWorker executed == IRSC step_count == 4（命令-中断确认闭环）、事件池终态 used==0（零泄漏，hwm 记录峰值）。
 5. **资源回收**：pool.used==0、AO 在途等待计数归零（停机排空不丢完成事件）。

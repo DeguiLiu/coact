@@ -248,7 +248,3 @@ flowchart LR
 ```
 
 *图 4：三对核心取舍——共同方向是把复杂度从运行期迁移到编译期与类型系统。*
-
----
-
-*事实依据：`include/coact/{event,pool,queue,hsm,ao,staging,monitor,policy,coordinator,dispatcher,runtime,pal_*.hpp}`、`CMakeLists.txt`（`-fno-exceptions -fno-rtti`）。*

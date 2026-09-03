@@ -164,7 +164,3 @@ cmake --build build_bench --target bench_hotpath -j
     --hz 1000 --seconds 5 --sample staged.folded
 python3 tools/flamegraph_svg.py staged.folded staged.svg "coact staged 1c/100Hz"
 ```
-
----
-
-*事实依据：`src/core/bench_hotpath.cpp`（ITIMER_PROF 采样器、双 mode、亲和性、时钟量化、`skip_frame`）、`tools/flamegraph_svg.py`、`include/coact/pool.hpp`（`RttSingleCoreProfile` / `HostSmpProfile` 双后端、`pool_backoff`、`BatchedReclaimer` / `ReclaimBatcher`、`pool_reclaim_chain`）、`include/coact/dispatcher.hpp`（per-dequeue `now_ns`、idle 唤醒）、`src/core/CMakeLists.txt`（`bench_hotpath` 的 `-O2 -g -fno-omit-frame-pointer -rdynamic`）。*

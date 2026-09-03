@@ -233,7 +233,3 @@ flowchart LR
 ## 五、收束
 
 coact 把主动对象模式、静态表驱动 HSM 与无锁事件管线合成一体，面向 RT-Thread 单核 MCU，同时以 ARM-Linux 承担开发与验证。它位于中断与任务生产方、业务主动对象之间，提供确定、零拷贝、无锁的事件调度背板。对需要确定性与低资源开销的嵌入式项目，这套框架提供了一个可直接采用的事件驱动底座。
-
----
-
-*实现依据：`include/coact/{event,pool,queue,hsm,ao,staging,monitor,policy,coordinator,dispatcher,runtime,pal_*.hpp}`、`CMakeLists.txt`；示例见 `examples/`。*
