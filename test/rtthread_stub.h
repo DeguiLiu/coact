@@ -309,6 +309,7 @@ inline void rt_thread_mdelay(int ms) noexcept
     nanosleep(&ts, nullptr);
 }
 
+
 /* --- Memory / console --------------------------------------------------- */
 inline void* rt_malloc(rt_size_t n) noexcept { return std::malloc(static_cast<size_t>(n)); }
 inline void  rt_free(void* p)       noexcept { std::free(p); }

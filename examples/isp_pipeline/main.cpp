@@ -593,7 +593,7 @@ int main()
                    && mipi.context().frames_received >= kFrameCount) {
             break;
         }
-        g_pal->sleep_us(5000);   // 阻塞说明：条件轮询的步进间隔（等 30 帧跑完 + AO 队列清空，非裸 sleep）
+        g_pal->sleep_us(5000U);
     }
 
     irsc.stop();
@@ -635,7 +635,7 @@ int main()
             if (SessionState::kRunning == g_session.load(std::memory_order_relaxed)) {
                 return;
             }
-            g_pal->sleep_us(2000);   // 阻塞说明：条件轮询的步进间隔（等 rcGoHome 关闭重配窗口，非裸 sleep）
+            g_pal->sleep_us(2000U);
         }
         // Fallback: the window never closed — surface it as a txn failure.
         ++recfg.context().recfgs_failed;
@@ -659,7 +659,7 @@ int main()
             && RecfgStage::kIdle == recfg.context().stage) {
             break;
         }
-        g_pal->sleep_us(1000);   // 阻塞说明：条件轮询的步进间隔（等 recfg AO 清空回 IDLE，非裸 sleep）
+        g_pal->sleep_us(1000U);
     }
     recfg.context().stream_mode = StreamMode::kDmo;
     request_recfg(SrMagx::kX2, false);
@@ -688,7 +688,7 @@ int main()
             && RecfgStage::kIdle == recfg.context().stage) {
             break;
         }
-        g_pal->sleep_us(1000);   // 阻塞说明：条件轮询的步进间隔（等 recfg AO 清空并回 IDLE，非裸 sleep）
+        g_pal->sleep_us(1000U);
     }
     recfg.context().active_magx = SrMagx::kX1;
     recfg.context().active_geom = FrameGeometry{cmd.width, cmd.height, 2U};
@@ -752,7 +752,7 @@ int main()
             if (winhost.context().frames_received >= baseline_host + t37_fid - kFrameCount) {
                 return;
             }
-            g_pal->sleep_us(1000);   // 阻塞说明：条件轮询的步进间隔（等 WinHost 收到 EOF 帧，非裸 sleep）
+            g_pal->sleep_us(1000U);
         }
     };
 
@@ -942,7 +942,7 @@ int main()
                 && winhost.context().error_interrupts >= 1U) {
                 break;
             }
-            g_pal->sleep_us(1000);   // 阻塞说明：条件轮询的步进间隔（等三个注入错误信号被 AO 计数，非裸 sleep）
+            g_pal->sleep_us(1000U);
         }
     }
 
@@ -1034,7 +1034,7 @@ int main()
                    && videofsm.context().temp.fsm == kVideoIdle) {
             break;
         }
-        g_pal->sleep_us(1000);   // 阻塞说明：条件轮询的步进间隔（等 AO 队列清空 + FSM 回 IDLE，非裸 sleep）
+        g_pal->sleep_us(1000U);
     }
     // T37: the USB DMA engine still ships the last bulk transactions. Drain
     // every EOF into the Windows host BEFORE stopping the engine (stop would
@@ -1050,7 +1050,7 @@ int main()
             && tpd.context().irq_done_count >= tpd.context().irq_subs) {
             break;
         }
-        g_pal->sleep_us(1000);   // 阻塞说明：条件轮询的步进间隔（等各 worker 完成计数到位，非裸 sleep）
+        g_pal->sleep_us(1000U);
     }
     // Session terminal state (every subscriber has reached quiescence).
     session_advance(SessionState::kStopped, "all segments deinit'd");
@@ -1270,6 +1270,13 @@ int main()
           "IspIrqWorker(tpd): requests == completions == frames");
     check(enhance.context().irq_rejects == 0U && tpd.context().irq_rejects == 0U,
           "IspIrqWorker: zero queue-full rejects");
+    check(isp_irq_enh.completion_rejects == 0U
+              && isp_irq_tpd.completion_rejects == 0U
+              && sout_dma.completion_rejects == 0U
+              && mipi_irq.completion_rejects == 0U
+              && cmd_dma.completion_rejects == 0U
+              && usb_dma.completion_rejects == 0U,
+          "IRQ/DMA completion events: zero pool-allocation rejects");
     check(packvid.context().pic_sout_done == packvid.context().pic_frames
               && packvid.context().temp_sout_done == packvid.context().temp_frames,
           "SoutDmaWorker: writebacks == packed frames (PIC and TEMP)");

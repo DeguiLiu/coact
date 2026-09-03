@@ -131,7 +131,7 @@ inline void* pump_trampoline(void* /*arg*/) noexcept
         if (0U == g_exec->run_once()) {
             /* All coroutines parked or finished: brief idle nap (no busy
                spin; the workload is latency-paced, not throughput-paced). */
-            sleep_us_impl(200U);
+            std::this_thread::yield();
         }
     }
     /* Drain: retire every remaining coroutine after stop was requested. */

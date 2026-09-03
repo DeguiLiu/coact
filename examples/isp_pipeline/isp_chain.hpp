@@ -87,6 +87,7 @@ static_assert(std::is_trivially_copyable<bool>::value, "trivial by definition");
 
 struct IspIrqWorker : DemoWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
     TargetId reply_to{};
+    uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "isp_irq"; }
 
     void start(PoolT* p, Rt* r, TargetId node_ao)
@@ -108,6 +109,8 @@ struct IspIrqWorker : DemoWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
             done->meta.frame_id = j.frame_id;
             rt->coordinator().submit_from_task(reply_to, &done->event,
                                                {false, false});
+        } else {
+            ++completion_rejects;
         }
     }
 
@@ -145,6 +148,7 @@ static_assert(std::is_trivially_copyable<SoutJob>::value,
 
 struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
     TargetId reply_to{};
+    uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "sout_dma"; }
 
     void start(PoolT* p, Rt* r, TargetId pack_ao)
@@ -166,6 +170,8 @@ struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
             done->meta.frame_id = j.frame_id;
             rt->coordinator().submit_from_task(reply_to, &done->event,
                                                {false, false});
+        } else {
+            ++completion_rejects;
         }
     }
 };
@@ -178,6 +184,7 @@ struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
 // ---------------------------------------------------------------------------
 struct MipiIrqWorker : DemoWorkerBase<MipiIrqWorker, uint16_t, 2U> {
     TargetId reply_to{};
+    uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "mipi_irq"; }
 
     void start(PoolT* p, Rt* r, TargetId sink_ao)
@@ -198,6 +205,8 @@ struct MipiIrqWorker : DemoWorkerBase<MipiIrqWorker, uint16_t, 2U> {
             done->meta.frame_id = frame_id;
             rt->coordinator().submit_from_task(reply_to, &done->event,
                                                {false, false});
+        } else {
+            ++completion_rejects;
         }
     }
 

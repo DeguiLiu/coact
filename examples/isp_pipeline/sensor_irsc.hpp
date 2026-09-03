@@ -175,6 +175,7 @@ struct UsbDmaWorker {
     TargetId host_target{};
 
     uint32_t transactions_done{0U};
+    uint32_t completion_rejects{0U};
     uint32_t error_interrupts{0U};   // driver-side USB error interrupt count
 
     void start(PoolT* p, Rt* r, TargetId host)
@@ -271,6 +272,8 @@ private:
                 fe->meta.flags = j.err_eof ? 1U : 0U;
                 rt->coordinator().submit_from_task(host_target, &fe->event,
                                                    {false, false});
+            } else {
+                ++completion_rejects;
             }
         }
         std::printf("[worker] usb_dma exited (transactions=%u)\n",
@@ -480,6 +483,7 @@ using DemoWorkerBase = WorkerBase<Derived, Job, kDepthV, DemoPal>;
 // request queue instead (bounded, compile-time, still no blocking).
 struct CmdDmaWorker : DemoWorkerBase<CmdDmaWorker, uint16_t, 4U> {
     TargetId reply_to{};
+    uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "cmd_dma"; }
 
     void start(PoolT* p, Rt* r, TargetId driver)
@@ -501,6 +505,8 @@ struct CmdDmaWorker : DemoWorkerBase<CmdDmaWorker, uint16_t, 4U> {
             done->meta.payload_kind = 3U;
             rt->coordinator().submit_from_task(reply_to, &done->event,
                                                {false, false});
+        } else {
+            ++completion_rejects;
         }
     }
 };
