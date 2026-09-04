@@ -1,23 +1,9 @@
 # coact ISP Pipeline 一致性问题与处理
 
-> 本文说明 `examples/isp_pipeline/` 中各一致性问题的复现方式、处理方式和验证证据。示例为消息级模拟，不代表板级实现。
+> **关联文档**：模块职责与架构分层见 [example_ISP_pipeline_design_architecture_zh.md](example_ISP_pipeline_design_architecture_zh.md)（AO/worker 拓扑与逐模块映射以该文为准）；功能断言及测试方法见 [example_ISP_pipeline_functional_test_report_zh.md](example_ISP_pipeline_functional_test_report_zh.md)；代码评审见 [example_ISP_pipeline_review_record_code_architecture.md](example_ISP_pipeline_review_record_code_architecture.md)；最新 coro 运行逐阶段日志（含 #41 协程修复运行证据）见 [isp_pipeline_demo_run_log_fresh.txt](isp_pipeline_demo_run_log_fresh.txt)。
 >
-> **证据范围**：本文引用的输出来自 host POSIX 模拟（`build/examples/isp_pipeline_demo`，当前默认构建即 coro 模式），不代表 RS500 板级行为。当前构建和测试结果以实际命令输出为准；历史版本的评审结论保留在附录。
->
-> **关联文档**：模块职责与架构分层见 [example_ISP_pipeline_design_architecture_zh.md](example_ISP_pipeline_design_architecture_zh.md)（AO/worker 拓扑与逐模块映射以该文为准）；66 项功能断言及测试方法见 [example_ISP_pipeline_functional_test_report_zh.md](example_ISP_pipeline_functional_test_report_zh.md)；代码评审见 [example_ISP_pipeline_review_record_code_architecture.md](example_ISP_pipeline_review_record_code_architecture.md)；最新 coro 运行逐阶段日志（含 #41 协程修复运行证据）见 [isp_pipeline_demo_run_log_fresh.txt](isp_pipeline_demo_run_log_fresh.txt)。
->
-> **阅读范围**：本文只回答"故障如何产生、如何处理、如何避免复发"。全量模块架构、启动/停机时序、消息中心队列细节不在本文展开，需要时按关联文档跳转。
->
-> **验证基线**（coro 模式，`ISP_DEMO_CORO` 默认构建）：demo 自检 66 项断言 ALL PASS（exit 0），#41 协程修复后的运行证据见 fresh 日志"如何证明 #41 已解决"一节；ctest 52/52。
+> **阅读范围与证据边界**：本文只回答"故障如何产生、如何处理、如何避免复发"，全量模块架构、启动/停机时序、消息中心队列细节按关联文档跳转。示例为消息级模拟；文中输出均来自 host POSIX 模拟（`build/examples/isp_pipeline_demo`，默认 coro 模式），不代表 RS500 板级行为，当前构建和测试结果以实际命令输出为准。
 
-### 推荐阅读顺序
-
-1. 先看第 1 章，了解三类一致性问题的成因框架与示例角色分工。
-2. 再看第 3 章，按 U1～U9 逐项阅读“故障现象→处理方式→断言”。
-3. 第 4 章汇总验证矩阵；C++ 实现约束和指针/所有权规则见 `example_ISP_pipeline_cpp_discipline_zh.md`。
-4. 具体时序回到 `isp_pipeline_demo_run_log_fresh.txt` 查找对应阶段。
-
----
 
 ## 1. 范围与数据流
 
@@ -25,16 +11,6 @@
 
 所有问题都可按三步理解：一个模块更新了值，另一个模块仍使用旧值；新旧值同时参与处理后产生错误；程序通过单一写入口、事件通知和结果确认避免错误继续传播。
 
-```mermaid
-flowchart LR
-    A["模块 A 更新"] --> B["模块 B 仍使用旧值"]
-    B --> C["输出错误"]
-    C --> D["统一写入口"]
-    D --> E["事件通知/冻结"]
-    E --> F["首帧或停稳确认"]
-```
-
-*问题因果简图（示意图，无着色）：左侧是故障产生过程，右侧是修复顺序。后续 U1～U9 均按此顺序说明。*
 
 RS500 各复盘文档反复出现同一类结构性病灶：**多模块对同一业务事实、更新时序或完成条件持有不一致的契约**。最典型的具象是"同一事实存了两份（或多份），更新一份时另一份没跟上"——软件影子对硬件寄存器（U4）、旧几何对新几何（U2/U3/U5）、显示路径对业务坐标（U6）、重启指令对停稳确认（U9）。但这条"两份拷贝"主线不覆盖全部：U7 是能力差异被硬编码进调用路径（写者与机制均只有一份，只是分叉），U8 是峰值时延突破缓冲窗口容量（不存在被复制的记录，是预算契约与实际峰值不对等），U6 的变换多点实现则更接近"更新不原子"。因此本文以上位概念——**分布式状态契约不一致**——为根因框架，三分法如下：
 
@@ -62,7 +38,7 @@ RS500 各复盘文档反复出现同一类结构性病灶：**多模块对同一
 2. **事件传播**（event propagation）：状态变更只能经显式的事件/信号通知下游，禁止"下游下次读时顺便发现"。
 3. **提交边界**（commit boundary）：跨模块提交只在一个被声明的边界发生，且必须以硬件证据（首帧字节校验、停稳 ack）为前提，失败走快照回滚。
 
-coact 的主动对象（Active Object, AO / 主动对象）模型把前两类对策变成**结构性约束**而非编码纪律：每个 AO 只在自己的单线程 RTC（run-to-completion / 运行至完成）步骤里接触自己的状态，Dispatcher / 事件派发器单线程串行化派发，保证单个 RTC 步骤不可被另一 AO handler 并发执行。**注意保证边界**：单 AO 内的 RTC 步骤串行，不等于跨多个事件的完整事务对全系统原子——重配事务 `Quiescing → … → Commit` 跨越多个事件派发点，其他 AO 的事件可以在这些 RTC 步骤之间执行；跨事件的事务隔离由停流命令、`kSoutIdle` 帧边界停稳证据、`RUNNING.RECFG_TXN` 会话窗口内 IRSC 命令通道门控（`irsc_session_open` guard；流塑形冻结为架构预留，未实现）、以及首帧验证后才发布软件快照共同保证（详见 3.2）。
+coact 的主动对象（Active Object, AO / 主动对象）模型把前两类对策变成**结构性约束**而非编码纪律：每个 AO 只在自己的单线程 RTC（run-to-completion / 运行至完成）步骤里接触自己的状态，Dispatcher / 事件派发器单线程串行化派发，保证单个 RTC 步骤不可被另一 AO handler 并发执行。**注意保证边界**：单 AO 的 RTC 步骤串行，不等于跨多个事件的事务对全系统原子；跨事件隔离的四道防线在第 2 章展开（详见 3.2）。
 
 ```mermaid
 flowchart LR
@@ -91,11 +67,11 @@ flowchart LR
 
 ### 1.1 示例数据流
 
-示例（`examples/isp_pipeline/`，多文件模块 + `main.cpp` 编排）建模 RS500 Preview Start 的完整链路；与 RS500 真实模块（`camera_app.c`、`auto_preview_start`、`drv_irsc`、`drv_isp` 八节点、`video_lsv_stream_manager`、`video_com_*`、USB WRAPE / MIPI CSI TX）的逐项映射见架构文档 3.5 节，本文不再重复。全链路为：
+示例（`examples/isp_pipeline/`，多文件模块 + `main.cpp` 编排）建模 RS500 Preview Start 的完整链路；与 RS500 真实模块的逐项映射见架构文档 3.5 节。全链路为：
 
 IRSC 探测器 → 高/低增益 ISP 双链 → HL 融合 → 增强（PIC）/TPD（TEMP）双链 → PIC/TEMP Video 打包 → WRAPE（USB 封帧，判断帧长并生成 EOF）/ MIPI 输出。在此之上叠加四组一致性实验：运行态原子重配（RecfgOrch / 重配编排器 AO）、regmap 缓存协议（PeriphRegCache）、deinit 停稳机制对比（QuiescePolicy）、三类画面异常（花屏/丢帧/闪屏）。
 
-#### 1.1.1 读第 3 章前需知的结构性事实
+**读第 3 章前需知的结构性事实** 
 
 示例装配了 **14 个 AO 与 7 个 worker 实例（6 类）**：AO 经 Dispatcher 单线程派发并持有全部业务状态；worker 只模拟"消息的发生"（异步往返、中断回调模拟），完成事件经 `submit_from_task()` 投回事件面。AO/worker 拓扑、两类队列（14 条 AO 事件队列 vs 6 条 worker 输入队列，`IrscWorker` 无输入队列）与逐模块 RS500 映射见架构文档 3.1/3.4/3.5 节。与故障分析直接相关的三条结构性约束：
 
@@ -103,6 +79,104 @@ IRSC 探测器 → 高/低增益 ISP 双链 → HL 融合 → 增强（PIC）/TP
 2. **合并后的乘积状态**：`VideoFsmAo`（视频状态机）9 态、`VideoPackAo` 4 态；"两路同时停在写回窗口"是表中显式状态。配套 parking ring（按 `frame_id` 匹配释放）是 U2 事务隔离在写回窗口上的延伸（架构展开见架构文档 3.3 节）。
 3. **数据面不经事件载荷**：`Payload` 只携带 DDR 槽位描述符与路由标签，像素走 DDR 黑板——数据与控制的分离使 U3/U8 的字节级校验与窗口计数成为可能。
 
+三条约束的全景由图 2～图 4 给出：图 2 回答"状态住在哪里、谁能写"，图 3 回答"一帧数据经过哪些 AO、事件里流动的是什么"，图 4 回答"帧洪峰下谁先被派发"。层级全景见第 2 章图 6，entry/action 契约见 3.2 节图 9。
+
+```mermaid
+flowchart LR
+    subgraph WPLANE["worker 平面（7 个 worker 实例，只模拟消息的发生）"]
+        direction TB
+        W1["IrscWorker<br/>帧中断产帧"]:::hw
+        W2["IspIrqWorker x2<br/>ISP 节点完成中断"]:::hw
+        W3["SoutDmaWorker<br/>SOUT 二级 DMA 写回"]:::hw
+        W4["UsbDmaWorker<br/>USB Bulk DMA 引擎"]:::hw
+        W5["CmdDmaWorker<br/>vdcmd 命令通道"]:::hw
+        W6["MipiIrqWorker<br/>MIPI CSI TX 完成中断"]:::hw
+    end
+    subgraph EPLANE["事件平面（Dispatcher 单线程 + 14 个 AO）"]
+        direction TB
+        ORCH["Orchestrator / RecfgOrch<br/>编排与重配事务"]:::ctl
+        CHAIN["数据链 AO：low/high gain<br/>hl_fuse / enhance / tpd<br/>video_fsm / video_pack"]:::dat
+        SINK["输出 AO：WRAPE / MipiSink<br/>WinHost / UsbSink"]:::out
+    end
+    subgraph DPLANE["共享只读快照域（三块黑板）"]
+        direction TB
+        B1["硬件状态快照<br/>g_zoom / g_sel / g_wrape"]:::bb
+        B2["帧数据 DDR<br/>DdrCtx 7 区 x 8 槽"]:::bb
+        B3["寄存器镜像<br/>PeriphRegCache / AddrCache"]:::bb
+    end
+    W1 -->|"kFrameIrscOut 等完成事件"| EPLANE
+    W2 --> EPLANE
+    W3 --> EPLANE
+    W4 -->|"kFrameEof"| EPLANE
+    W5 -->|"kIrscDmaDone"| EPLANE
+    W6 -->|"kMipiTxDone"| EPLANE
+    EPLANE -->|"读写经 Dispatcher 串行化"| DPLANE
+    classDef hw fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef ctl fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef dat fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    classDef out fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef bb fill:#cffafe,stroke:#0891b2,color:#083344
+```
+
+*图 2（黄=worker，蓝=编排 AO，紫=数据链 AO，绿=输出 AO，青=共享数据域）：三平面总览——业务状态全部住在 14 个 AO 里由 Dispatcher 串行化；worker 只产生事件，与 AO 的全部耦合就是 `submit_from_task()`，没有共享可变状态跨越边界。*
+
+约束 1 的"AO 写黑板、worker 只发事件"在图里是泳道之间的单向边；三块共享域也不是经典黑板（多生产者轮询），而是各有独立写者与失效协议的单写者只读快照域——写者唯一性在 3.1～3.6 各节就地核对，域划分与失效协议见架构文档 2.2 节。
+
+```mermaid
+flowchart LR
+    ORCH["OrchestratorAo<br/>Phase 编排"]:::ctl -.->|"kIrscCmd"| IRSC["IrscDriverAo"]:::ctl
+    IRSC -.->|"kIrscReady x4"| ORCH
+    W1["IrscWorker"]:::hw -->|"kFrameIrscOut"| LOW["LowGainAo"]:::node
+    W1 -->|"kFrameIrscOut"| HIGH["HighGainAo"]:::node
+    LOW -->|"kLowGainDone"| HL["HlFuseAo<br/>fan-in 配对 frame_id"]:::node
+    HIGH -->|"kHighGainDone"| HL
+    HL -->|"kHlFused flags=0"| ENH["EnhanceAo<br/>Active/IrqPending"]:::node
+    HL -->|"kHlFused flags=1"| TPD["TempChainAo<br/>Active/IrqPending"]:::node
+    ENH -->|"kEnhanceDone"| PACK["VideoPackAo<br/>PIC_SOUT/TEMP_SOUT 窗口"]:::pack
+    TPD -->|"kTempChainDone"| PACK
+    PACK -->|"kPicPacked"| WRAPE["WrapeAo 封帧"]:::sink
+    PACK -->|"kTempPacked"| MIPI["MipiSinkAo<br/>ACTIVE/TX_PENDING"]:::sink
+    WRAPE -->|"Job 递交"| UDMA["UsbDmaWorker"]:::hw
+    UDMA -->|"kFrameEof"| WH["WinHostAo"]:::sink
+    classDef ctl fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef node fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    classDef pack fill:#ffedd5,stroke:#ea580c,color:#7c2d12
+    classDef sink fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef hw fill:#fef3c7,stroke:#d97706,color:#78350f
+```
+
+*图 3（蓝=编排/控制面，紫=数据链 AO，橙=打包 AO，绿=输出 AO，黄=worker）：数据链 AO 拓扑。虚线为控制面（命令/回执），实线为数据面推进信号；像素全程走 DDR，事件只携带槽位描述符——即上文约束 3。*
+
+图 3 是第 3 章各实验共同的数据通路底座：U1/U2 的口径与事务发生在紫色 AO 与 `RecfgOrchAo` 上，U3 的截断发生在 `WrapeAo → UsbDmaWorker → WinHostAo` 一条边上——各节的故障注入点都能在这张图上定位。
+
+```mermaid
+flowchart LR
+    P1["提交方<br/>submit_from_task / try_submit_from_isr"]:::p --> STAGE
+    subgraph STAGE["staging 三分区（目标 AO 的 PriorityClass 是分区唯一权威）"]
+        direction TB
+        H["High 分区 32<br/>OrchestratorAo<br/>控制面回执收集"]:::h
+        N["Normal 分区 64<br/>数据链 12 个 AO<br/>（含 IrscDriver / RecfgOrch / WRAPE / MIPI）"]:::n
+        L["Low 分区 128<br/>WinHostAo<br/>观察者"]:::l
+    end
+    STAGE -->|"批序 High -> Normal -> Low<br/>例外：Low 老化超 100ms 强制先服务"| D["Dispatcher 单线程批派发"]:::d
+    D --> AO["各 AO 的 RTC 步骤<br/>（lease 互斥 + RTC 预算）"]:::o
+    classDef h fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef n fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef l fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef p fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    classDef d fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef o fill:#cffafe,stroke:#0891b2,color:#083344
+```
+
+*图 4（红=High 分区，蓝=Normal 分区，绿=Low 分区，紫=提交方，黄=Dispatcher，青=AO 执行步骤）：三分区优先级派发。目标 AO 的 `PriorityClass` 是分区选择的唯一权威；批序 High→Normal→Low，唯一例外是 Low 事件老化超过 100ms 强制先服务。*
+
+分区派发回答"过载时先保谁"：编排回执在高分区不与帧洪峰竞争，纯遥测的 `WinHostAo` 可容忍老化；3.2 节事务的停稳/首帧证据事件（`kSoutIdle`/`kFirstFrame`）另走 `EventQos::critical` 豁免过载丢弃。一句话：**事务的证据链事件豁免丢弃，数据面与观察面事件接受诚实的过载背压**。
+
+| 级别 | AO 集合 | 判据 |
+|---|---|---|
+| High | `OrchestratorAo` | 编排回执收集：控制面 ack 不得在帧洪峰后老化 |
+| Normal | `IrscDriverAo`/`RecfgOrchAo`/`LowGainAo`/`HighGainAo`/`HlFuseAo`/`EnhanceAo`/`TempChainAo`/`VideoFsmAo`/`VideoPackAo`/`WrapeAo`/`MipiSinkAo`/`UsbSinkAo` | 数据面主链与驱动/事务 AO，帧率级吞吐；命令往返事件量小且受 QoS critical 豁免保护 |
+| Low | `WinHostAo` | 纯遥测观察者，可延迟、可老化，不影响出流 |
 
 ---
 
@@ -115,8 +189,6 @@ coact 把同一件事变成**一次事件事务**：业务层提交一个携带�
 1. **单次 RTC 步骤的原子性**：Dispatcher 保证单个 AO 的单次 handler 执行不可被另一 AO handler 并发执行——同一状态的两个访问不会交错。这是结构性约束，不需要锁。
 2. **跨事件的事务隔离**：重配事务 `Quiescing → Applying → Syncing → Resuming → Commit` 跨越多个事件派发点，其他 AO 事件可以在这些 RTC 步骤之间执行。阻止业务数据观察到中间配置的不是串行化本身，而是四道附加防线：数据面已收到停流命令（`rcQuiescingEntry` 发 `SOUT_STOP`，当前实现为内联模拟）；`kSoutIdle` 提供帧边界停稳证据；`g_session` 处于 `RUNNING.RECFG_TXN` 窗口内（会话门控的当前实现仅覆盖 IRSC 命令通道——`irsc_session_open` guard 在 RECFG_TXN 期间拒绝 IRSC 命令；video/pack/enhance/tpd 无冻结 guard，全流冻结为架构预留，未实现）；首帧验证完成前不发布新软件快照。
 3. **并发原子操作**：`std::exchange` **不是**原子操作，不提供任何线程安全保证。它解决的是"取旧值与赋新值在单线程所有权前提下一步完成"的代码表达问题（提交点不留旧副本），不能替代 `std::atomic`、锁或单线程所有权。跨线程共享的状态（如 `g_session`）用的是 `std::atomic` 并以 `is_always_lock_free` 锁定。
-
-简言之：Dispatcher 保证单个 RTC 步骤不可被另一 AO handler 并发执行；跨 RTC 的事务隔离由停稳确认、状态守卫（IRSC 侧示范的门控模式，全流冻结待扩展）、提交边界和最终发布共同保证。中间态对其他 AO 不可见不是因为硬件有原子交换点（原子重配文档 §4.4 已明确平台没有），而是因为**可见窗口被上述防线压缩到每次发布之后、下次发布之前**。
 
 ```mermaid
 flowchart TB
@@ -141,9 +213,80 @@ flowchart TB
     style NEW color:#1f2937
 ```
 
-*图 2（黄=传统调用序列，红=错误，蓝=事件事务处理，绿=隔离防线）：调用序列 vs 事件事务。单 RTC 步骤的原子性来自执行模型串行化；跨事件的隔离来自停稳/守卫/延后发布四道防线，不来自串行化本身。*
+*图 5（黄=传统调用序列，红=错误，蓝=事件事务处理，绿=隔离防线）：调用序列 vs 事件事务。单 RTC 步骤的原子性来自执行模型串行化；跨事件的隔离来自停稳/守卫/延后发布四道防线，不来自串行化本身。*
 
-图 3 补充：下排 `NEW` 泳道的四个蓝色节点对应 3.2 节 `RecfgOrchestrator` 的真实弧——`kRecfgReq` 事件（携带目标倍率）进入 Idle→Quiescing 弧，`rcEnterApply` 在单个 RTC 步骤内按依赖序（AI→DMA→几何→时钟）应用全部变更，`kFirstFrame` 首帧校验即提交边界。
+图 5 补充：下排 `NEW` 泳道的四个蓝色节点对应 3.2 节 `RecfgOrchestrator` 的真实弧——`kRecfgReq` 事件（携带目标倍率）进入 Idle→Quiescing 弧，`rcEnterApply` 在单个 RTC 步骤内按依赖序（AI→DMA→几何→时钟）应用全部变更，`kFirstFrame` 首帧校验即提交边界。
+
+图 6 把上一节的"四道防线"放到真实的层级结构上：它回答的问题是**会话相位如何门控各段 AO**——14 个 AO 按 BOOT/INIT、RUNNING、DEINIT/STOPPED 三个相位归属，重配事务窗口 `RUNNING.RECFG_TXN` 嵌在 RUNNING 之内，worker 只以完成事件回边挂在所属 AO 上。
+
+```mermaid
+flowchart LR
+    subgraph SYS["系统会话层：g_session 主 HSM 复合状态（kSessionState 广播门控）"]
+        direction LR
+        subgraph BOOT["BOOT / INIT"]
+            direction TB
+            ORCH["OrchestratorAo<br/>编排：回执收集"]:::ao
+            IRSC["IrscDriverAo<br/>IRSC 4 步命令<br/>Root/Active"]:::ao
+        end
+        subgraph RUNNING["RUNNING（流塑形窗口开放）"]
+            direction TB
+            subgraph SEGS["流水线段层：组合树（SessionEventComposite 固定段数组）"]
+                direction TB
+                subgraph SEG1["传感器段"]
+                    W1["IrscWorker<br/>帧中断产帧"]:::hw
+                end
+                subgraph SEG2["ISP 双链段"]
+                    direction LR
+                    LOW["LowGainAo"]:::ao
+                    HIGH["HighGainAo"]:::ao
+                    HL["HlFuseAo<br/>fan-in"]:::ao
+                    ENH["EnhanceAo<br/>Active/IrqPending"]:::ao
+                    TPD["TempChainAo<br/>Active/IrqPending"]:::ao
+                    W2a["IspIrqWorker<br/>(enhance)"]:::hw
+                    W2b["IspIrqWorker<br/>(tpd)"]:::hw
+                end
+                subgraph SEG3["视频段（合并 AO：乘积态子 FSM）"]
+                    direction TB
+                    VFSM["VideoFsmAo<br/>PIC x TEMP 3x3 乘积态"]:::ao
+                    VPACK["VideoPackAo<br/>PIC/TEMP_SOUT 2x2 乘积态"]:::ao
+                    W3["SoutDmaWorker<br/>SOUT 写回"]:::hw
+                end
+                subgraph SEG4["输出段"]
+                    WRAPE["WrapeAo<br/>封帧裁决"]:::ao
+                    MIPI["MipiSinkAo<br/>ACTIVE/TX_PENDING"]:::ao
+                    USB["UsbSinkAo<br/>idle 断言位"]:::ao
+                    WH["WinHostAo<br/>四点观察者"]:::ao
+                    W4["UsbDmaWorker<br/>Bulk 引擎"]:::hw
+                    W6["MipiIrqWorker<br/>TX 完成"]:::hw
+                end
+            end
+            subgraph RECFG["RUNNING.RECFG_TXN（事务窗口：会话门控）"]
+                direction LR
+                RC["RecfgOrchAo<br/>8 态事务 HSM"]:::ao
+                RT["RecfgStage 诊断镜像<br/>Idle..Commit"]:::fsm
+            end
+        end
+        subgraph DEINIT["DEINIT / STOPPED"]
+            direction TB
+            CMD["CmdDmaWorker<br/>vdcmd 命令通道"]:::hw
+        end
+    end
+    W1 -->|"kFrameIrscOut"| LOW
+    W1 -->|"kFrameIrscOut"| HIGH
+    W2a -.->|"kIspNodeDone"| ENH
+    W2b -.->|"kIspNodeDone"| TPD
+    W3 -.->|"kSoutDone 路径标记"| VPACK
+    W4 -.->|"kFrameEof"| WH
+    W6 -.->|"kMipiTxDone"| MIPI
+    CMD -.->|"kIrscDmaDone"| IRSC
+    classDef ao fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef hw fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef fsm fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+```
+
+*图 6（蓝=AO/编排与处理，黄=worker，紫=AO 内部子状态镜像）：层次嵌套全景。AO 落在哪个相位框，就是它在哪个会话阶段被门控放行；紫色是 AO 内部的子状态镜像，不是第二套状态机。*
+
+门控的实际强度要按 3.2 节的结论读：`RECFG_TXN` 窗口开启时冻结的是 **IRSC 命令通道**（`irsc_session_open` guard），video/pack/enhance/tpd 的全流冻结仍是架构预留；`SoutDmaWorker` 单实例以路径标记服务 `VideoPackAo` 双流、`IspIrqWorker` 两个实例各归一条独立中断线，这正是第 2 章"跨事件隔离靠停稳证据而非串行化本身"在拓扑上的落点。AO 之间的数据面推进事件为控制画面密度未画，完整链路见 1.1.1 节图 3。
 
 ### 2.1 三条可检查的纪律
 
@@ -204,7 +347,7 @@ flowchart LR
     style AUTHORITY color:#1f2937
 ```
 
-*图 3（红=错误，绿=修复）：计算口径不一致的本质是公式复制；单一权威把公式收敛为一个函数，全部下游层读同一结构。*
+*图 7（红=错误，绿=修复）：计算口径不一致的本质是公式复制；单一权威把公式收敛为一个函数，全部下游层读同一结构。*
 
 ### 3.2 U2 新旧交替：重配事务冻结窗口（HSM）
 
@@ -212,21 +355,11 @@ flowchart LR
 
 **示例复现**：`inject_stale_sout` 标志（`RecfgAoCtx` 成员，请求事件 `cmd_arg` 的 0x100 位注入）——Applying 阶段 SOUT 按旧 X1 几何封帧而 AI 已产 X2 流，新旧交替窗口被显式制造，输出 5537280B 截断帧（22149120B 的 25%）。另有 X4 拒绝路径：`SrMagx::kX4` 在请求词汇表里存在，但能力矩阵 `magx_supported()` 处处拒绝——对应文档"脏 NVM 的 X4 过了 sanitize 却在运行期重配失败"的发现。
 
-**规避数据流**：`RecfgOrchAo`（优先级 61，`kRecfgStates` 为 Root + 7 个业务状态共 8 表项，`kRecfgTransitions` 11 弧——7 条业务弧 + 4 条 stale `kRecfgStage` 吸收弧，全部 `inline const` 编译期表）。与源码逐弧核实的实际拓扑为（业务弧）：
-
-```text
-Idle --kRecfgReq/rcEnterPrecheck--> Quiescing（预检失败时 action 内拒绝并自驱回 Idle）
-Quiescing --kSoutIdle/rcEnterApply--> Applying（at_quiesce 守卫）
-Applying --kRecfgStage/rcEnterSync--> Syncing
-Syncing --kRecfgStage/rcGoHome--> Resuming
-Resuming --kFirstFrame/rcEnterCommit--> Commit（at_resume 守卫）
-Commit --kRecfgStage/rcGoHome--> Idle
-Quiescing --kRecfgStage/rcGoHome--> Idle（拒绝终局弧）
-```
+**规避数据流**：`RecfgOrchAo`（优先级 61）的 `kRecfgStates` 为 Root + 7 个业务状态共 8 表项，`kRecfgTransitions` 11 弧——7 条业务弧 + 4 条 stale `kRecfgStage` 吸收弧，全部 `inline const` 编译期表，逐弧拓扑见图 8。
 
 三点诚实的结构说明（经最终源码逐条核实）：
 
-1. **Precheck 在状态表中声明但没有任何转移进入，是不可达状态**——预检实际发生在 `Idle → Quiescing` 弧的转移动作 `rcEnterPrecheck` 内部（只读校验 + 快照），被拒绝的请求（X4 能力拒绝、DMO 模式拒绝）在 action 内置位拒绝路径并经 `kRecfgStage` 自驱从 Quiescing 终局弧回到 Idle。重构后的改进：终局弧按镜像姿态 guard（`at_reject_home`/`at_commit_home` 只放行当前事务自身的自驱事件），陈旧 `kRecfgStage`（前一笔事务遗留）落到四条 Internal 吸收弧，不再能误杀活事务——这正是压力跑暴露过的交错。`rcGoHome` 已只挂 `kRcCommit→kRcIdle` 与 `kRcQuiesce→kRcIdle` 两条终局弧（`Syncing→Resuming` 弧原曾误用 `rcGoHome`，已修复移除）。剩余架构债：拒绝路径仍是 action 内隐藏分支而非转移表可见弧；评审建议的终局 action 按 Commit/Recover/Reject 拆分尚未落地。
+1. **Precheck 是不可达状态**：预检在 `Idle → Quiescing` 弧动作 `rcEnterPrecheck` 内完成（只读校验 + 快照）；被拒请求（X4 能力拒绝、DMO 模式拒绝）在 action 内走拒绝路径，经 `kRecfgStage` 自驱从 Quiescing 终局弧回 Idle。终局弧按镜像姿态设 guard（`at_reject_home`/`at_commit_home` 只放行当前事务自身的自驱事件），前一笔事务遗留的陈旧 `kRecfgStage` 落到四条 Internal 吸收弧，不会误杀活事务——这是压力跑暴露过的交错。剩余架构债：拒绝路径仍是 action 内隐藏分支，不是转移表可见弧。
 2. **`RecfgStage` 镜像枚举与 HSM 状态不是一一对应**：镜像有 `kCommitted`/`kFailed` 两个终局值，HSM 没有对应状态（Commit 成功/失败在 `rcEnterCommit` 内直接置 `stage = kIdle`）；`kPrecheck` 值从未被设置（预检发生在弧动作里）。镜像的真实角色是**诊断摘要枚举**（供 `recfg_stage_name()` 与恢复代码 switch 使用），不是第二套状态机——但两套词汇并存本身仍是一致性风险。
 3. **`layout_version` 在 Syncing 阶段推进**（见 3.5），先于首帧校验和 Commit——失败尝试也会使旧地址记录失效。这是**有意的保守失效策略**：回滚过程中复用旧布局地址比多一次 cache miss 危险得多。
 
@@ -243,19 +376,36 @@ stateDiagram-v2
     Commit --> Idle : 字节≠权威，快照回滚
 ```
 
-*图 4（与 `kRecfgTransitions` 逐弧核实）：重配事务 HSM。两个回到 Idle 的终局——提交与回滚——都以首帧字节校验为裁决，软件权威最后落笔；Precheck 不是可达状态，预检在 Idle→Quiescing 弧动作内完成。*
+*图 8（与 `kRecfgTransitions` 逐弧核实）：重配事务 HSM，弧上标注触发事件。业务弧动作依次为：Idle→Quiescing `rcEnterPrecheck`、Quiescing→Applying `rcEnterApply`、Applying→Syncing `rcEnterSync`、Syncing→Resuming 与终局回 Idle `rcGoHome`、Resuming→Commit `rcEnterCommit`。两个回到 Idle 的终局——提交与回滚——都以首帧字节校验为裁决，软件权威最后落笔；Precheck 不是可达状态，预检在 Idle→Quiescing 弧动作内完成。*
 
-图 5 补充：`Quiescing → Applying` 只认 `kSoutIdle`（`at_quiesce` 守卫）——这条弧是 3.9 节 U9 停稳约束的载体；`Resuming → Commit` 只认 `kFirstFrame`（`at_resume` 守卫），提交边界不可绕过；`rcQuiescingEntry`/`rcResumeEntry` 是仅有的两个入口动作（硬件命令只在入口动作发出，转移动作在状态切换之前运行、从那里自提交 ack 会与拓扑竞走）。
+图 8 补充：`Quiescing → Applying` 只认 `kSoutIdle`（`at_quiesce` 守卫）——这条弧是 3.9 节 U9 停稳约束的载体；`Resuming → Commit` 只认 `kFirstFrame`（`at_resume` 守卫），提交边界不可绕过；`rcQuiescingEntry`/`rcResumeEntry` 是仅有的两个入口动作（硬件命令只在入口动作发出，转移动作在状态切换之前运行、从那里自提交 ack 会与拓扑竞走）。
 
-**事务窗口的终局自驱关闭**（已落地）：每笔事务的终局路径（X4 Precheck REJECT、DMO 模式拒绝、Commit RECOVER 回滚、clean COMMIT）在终局 action 置 `ctx.stage = kIdle` 后自提交 `kRecfgStage`，汇流至 `rcGoHome` 转移动作，经 `session_advance(kRunning, "recfg txn terminal (self)")` 原子归位；窗口的打开随 `kRecfgReq` 受理（主线程）。四个 pass 各关一次窗（仅窗口打开时 exchange），无双关；coro 运行输出可见 4 次 `recfg txn terminal (self)` 轨迹。窗口由终局动作自驱关闭（评审指出时曾由 demo driver 在 main 侧轮询关闭，该问题已修复）。
+图 9 把"与拓扑竞走"具体化：它回答的问题是**一条转移弧执行时，硬件命令放在哪一步才安全**。这是从历史时序 bug 吸收的契约——转移动作在状态切换之前运行，若从转移动作里自提交完成 ack，弧还没落到目标态、ack 事件已入队，回执会被错误的弧接走。
 
-**测试证据**：demo 注入了文档原始故障（SOUT 按旧 X1 几何封帧，`inject_stale_sout` 标志），事务终局走回滚弧（当前 coro 模式输出）：
-
-```text
-[recfg] FAULT: SOUT frames 5537280 B (stale X1) but stream is 22149120 B (X2) -> truncated
-[recfg] RECOVER: frame 5537280 B != authority 22149120 B -> rollback to old snapshot
-[recfg] COMMIT: active=x2 3840x2884 (22149120 B), observed frame = 22149120 B (authority match)
+```mermaid
+flowchart LR
+    subgraph TRANS["一条 External 弧的执行流水"]
+        direction LR
+        T1["事件到达<br/>guard 评估"]:::g --> T2["转移动作<br/>阶段效果 + ctx.stage 镜像"]:::a --> T3["退出链<br/>exit 到 LCA"]:::x --> T4["进入链<br/>enter 目标路径"]:::x --> T5["入口动作<br/>进入后才发硬件命令"]:::e --> T6["回执事件回到<br/>已拥有流程的状态"]:::r
+    end
+    BAD["在转移动作里<br/>自提交完成 ack"]:::bad
+    T2 -.->|"弧未落态，ack 已入队"| BAD
+    BAD -.->|"与拓扑竞走<br/>历史时序 bug"| RACE["错误弧接走 ack"]:::bad
+    classDef g fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef a fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    classDef x fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef e fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef r fill:#cffafe,stroke:#0891b2,color:#083344
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 ```
+
+*图 9（蓝=guard，紫=转移动作，黄=exit/enter 链，绿=入口动作，青=回执归位，红=竞走错误路径）：entry/action 分层契约。*
+
+分工因此是固定的：**入口动作拥有"进入该状态后发出的硬件命令"，转移动作只拥有"本弧的阶段效果与 `ctx.stage` 镜像推进"**。落点即图 8 的两条弧——`rcQuiescingEntry`（Quiescing 入口）发 SOUT_STOP，帧边界 ack 以 `kSoutIdle` 回到已拥有流程的 Quiescing 态；`rcResumeEntry`（Resuming 入口）发 SOUT_START，首帧驱动 `kFirstFrame` 走提交弧。终局一律经声明的转移回 Idle，绝不直接改状态。
+
+**事务窗口的终局自驱关闭**（已落地）：每笔事务的终局路径（X4 Precheck REJECT、DMO 模式拒绝、Commit RECOVER 回滚、clean COMMIT）在终局 action 置 `ctx.stage = kIdle` 后自提交 `kRecfgStage`，汇流至 `rcGoHome` 转移动作，经 `session_advance(kRunning, "recfg txn terminal (self)")` 原子归位；窗口的打开随 `kRecfgReq` 受理（主线程）。四个 pass 各关一次窗（仅窗口打开时 exchange），无双关；coro 运行输出可见 4 次 `recfg txn terminal (self)` 轨迹。
+
+**测试证据**（coro 模式输出）：demo 注入了 `inject_stale_sout`，事务终局走回滚弧：`FAULT: SOUT frames 5537280 B (stale X1) but stream is 22149120 B (X2) -> truncated`；`RECOVER: frame 5537280 B != authority 22149120 B -> rollback to old snapshot`；`COMMIT: active=x2 3840x2884 (22149120 B), observed frame = 22149120 B (authority match)`。
 
 两类截断的比例都为 25%，但证据域不同。重配场景通过提交次数、失败次数和 `layout_version` 断言验证。
 
@@ -275,9 +425,9 @@ flowchart LR
     style CLEAN color:#1f2937
 ```
 
-*图 5（红=错误/回滚侧，黄=等待校验，绿=成功提交）：同一事务的两条终局。错误配置被硬件证据否决，正确配置才被软件承认；两条泳道的分叉点只有注入标志的有无。*
+*图 10（红=错误/回滚侧，黄=等待校验，绿=成功提交）：同一事务的两条终局。错误配置被硬件证据否决，正确配置才被软件承认；两条泳道的分叉点只有注入标志的有无。*
 
-图 6 补充：上排 `F1` 即 `rcEnterApply` 的故障注入分支（`observed_frame_bytes = old_geom_snap.bytes_per_frame()`），`F3` 是回滚赋值 `ctx.active_geom = ctx.old_geom_snap`——软件权威从未承认被硬件否决的配置；下排 `G3` 的 `std::exchange(target_geom, FrameGeometry{})` 在提交后连旧副本都不留。
+图 10 补充：上排 `F1` 即 `rcEnterApply` 的故障注入分支（`observed_frame_bytes = old_geom_snap.bytes_per_frame()`），`F3` 是回滚赋值 `ctx.active_geom = ctx.old_geom_snap`——软件权威从未承认被硬件否决的配置；下排 `G3` 的 `std::exchange(target_geom, FrameGeometry{})` 在提交后连旧副本都不留。
 
 ### 3.3 U3 X2 提前封帧：Identity Zoom 固定下游几何
 
@@ -285,22 +435,13 @@ flowchart LR
 
 **示例复现**：T37 UVC 阶段的 Phase 2——测试驱动器把 `g_wrape.configured_frame_bytes = kX1FrameBytes`（655360）并置 `g_wrape.stale_x1_framing = true`，随后经 `t37_send_frame()` 向 WRAPE AO 投 `kPicPacked` 事件；`onPicPackedWrape` 的封帧裁决发现实际帧 2621440B 大于配置值 655360B，按 X1 边界发 `ERR+EOF`，`UsbDmaWorker` 搬运截断 payload、`WinHostAo` 记为 truncated——字节边界与 T37 抓包逐位一致。`kX1FrameBytes`/`kOutFrameBytes`/`kStreamVldNum` 三个协议常量由 `static_assert` 锁定文档证据值。
 
-**规避数据流**：Identity Zoom——不修 RTL，而是让下游几何在两种模式下恒定。Zoom 块 `g_zoom` 始终激活：X1 输入时 2 倍放大（`kZoomStep2x=128`）、X2 输入时恒等直通（`kZoomStepIdentity=256`，即恒等步长），USB 对外永远 1280x1024。`configured_frame_bytes` 的写者是 **demo 测试驱动器**（阶段切换时在 `main()` 直接设定），`WrapeAo` 是该配置的消费者与封帧几何的唯一应用者；WinHost AO 只读帧终局。这是 AO 单写路径纪律的已知豁免——测试驱动器作为"产测工具"绕过事件面直写配置（与 U4 产测旁路同构），文档如实承认这一点；下游几何从未变化，"配置滞后于数据"这个时序问题被转化为"不存在配置变化"的结构问题。
+**规避数据流**：Identity Zoom——不修 RTL，而是让下游几何在两种模式下恒定。Zoom 块 `g_zoom` 始终激活：X1 输入时 2 倍放大（`kZoomStep2x=128`）、X2 输入时恒等直通（`kZoomStepIdentity=256`，即恒等步长），USB 对外永远 1280x1024。`configured_frame_bytes` 的写者是 **demo 测试驱动器**（阶段切换时在 `main()` 直接设定），`WrapeAo` 是该配置的消费者与封帧几何的唯一应用者；WinHost AO 只读帧终局。这是 AO 单写路径纪律的已知豁免——测试驱动器作为"产测工具"绕过事件面直写配置（与 U4 产测旁路同构）；下游几何从未变化，"配置滞后于数据"这个时序问题被转化为"不存在配置变化"的结构问题。
 
-**测试证据**来自 `isp_pipeline_demo` 的 coro 模拟运行（默认构建即 coro）；具体测试数量和结果以当前构建输出为准：
+**测试证据**（coro 模式输出）：
 
-```text
-baseline: X1 开流出图                     → 30 完整帧
-phase 2: X2 直出（无规避，T37 故障）      → 3 帧 655360B ERR+EOF（25% 截断，复现 T37 抓包值）
-phase 3: X2 + Identity Zoom              → 2 完整帧
-phase 4: X1↔X2 交替 ×10 轮               → 10 轮各 1 帧（payload=2621440B）
-wrape:   framed=45 complete=42 err_eof=3 byte_mismatch=0
-winhost: frames=45 truncated=3 min=655360 max=2621440 gaps=0
-pool.used=0（事件池零泄漏）
-RESULT: ALL PASS (fails=0)
-```
+`baseline: X1 开流出图 → 30 完整帧`；`phase 2: X2 直出（无规避，T37 故障）→ 3 帧 655360B ERR+EOF（25% 截断）`；`phase 3: X2 + Identity Zoom → 2 完整帧`；`phase 4: X1↔X2 交替 ×10 轮 → 10 轮各 1 帧（payload=2621440B）`；`wrape: framed=45 complete=42 err_eof=3 byte_mismatch=0`；`winhost: frames=45 truncated=3 min=655360 max=2621440 gaps=0`；`pool.used=0`；`RESULT: ALL PASS (fails=0)`。
 
-**自检验证**：`err_eof==3 / truncated==3` 且 `min_payload==655360B`（断言 `T37: truncated payload is the stale X1 length`）复现 T37 抓包的截断值（U3 的证据域是 T37 链路的 655360/2621440 字节边界，与 U1 运行态重配的 5537280/22149120 是不同场景，仅数学形态相同，见附录 4.4 裁决第 5 条）；`complete==42 / frames==45 / gaps==0`（断言 `T37: Windows host received every frame EOF` 与 `T37: no frame gaps on the host`）覆盖全部 45 帧含故障帧——提前封帧不等于丢帧，这是 T37 文档"禁止误解"第一条的语义区分，在测试里成立；`max_payload==2621440B`、`zoom 恒 active`（`g_zoom.active`）与 WRAPE 配置恒 2621440（`T37: downstream geometry constant across X1<->X2 rounds`）共同验证 Identity Zoom 让下游几何结构恒定。
+**自检验证**：`err_eof==3 / truncated==3` 且 `min_payload==655360B`（断言 `T37: truncated payload is the stale X1 length`）复现 T37 抓包的截断值（U3 的证据域是 T37 链路的 655360/2621440 字节边界，与 U1 运行态重配的 5537280/22149120 是不同场景，仅数学形态相同，)；`complete==42 / frames==45 / gaps==0`（断言 `T37: Windows host received every frame EOF` 与 `T37: no frame gaps on the host`）覆盖全部 45 帧含故障帧——提前封帧不等于丢帧，这是 T37 文档"禁止误解"第一条的语义区分，在测试里成立；`max_payload==2621440B`、`zoom 恒 active`（`g_zoom.active`）与 WRAPE 配置恒 2621440（`T37: downstream geometry constant across X1<->X2 rounds`）共同验证 Identity Zoom 让下游几何结构恒定。
 
 ```mermaid
 flowchart TB
@@ -328,9 +469,9 @@ flowchart TB
     style ZOOM color:#1f2937
 ```
 
-*图 6（蓝=输入/处理，紫=变换块，绿=成功/恒定输出）：Identity Zoom 让"不一致"无从发生——下游几何在模式切换前后是同一个值。*
+*图 11（蓝=输入/处理，紫=变换块，绿=成功/恒定输出）：Identity Zoom 让"不一致"无从发生——下游几何在模式切换前后是同一个值。*
 
-图 7 补充：`ZOOM` 泳道两个紫色节点即 `g_zoom.step` 在 `kZoomStep2x`/`kZoomStepIdentity` 间交替的取值（Phase 4 循环按轮次切换），但 `g_zoom.active` 恒为真；`WRAPE` 节点的 2621440B 是 `g_wrape.configured_frame_bytes` 在 Phase 3 之后不再改变的值，自检断言直接核对该字段。
+图 11 补充：`ZOOM` 泳道两个紫色节点即 `g_zoom.step` 在 `kZoomStep2x`/`kZoomStepIdentity` 间交替的取值（Phase 4 循环按轮次切换），但 `g_zoom.active` 恒为真；`WRAPE` 节点的 2621440B 是 `g_wrape.configured_frame_bytes` 在 Phase 3 之后不再改变的值，自检断言直接核对该字段。
 
 ### 3.4 U4 参数回灌：regmap 三标志协议 + RAII BypassGuard
 
@@ -338,24 +479,15 @@ flowchart TB
 
 **示例复现**：Scenario A 的裸旁路——测试驱动器直接置 `cache_bypass = true`（不建 guard）、`write(2, 0xBEEF)`、退出时不清标志也不 resync，随后 `audit()` 打出分叉 `cache=0x1002 hw=0xbeef`，再调 `full_repush()` 把过期影子回灌硬件。
 
-**规避数据流**：`PeriphRegCache` 以三个布尔标志（`cache_only` / `cache_bypass` / `cache_dirty`）定义完整缓存协议，`write()` 是唯一写入口：默认写穿（硬件与影子同一函数内更新，硬件成功才更新影子）；`cache_bypass` 只写硬件（产测），必须配对——`BypassGuard` 构造置标志、析构复位并 `resync_from_hw()`，任何退出路径（含提前 return）都不可能漏掉对账；`cache_only` 冻结窗口内参数只进影子并置 `cache_dirty`，帧边界经 `sync()` 收敛点整体提交，`sync()` 在仍处于 cache_only 时返回失败（对应 regmap 的 `-EINVAL` 前置条件："未真正写入的状态拒绝提交"）。运行期另有漂移审计器 `audit()`：周期性比对影子与硬件，只报警不修复。写者唯一性可机械审查：影子只有 `write()`/`resync_from_hw()`/`sync()` 三个写点，全部在协议内。
+**规避数据流**：`PeriphRegCache` 以三个布尔标志（`cache_only` / `cache_bypass` / `cache_dirty`）定义完整缓存协议，`write()` 是唯一写入口：默认写穿（硬件与影子同一函数内更新，硬件成功才更新影子）；`cache_bypass` 只写硬件（产测），必须配对——`BypassGuard` 构造置标志、析构复位并 `resync_from_hw()`，任何退出路径（含提前 return）都不可能漏掉对账；`cache_only` 冻结窗口内参数只进影子并置 `cache_dirty`，帧边界经 `sync()` 收敛点整体提交，`sync()` 在仍处于 cache_only 时返回失败（对应 regmap 的 `-EINVAL` 前置条件："未真正写入的状态拒绝提交"）。运行期另有漂移审计器 `audit()`：周期性比对影子与硬件，只报警不修复。
 
-**测试证据**（四场景，scenario A-D，当前 coro 模式输出）：
+**测试证据**（coro 模式输出，scenario A-D）：`after bare bypass: reg 2/5 drift cache=0x1002/0x1005 hw=0xbeef/0xcafe`；`scenario A: full repush overwrote tuned hw 0xbeef -> 0x1002 (silent param backflow)`；`scenario B: paired bypass resynced`；`scenario C: sync during freeze refused=1`、`sync at boundary ok=1`。
 
-```text
-[audit] after bare bypass: reg 2 drift cache=0x1002 hw=0xbeef
-[audit] after bare bypass: reg 5 drift cache=0x1005 hw=0xcafe
-[cache] scenario A: full repush overwrote tuned hw 0xbeef -> 0x1002 (silent param backflow)
-[cache] scenario B: paired bypass resynced (total drift=2, new drift=0)
-[cache] scenario C: sync during freeze refused=1 (precondition assert)
-[cache] scenario C: sync at boundary ok=1 (frame-atomic commit)
-```
+**自检验证**，当前断言组：
 
-**自检验证（断言强度局限已于重构修复）**：早期版本的三条断言问题（恒真断言、日志语义相反、修复侧未断言）已在最终形态中全部修复，当前断言组为：
-
-- **Scenario A**：`hw_before_repush == 0xBEEF` 记录回灌前的硬件值，`hw_after_repush == 0x1002` 验证回灌覆盖了调优值。
-- **Scenario B**：日志改为同时打印 `total drift` 与 `new drift`（前后 `drift_events` 差值）；断言 `scenario B env: bare-bypass drift was observed (cumulative)` 锁定环境前件、`scenario B fix: paired bypass introduces zero new drift`（差值为 0）证明配对 guard 零新增漂移，与逐寄存器比对断言 `scenario B: paired bypass left zero drift` 语义一致。
-- **Scenario C**：变量语义修正为 `sync_refused = !sync_succeeded`（`sync()` 返回 false 即拒绝），断言 `scenario C: sync during freeze is refused` 直接证明冻结期提交被拒，`exactly one sync commit` 与 `dirty set fully flushed` 锁定边界提交。
+- **Scenario A**：`hw_before_repush == 0xBEEF` 记录回灌前的硬件值，`hw_after_repush == 0x1002` 验证回灌覆盖了调优值。`total drift`/`new drift` 分别为累计漂移与配对旁路新增漂移（前后 `drift_events` 差值）。
+- **Scenario B**：断言 `scenario B env: bare-bypass drift was observed (cumulative)` 锁定环境前件；`scenario B fix: paired bypass introduces zero new drift`（新增差值为 0）证明配对 guard 不引入漂移。
+- **Scenario C**：`sync()` 在冻结期返回 false 即拒绝，断言 `scenario C: sync during freeze is refused` 证明之；`exactly one sync commit` 与 `dirty set fully flushed` 锁定帧边界提交。
 
 ```mermaid
 flowchart TB
@@ -374,9 +506,9 @@ flowchart TB
     classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
 ```
 
-*图 7（紫=写入口/检查，蓝=冻结缓存，黄=旁路等待，绿=成功提交，红=故障注入）：regmap 风格三模式协议。红色虚线是故障注入路径——正是 §2.1 的产测回灌场景，被漂移审计器当场抓出。*
+*图 12（紫=写入口/检查，蓝=冻结缓存，黄=旁路等待，绿=成功提交，红=故障注入）：regmap 风格三模式协议。红色虚线是故障注入路径——即本节 Scenario A 的产测回灌场景（缓存一致性文档 §2.1），被漂移审计器当场抓出。*
 
-图 8 补充：黄色 `BP` 分支的出弧指向 `BG`——`BypassGuard` 析构函数（`cache_bypass = false; resync_from_hw();`），配对性由 RAII 生命周期保证；红色 `BAD` 节点只有从 `M` 的虚线弧可达——即绕过 guard 的裸旁路（Scenario A 的注入路径），它的下游不是任何修复节点，而是 `audit()` 的当场报警。
+图 12 补充：黄色 `BP` 分支的出弧指向 `BG`——`BypassGuard` 析构函数（`cache_bypass = false; resync_from_hw();`），配对性由 RAII 生命周期保证；红色 `BAD` 节点只有从 `M` 的虚线弧可达——即绕过 guard 的裸旁路（Scenario A 的注入路径），它的下游不是任何修复节点，而是 `audit()` 的当场报警。
 
 ### 3.5 U5 废弃地址：layout_version 查即作废
 
@@ -384,14 +516,9 @@ flowchart TB
 
 **示例复现**：装配期 `g_addr_cache.store(0xA0000000)` 写入一条 v1 时代的地址记录；重配事务 Pass 2（故障注入轮）走完 `rcEnterSync` 后，测试驱动器对同一缓存发起 `query()`——若没有版本护栏，这条记录仍会"命中"并把陈旧地址交给调用方。
 
-**规避数据流**：版本号护栏。每条地址缓存记录（`AddrRecord`）携带创建时的 `layout_version`；`rcEnterSync` 用 `std::exchange` 推进版本号并同步 `g_addr_cache.layout_version`；`AddrCache::query` 只在 `rec.valid && rec.version == layout_version` 时命中，版本不匹配即 miss 且就地清空记录（`rec = AddrRecord{}`）——**旧记录在第一次被查询时就死掉**，不存在"命中旧值"的路径。注意版本推进的语义是**每次进入 Syncing 时保守失效**，不是"只在几何真正变更后推进"——故障注入轮即使随后 Commit 失败，版本也已从 1 推进到 2。这是有意选择的保守策略：失败尝试同样使旧地址记录失效，避免回滚过程中错误复用旧布局地址；代价是版本号不等价于"已提交布局"的计数。`AddrCache::query()` 内"判断版本 + 清空记录"目前仍是带副作用的单一函数，评审建议将其内部拆成纯 Guard（判断版本匹配）与失效 action（清空记录）两步，经最终源码核实尚未落地。`std::exchange` 在此完成的是单线程所有权前提下的"读旧写新一步表达"，非并发原子操作。
+**规避数据流**：版本号护栏。每条地址缓存记录（`AddrRecord`）携带创建时的 `layout_version`；`rcEnterSync` 用 `std::exchange` 推进版本号并同步 `g_addr_cache.layout_version`；`AddrCache::query` 只在 `rec.valid && rec.version == layout_version` 时命中，版本不匹配即 miss 且就地清空记录（`rec = AddrRecord{}`）——**旧记录在第一次被查询时就死掉**，不存在"命中旧值"的路径。注意版本推进的语义是**每次进入 Syncing 时保守失效**，不是"只在几何真正变更后推进"——故障注入轮即使随后 Commit 失败，版本也已从 1 推进到 2。这是有意选择的保守策略：失败尝试同样使旧地址记录失效，避免回滚过程中错误复用旧布局地址；代价是版本号不等价于"已提交布局"的计数。已知待办：`AddrCache::query()` 仍是"判断版本 + 清空记录"的带副作用单一函数，尚未拆分为 guard 与失效动作两步。`std::exchange` 在此完成的是单线程所有权前提下的"读旧写新一步表达"，非并发原子操作。
 
-**测试证据**：
-
-```text
-[recfg] sync: layout_version 1 -> 2 (stale address records die on first query)
-[cache] stale address query after reconfig: MISS (forced reload)
-```
+**测试证据**：`sync: layout_version 1 -> 2 (stale address records die on first query)`；`stale address query after reconfig: MISS (forced reload)`。
 
 **自检验证**：断言 `stale address record invalidated`（`query()` 返回 false）与 `reconfig: layout_version advanced`（终值 3）PASS。与故障路径的对比是本质性的：错误命中是静默数据污染，版本护栏把它变成一次可观测的 miss。
 
@@ -403,21 +530,17 @@ flowchart TB
 
 **规避数据流**：坐标变换只有一个入口。点与矩形的变换全部经 `transform()` 单一权威函数；矩形变换后角点交换并重新归一化（保证 `x0 <= x1`）。显示路径与业务坐标共享同一变换——示例中修复侧 `fixed = transform(box, mirror)`，几何事实变化时不可能只更新一半。
 
-**测试证据**（scenario D）：
-
-```text
-[cache] scenario D: mirror box raw=[100,50..200,150] stale(same)=[100,50..200,150] fixed=[439,539]
-```
+**测试证据**（scenario D）：`mirror box raw=[100,50..200,150] stale(same)=[100,50..200,150] fixed=[439,539]`。
 
 **自检验证**：640 宽水平镜像下 `[100,200]` 必须映射到 `[439,539]`（`639 - 200 = 439`，`639 - 100 = 539`），断言 `scenario D: mirror transform maps [100,200]->[439,539]` PASS。故障侧（stale 等于原坐标）与修复侧（fixed）在同一行输出里直接对比。
 
 ### 3.7 U7 停稳机制差异：QuiescePolicy
 
-**故障事实**（出自《video_pic_stream_deinit_inconsistency.md》（deinit 停稳不一致文档，Change16517））：同一个 PIC deinit 流程里，SOUT 停稳走中断事件——3 个 ioctl、微秒精度、零 CPU 等待；Format888 停稳走轮询——26 个 ioctl、毫秒粒度。现象是同一语义两种时延特征与两种失败模式；根因一句话——**FMT888 寄存器组未暴露 IDLE 中断源，机制分叉是能力差异被硬编码进了调用路径**。分叉本身不是 bug，但长期演化必然漂移。
+**故障事实**（出自 deinit 停稳不一致文档 `video_pic_stream_deinit_inconsistency.md`，Change16517）：同一个 PIC deinit 流程里，SOUT 停稳走中断事件——3 个 ioctl、微秒精度、零 CPU 等待；Format888 停稳走轮询——26 个 ioctl、毫秒粒度。现象是同一语义两种时延特征与两种失败模式；根因一句话——**FMT888 寄存器组未暴露 IDLE 中断源，机制分叉是能力差异被硬编码进了调用路径**。分叉本身不是 bug，但长期演化必然漂移。
 
 **示例复现**：`VideoFsmAo`（视频状态机，PIC+TEMP 合并）的 PIC 流 `kVDeinit` 分支即 Change16517 模拟——`onVideoCmd` 在 PIC 流 deinit 时依次调用 `SoutQuiesce::quiesce(kSoutStopLatencyUs, ...)`（事件路径，3 ioctl）与 `FmtQuiesceNow::quiesce(kFmtStopLatencyUs, ...)`（轮询路径），同一进程内两条路径同时执行并打印 `INCONSISTENT mechanisms` 对比行。
 
-**规避数据流**：统一策略 + 编译期能力门。模板策略 `QuiescePolicy<HasIdleIrq>` 内 `if constexpr` 二选一实例化：`HasIdleIrq=true` 走 `EventQuiesce::wait`（ISR 在硬件 idle 时刻唤醒等待者，us 精度）；`false` 走 `PollQuiesce::wait`（每 tick 一个 STATUS_GET ioctl + `rt_thread_delay(1)` 上下文切换，精度受 `kPollTickUs=1000` 限制）。能力开关 `kFmtHasIdleIrq` 是唯一的平台差异点——中断源未来补上（文档的中期修复方向）时改一个常量即全局切换，`if constexpr` 保证未选中的路径连代码都不实例化。**准确表述**：该策略统一的是调用接口与完成语义，隔离的是能力差异、防止调用方分叉；在 `kFmtHasIdleIrq == false` 时事件与轮询两种底层机制仍然不同（ioctls 数量、精度、失败模式）——"机制分叉"没有被消除，只是被收敛到一处参数化点。
+**规避数据流**：统一策略 + 编译期能力门。模板策略 `QuiescePolicy<HasIdleIrq>` 内 `if constexpr` 二选一实例化：`HasIdleIrq=true` 走 `EventQuiesce::wait`（ISR 在硬件 idle 时刻唤醒等待者，us 精度）；`false` 走 `PollQuiesce::wait`（每 tick 一个 STATUS_GET ioctl + `rt_thread_delay(1)` 上下文切换，精度受 `kPollTickUs=1000` 限制）。能力开关 `kFmtHasIdleIrq` 是唯一的平台差异点——中断源未来补上（文档的中期修复方向）时改一个常量即全局切换，`if constexpr` 保证未选中的路径连代码都不实例化。**准确表述**：该策略统一的是调用接口与完成语义，隔离的是能力差异、防止调用方分叉；
 
 ```cpp
 struct QuiescePolicy {
@@ -428,12 +551,7 @@ using FmtQuiesceNow = QuiescePolicy<kFmtHasIdleIrq>;    // today: poll
 using FmtQuiesceFix = QuiescePolicy<true>;              // after the mid-term fix
 ```
 
-**测试证据**：
-
-```text
-[video/PIC] deinit quiesce: SOUT event-driven (3 ioctls) | FMT888 poll (26 ioctls) -> INCONSISTENT mechanisms
-[video/PIC] deinit quiesce (unified fix): FMT888 event-driven (3 ioctls) -> consistent
-```
+**测试证据**：`SOUT event-driven (3 ioctls) | FMT888 poll (26 ioctls) -> INCONSISTENT mechanisms`；修复后 `FMT888 event-driven (3 ioctls) -> consistent`。
 
 **自检验证**：断言 `SOUT quiesce: 3 ioctls (event)`（`sout_ioctls == 3`，恒定不随时延增长）与 `FMT888 quiesce: poll costs more ioctls than event path`（`fmt_ioctls > sout_ioctls`，轮询开销随 `kFmtStopLatencyUs=25000µs` 排水时延线性放大到 26 个）PASS——两条路径在同一进程内被同时执行与对比，量化了分叉的代价。
 
@@ -453,9 +571,9 @@ flowchart TB
     classDef same fill:#cffafe,stroke:#0891b2,color:#083344
 ```
 
-*图 8（紫=检查/策略，蓝=编排策略，绿=事件成功路径，黄=轮询等待，青=统一语义）：统一停稳策略。能力差异被编译期参数吸收并隔离到一处——调用方不再分叉，但事件/轮询两种底层机制在 `kFmtHasIdleIrq=false` 时仍然不同。*
+*图 13（紫=检查/策略，蓝=编排策略，绿=事件成功路径，黄=轮询等待，青=统一语义）：统一停稳策略。能力差异被编译期参数吸收并隔离到一处——调用方不再分叉，但事件/轮询两种底层机制在 `kFmtHasIdleIrq=false` 时仍然不同。*
 
-图 9 补充：紫色 `DEINIT` 是 `VideoFsmAo` PIC 流 `kVDeinit` 分支入口（Change16517 模拟点）；黄色 `POLL` 是 `PollQuiesce::wait`（ioctls += 1 + polls，polls 由 `kFmtStopLatencyUs` 与 `kPollTickUs` 上取整得出 25，合计 26）；青色 `SAME` 是两条路径共享的调用方签名——切换 `kFmtHasIdleIrq` 时调用方代码零改动。
+图 13 补充：紫色 `DEINIT` 是 `VideoFsmAo` PIC 流 `kVDeinit` 分支入口（Change16517 模拟点）；黄色 `POLL` 是 `PollQuiesce::wait`（ioctls += 1 + polls，polls 由 `kFmtStopLatencyUs` 与 `kPollTickUs` 上取整得出 25，合计 26）；青色 `SAME` 是两条路径共享的调用方签名——切换 `kFmtHasIdleIrq` 时调用方代码零改动。
 
 ### 3.8 U8 峰值破窗丢帧：显式窗口模型 + DDR 环 overrun 守卫
 
@@ -465,12 +583,7 @@ flowchart TB
 
 **规避数据流**：修复不是"提高平均性能"而是**加深环**（容量问题）：`buffer_depth` 3→8 后同一尖峰零丢帧。适用边界：加深环只在**已知最大尖峰小于新窗口**且内存与端到端时延预算允许时成立；若峰值不可知或超出可容纳窗口，还需背压、丢帧策略或降低峰值处理时间。`DdrCtx` 是全部 DDR 区的唯一属主（`Single DDR owner` 注释），读写都在 Dispatcher 线程串行化，生产者/消费者时间耦合只经槽位帧戳表达——窗口被显式化后，静默覆写变成诚实的 overrun 丢帧计数。
 
-**测试证据**（当前 coro 模式输出）：
-
-```text
-[anomaly] dropped: window=99999 us (3buf x 33ms); steady=0 drops, 250ms-spike=4 drops (peak, not average)
-[anomaly] dropped (fix): 8-buffer window=266664 us -> 0 drops
-```
+**测试证据**（coro 模式输出）：`dropped: window=99999 us (3buf x 33ms); steady=0 drops, 250ms-spike=4 drops (peak, not average)`；修复后 `8-buffer window=266664 us -> 0 drops`。
 
 **自检验证**：`drops_normal == 0`、`drops_spike > 0` 和 `drops_deep == 0` 分别验证稳态、尖峰和加深缓冲后的结果。DDR 环的 overrun 守卫曾识别出产帧节拍失配。
 
@@ -494,9 +607,9 @@ flowchart LR
     style WINDOW color:#1f2937
 ```
 
-*图 9（蓝=稳态，红=尖峰/丢帧，黄=3 缓冲窗，绿=8 缓冲窗/通过）：峰值破窗模型。同一个尖峰，不同缓冲深度两种命运——丢帧是容量问题，不是平均性能问题。*
+*图 14（蓝=稳态，红=尖峰/丢帧，黄=3 缓冲窗，绿=8 缓冲窗/通过）：峰值破窗模型。同一个尖峰，不同缓冲深度两种命运——丢帧是容量问题，不是平均性能问题。*
 
-图 10 补充：红色 `SPIKE` 节点即 `drops_with()` 注入序列中的 250000µs 项；黄色 `W3` 与绿色 `W8` 对应 `RateDemo::tolerance_us() = buffer_depth * frame_interval_us` 在 3 与 8 两种深度下的窗宽。运行层对应物是 `DdrCtx::write`/`read` 的 `FrameStamp` 帧戳校验（`kTripleBufSize=3` 三帧环，`kDdrSlots=8` 槽位深度）——分析层模型与运行层守卫在常量上互为印证。
+图 14 补充：红色 `SPIKE` 节点即 `drops_with()` 注入序列中的 250000µs 项；黄色 `W3` 与绿色 `W8` 对应 `RateDemo::tolerance_us() = buffer_depth * frame_interval_us` 在 3 与 8 两种深度下的窗宽。运行层对应物是 `DdrCtx::write`/`read` 的 `FrameStamp` 帧戳校验（`kTripleBufSize=3` 三帧环，`kDdrSlots=8` 槽位深度）——分析层模型与运行层守卫在常量上互为印证。
 
 ### 3.9 U9 半停重启闪屏：HSM 停稳弧
 
@@ -506,12 +619,7 @@ flowchart LR
 
 **规避数据流**：停稳弧是 HSM 拓扑的一部分。重配事务里 `Quiescing → Applying` 的转移**只能**由 `kSoutIdle`（帧边界停稳 ack，`at_quiesce` 守卫）触发——跳过停稳在拓扑上不可达 Applying；同理 `Resuming → Commit` 只能由 `kFirstFrame` 触发，提交边界不可绕过。"未停稳即重启"不是被约定禁止，而是**状态机里不存在这条弧**。时序为：`rcQuiescingEntry` 入口动作发 SOUT_STOP（当前实现为 `rc_self_submit` 内联模拟，非真实硬件回执）→ `kSoutIdle` 帧边界 ack → 弧守卫放行进入 Applying——停稳确认是重启指令的因果前件。
 
-**测试证据**（FlickerDemo 对照实验）：
-
-```text
-[anomaly] flicker: restart without idle ack -> first frame 655360 B (OLD geometry) vs expected 2621440 B -> flash
-[anomaly] flicker (fixed): quiesced restart -> first frame 2621440 B (new geometry, aligned)
-```
+**测试证据**（FlickerDemo 对照实验）：`restart without idle ack -> first frame 655360 B (OLD geometry) vs expected 2621440 B -> flash`；修复后 `quiesced restart -> first frame 2621440 B (new geometry, aligned)`。
 
 **自检验证**：断言 `flicker: un-quiesced restart carries old geometry`（`raced_bytes != target_bytes`）与 `flicker: quiesced restart aligns the first frame`（`clean_bytes == target_bytes`）PASS。数字与 T37 的字节边界再次吻合——闪屏与提前封帧是同一类"配置滞后于数据"在不同环节的表现（一个在重启边界，一个在封帧边界）。
 
@@ -538,9 +646,9 @@ sequenceDiagram
     end
 ```
 
-*图 10（红泳道=故障注入，绿泳道=修复）：竞走 vs 停稳弧。HSM 拓扑让"未停稳即重启"成为不可达状态，而非靠调用顺序约定。*
+*图 15（红泳道=故障注入，绿泳道=修复）：竞走 vs 停稳弧。HSM 拓扑让"未停稳即重启"成为不可达状态，而非靠调用顺序约定。*
 
-图 11 补充：绿色泳道是 3.2 节 `kRecfgTransitions` 的真实弧序——`rcQuiescingEntry` 发 STOP 后（模拟：自提交 `kSoutIdle`），`Quiescing → Applying` 弧（`kSoutIdle` 触发、`at_quiesce` 守卫）放行，`rcResumeEntry` 发 START，`Resuming → Commit` 弧（`kFirstFrame` 触发）完成裁决。
+图 15 补充：绿色泳道是 3.2 节 `kRecfgTransitions` 的真实弧序——`rcQuiescingEntry` 发 STOP 后（模拟：自提交 `kSoutIdle`），`Quiescing → Applying` 弧（`kSoutIdle` 触发、`at_quiesce` 守卫）放行，`rcResumeEntry` 发 START，`Resuming → Commit` 弧（`kFirstFrame` 触发）完成裁决。
 
 ### 3.10 花屏（位宽错配）：共享假设的单点验证
 
@@ -550,12 +658,7 @@ sequenceDiagram
 
 **规避数据流**：位宽是数据面元数据，属于单一权威原则在"共享假设"上的应用：`dma_bits_per_word` 一个字段、生产者与消费者两个读者、零个私自假设点。链路级还有第二道防线：Sink AO/WRAPE 的 `verify_pic_bytes` 对每一帧复算整条变换链（DN 种子 → 增益 → 融合 → 增强/TPD）逐字节校验——位宽错配这类"共享假设被打破"的故障在数据面字节级立即暴露，无需肉眼识别。
 
-**测试证据**：
-
-```text
-[anomaly] garbled: 8-bit data x 16-bit DMA -> 32/32 pixel pairs corrupted (two-pixels-merged)
-[anomaly] garbled (fixed): shared width authority -> 0 corrupted
-```
+**测试证据**：`8-bit data x 16-bit DMA -> 32/32 pixel pairs corrupted (two-pixels-merged)`；修复后 `shared width authority -> 0 corrupted`。
 
 **自检验证**：断言 `garbled: width mismatch corrupts pixels`（`garbled_pairs > 0`）与 `garbled: shared width authority is lossless`（`garbled_fixed == 0`）PASS。数据面全程经 DDR 环的字节级校验（断言 `PIC data plane byte-exact` / `TEMP data plane byte-exact`，即 `wrape.byte_mismatch == 0 && mipi.byte_mismatch == 0`）把这一类故障纳入每一次运行的常规检查。
 
@@ -563,7 +666,7 @@ sequenceDiagram
 
 ## 4. 验证结果
 
-**验证基线**：`isp_pipeline_demo` 当前默认构建即 coro 模式（`ISP_DEMO_CORO`），66 项自检断言 ALL PASS（exit 0）；`ctest --test-dir build` 52/52 通过。#41 协程修复的逐阶段运行证据见 `isp_pipeline_demo_run_log_fresh.txt`（"如何证明 #41 已解决"一节）。C++17 编译期约束与指针治理纪律见 `example_ISP_pipeline_cpp_discipline_zh.md`。
+**验证基线**：`isp_pipeline_demo` 当前默认构建即 coro 模式（`ISP_DEMO_CORO`），68 项自检断言 ALL PASS（exit 0）；`ctest --test-dir build` 53/53 通过。#41 协程修复的逐阶段运行证据见 `isp_pipeline_demo_run_log_fresh.txt`（"如何证明 #41 已解决"一节）。C++17 编译期约束与指针治理纪律见 `example_ISP_pipeline_cpp_discipline_zh.md`。
 
 ### 4.1 验证矩阵
 
@@ -577,8 +680,6 @@ sequenceDiagram
 | `isp_pipeline_demo`（U7） | 停稳机制分叉 | 事件路径 3 ioctl 恒定 vs 轮询路径更贵 | video_pic_stream_deinit_inconsistency（Change16517） | `SOUT quiesce: 3 ioctls (event)`、`FMT888: poll costs more ioctls` | 通过 |
 | `isp_pipeline_demo`（U8/U9/花屏） | 峰值破窗 / 半停闪屏 / 位宽错配 | 故障发生侧 + 修复消除侧双侧对照 | 花屏丢帧闪屏文档 §三 / §四 | `dropped`、`flicker`、`garbled` 三组各两条断言 | 通过 |
 | `flash_proxy_demo` | 资源独占串行化、请求/响应、扇出 | 单一权威的拥有者模式基础（与本文九类问题无直接证据关系，作为扩展阅读） | — | 输出验证 | ctest 通过 |
-
-自检断言按平面分组：数据面（收帧数、字节级校验、路由标签、事件池零泄漏）、编排面（IRSC 4 步回执、ISP 8 节点 init ack、合并视频 FSM 回 IDLE）、重配面（恰好一次提交、X4/DMO 拒绝 + X2 回滚、提交帧匹配权威、版本推进）、停稳面（事件 3 ioctl vs 轮询更多）、缓存面（scenario A-D 四组）、异常面（花屏/丢帧/闪屏各故障与修复双侧）、T37 面（err_eof/complete/truncated/frames/gaps、min/max payload、zoom 恒 active、WRAPE 配置恒定）。
 
 ### 4.2 九类异常的处理归纳
 
@@ -615,17 +716,13 @@ flowchart TB
     style BYCONFIRM color:#1f2937
 ```
 
-*图 11（红=异常，绿=机制）：九类异常按“分布式状态契约不一致”三分法归纳为三个机制。归纳不是事后归类，而是示例设计的出发点——示例先定三个机制，再按机制反向构造九类异常的复现场景；对应表述见 4.3 结论第 2 条。*
+*图 16（红=异常，绿=机制）：九类异常按“分布式状态契约不一致”三分法归纳为三个机制。归纳不是事后归类，而是示例设计的出发点——示例先定三个机制，再按机制反向构造九类异常的复现场景；对应表述见 4.3 结论第 2 条。*
 
 ### 4.3 结论
 
-1. **九类异常同源**：全部是"多模块对同一业务事实、更新时序或完成条件契约不一致"的结构性后果，其中六类具象为"同一事实两份记录、更新失同步"（U1/U2/U4/U5/U9 及花屏），U3/U7/U8 则是写者滞后、能力分叉与容量对等等其他契约不一致形态。花屏位宽错配（3.10）、闪屏首帧口径（3.9）、提前封帧（3.3）在数学形态上互相吻合（25% 截断）——形态相同是同一结构病灶的旁证，但 U1 与 U3 的证据域不同（运行态重配 vs T37 链路），不能等同根因。
+1. **九类异常同源**：全部是"多模块对同一业务事实、更新时序或完成条件契约不一致"的结构性后果，其中六类具象为"同一事实两份记录、更新失同步"（U1/U2/U4/U5/U9 及花屏），U3/U7/U8 则是写者滞后、能力分叉与容量对等等其他契约不一致形态。花屏位宽错配（3.10）、闪屏首帧口径（3.9）、提前封帧（3.3）数学形态上互相吻合，但 U1 与 U3 证据域不同，不能等同根因。
 2. **事件驱动是结构性方案**：单一权威（每字段一个写者）、事件事务（整体化 + 提交边界）、统一确认语义（停稳弧/容量窗口）三个机制分别对应三类契约不一致，且都是结构性约束——Dispatcher 保证单 RTC 步骤不可被并发执行，跨事件隔离由停稳/守卫（IRSC 侧示范的门控模式，全流冻结待扩展）/提交边界/延后发布共同保证；违反单一写者的代码在审查中可机械识别，而非依赖运行期运气。
 3. **故障先复现，再验证处理结果**：示例注入 X2 截断、裸旁路回灌、竞走重启、位宽错配和时延尖峰，并对故障侧和处理侧分别设置断言。
 4. **验证是流程级而非单元级**：自检覆盖从数据面字节级校验到事务终局（提交/回滚）的全链路不变量；isp_pipeline_demo T37 阶段的四点观察（配置/计数/payload/帧序）与 10 轮切换稳定性对应 T37 文档 §6 的板测要求。所有结论来自 host POSIX 模拟，RS500 板级验证尚未覆盖。
 5. **诚实的边界**：硬件无原子提交点（原子重配文档 §4.4 的平台现实）时，软件事务只能把不一致窗口压缩到不可观察，而非归零。示例的提交边界设计——软件权威最后落笔、失败快照回滚——正是这一工程现实的直接表达：宁可回滚一次，绝不提交一个被硬件否决的配置。示例的"回滚"指软件快照恢复，不含硬件寄存器逆序补偿。
 
-
-### 4.4 评审历史
-
-本文对历史评审的逐条回应与裁决记录已移至 `example_ISP_pipeline_review_record_code_architecture.md` 第 5 章。当前实现以源码和最新构建结果为准。

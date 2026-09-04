@@ -3,12 +3,6 @@
 > 本文仅说明业务流程、模块职责和状态变化；验证结果见 `example_ISP_pipeline_functional_test_report_zh.md`，逐阶段输出见 `isp_pipeline_demo_run_log_fresh.txt`。
 > 故障处理见 `example_ISP_pipeline_design_consistency_avoidance_zh.md`，代码问题见 `example_ISP_pipeline_review_record_code_architecture.md`。
 
-## 阅读顺序
-
-1. 第 1 章：了解一帧数据的产生、处理、输出和停机顺序。
-2. 第 2 章：了解 X1→X2 重配、三块黑板和九类业务问题。
-3. 第 3 章：了解 AO、worker 和会话状态的职责边界。
-
 图中颜色统一表示：黄色=输入/等待，蓝色=处理/正常状态，青色=数据或应用步骤，紫色=消息中心/检查，绿色=输出或成功，红色=错误、拒绝或回滚。
 
 ---
@@ -35,7 +29,7 @@ flowchart LR
     classDef event fill:#ede9fe,stroke:#7c3aed,color:#3b0764
 ```
 
-实线表示帧数据路径，紫色节点表示完成事件的派发路径。像素数据留在 DDR，事件只携带帧号和槽位。
+*图 1：一帧数据的路径。实线表示帧数据路径，紫色节点表示完成事件的派发路径。像素数据留在 DDR，事件只携带帧号和槽位。*
 
 ### 1.2 Preview Start 启动顺序
 
@@ -48,7 +42,31 @@ flowchart LR
 | ISP | 初始化 8 个节点 | 8 个 ready 回执返回 |
 | Video | 初始化并启动 PIC/TEMP | 会话进入 `RUNNING` |
 
-KBC 输出使能先于 IRSC 输出使能；视频流只有在两者完成后才启动。
+KBC 输出使能先于 IRSC 输出使能；视频流只有在两者完成后才启动。下表按阶段列出业务动作，图 2 把这些阶段放到真实的消息往返上：主线程沿 `g_session` 推进会话，每一步命令经 worker 异步往返后把回执送回编排器，视频流 START 必须等会话进入 `RUNNING` 之后。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant M as main()（编排驱动）
+    participant S as g_session 会话
+    participant I as IrscDriverAo
+    participant V as VideoFsmAo
+    participant W as IrscWorker
+    M->>S: advance(INIT) "Phase4 参数应用"
+    S-->>I: kSessionState 广播（窗口打开）
+    M->>I: kIrscCmd x4（init→start→ctrl→output_enable）
+    I-->>I: CmdDmaWorker 异步往返 kIrscDmaDone
+    I-->>M: kIrscReady x4（逐步回执）
+    M->>M: 合成 kIspReady x8（ISP 节点 init）
+    M->>V: kVStart（PIC 仍 IDLE → reject 弧计数）
+    M->>V: kVInit PIC、kVInit TEMP（IDLE→READY）
+    M->>S: advance(RUNNING) "streams enabled"
+    M->>V: kVStart PIC、kVStart TEMP（READY→RUNNING）
+    M->>W: start(fps)——帧中断开始产 kFrameIrscOut
+    Note over M,S: 停机反向：DEINIT 窗口关闭后<br/>TEMP STOP→PIC STOP→TEMP DEINIT→PIC DEINIT<br/>IrscDriverAo 的 reject 弧观测到门控拒绝
+```
+
+*图 2（蓝=处理/编排，时序图无着色）：boot 与停机的编排时序。会话推进从主线程发出；KBC_OUTPUT_ENABLE 先于 IRSC_OUTPUT_ENABLE 的关键顺序由命令表的编译期顺序背书。*
 
 ### 1.3 运行时帧处理
 
