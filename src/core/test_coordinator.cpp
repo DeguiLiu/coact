@@ -42,14 +42,18 @@ struct SmallCfg {
     };
 };
 
-/* Mock PAL that counts Dispatcher wakeup signals instead of waking a thread. */
+/* Mock PAL that counts Dispatcher wakeup signals instead of waking a thread.
+   in_thread drives the dispatcher-context answer: the coordinator must never
+   take the direct path from the Dispatcher thread (nested RTC guard). */
 struct CountingPal {
     int signals = 0;
+    bool in_thread = false;
     uint64_t monotonic_ns() const noexcept { return 0ULL; }
     void signal_dispatcher_from_task() noexcept { ++signals; }
     void signal_dispatcher_from_isr() noexcept { ++signals; }
     void enter_direct() noexcept {}
     void leave_direct() noexcept {}
+    static bool in_dispatcher_thread() noexcept { return false; }
 };
 
 /* Minimal staged-only AO (never direct, so the coordinator always enqueues). */
@@ -166,6 +170,7 @@ struct OverBudgetPal {
     void signal_dispatcher_from_isr() noexcept { ++signals; }
     void enter_direct() noexcept {}
     void leave_direct() noexcept {}
+    static bool in_dispatcher_thread() noexcept { return false; }
 };
 
 COACT_TEST(coordinator_direct_over_budget_trips_breaker)
@@ -236,6 +241,109 @@ COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
     CHECK_EQ(result.disposition, coact::SubmitDisposition::Direct);
     CHECK_EQ(breakers.level(coact::TargetId(2U)),
              coact::BreakerLevel::Normal);
+}
+
+/* =========================================================================
+ * Nested-dispatch guard (RTC layer-1 hole): a submit issued while running on
+ * the Dispatcher thread (i.e. from inside an AO handler) must never take the
+ * direct path - it would run the target handler inline on the same stack,
+ * bypassing serialization. The coordinator consults PalT::in_dispatcher_thread.
+ * ========================================================================= */
+struct DispatcherContextPal {
+    int signals = 0;
+    uint64_t monotonic_ns() const noexcept { return 0ULL; }
+    void signal_dispatcher_from_task() noexcept { ++signals; }
+    void signal_dispatcher_from_isr() noexcept { ++signals; }
+    void enter_direct() noexcept {}
+    void leave_direct() noexcept {}
+    static bool in_dispatcher_thread() noexcept { return true; }
+};
+
+COACT_TEST(coordinator_dispatcher_context_forces_staging)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    DispatcherContextPal pal;
+    coact::DispatchCoordinator<StageT, DispatcherContextPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    /* A direct-eligible AO with an Idle lease: only the dispatcher-context
+       guard must keep this out of dispatch_direct. */
+    staging.arm_dispatcher_wait();
+    coact::Event e{};
+    e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_from_task(coact::TargetId(1U), &e, qos);
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(1, pal.signals);
+}
+
+COACT_TEST(coordinator_task_context_keeps_direct)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    CountingPal pal;
+    coact::DispatchCoordinator<StageT, CountingPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    coact::Event e{};
+    e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_from_task(coact::TargetId(1U), &e, qos);
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
+             static_cast<int>(r.disposition));
+}
+
+COACT_TEST(coordinator_submit_queued_from_task_bypasses_direct)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    CountingPal pal;
+    coact::DispatchCoordinator<StageT, CountingPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    staging.arm_dispatcher_wait();
+    coact::Event e{};
+    e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_queued_from_task(coact::TargetId(1U), &e, qos);
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(1, pal.signals);
 }
 
 }  // namespace

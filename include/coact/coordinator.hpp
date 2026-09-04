@@ -56,14 +56,26 @@ public:
     SubmitResult submit_from_task(TargetId target, Event* e,
                                   const EventQos& qos) noexcept
     {
-        return submit_internal(target, e, qos, /*from_isr=*/false);
+        return submit_internal(target, e, qos, /*from_isr=*/false,
+                               /*force_staging=*/false);
+    }
+
+    // Queue-only submission (design 4.1): skips the direct path entirely so
+    // AO-to-AO cooperation always goes through the staging queue. Same event
+    // reference contract as submit_from_task.
+    SubmitResult submit_queued_from_task(TargetId target, Event* e,
+                                         const EventQos& qos) noexcept
+    {
+        return submit_internal(target, e, qos, /*from_isr=*/false,
+                               /*force_staging=*/true);
     }
 
     // Submit an event from an ISR context. Must never block.
     SubmitResult try_submit_from_isr(TargetId target, Event* e,
                                      const EventQos& qos) noexcept
     {
-        return submit_internal(target, e, qos, /*from_isr=*/true);
+        return submit_internal(target, e, qos, /*from_isr=*/true,
+                               /*force_staging=*/false);
     }
 
 private:
@@ -100,7 +112,8 @@ private:
     };
 
     SubmitResult submit_internal(TargetId target, Event* e,
-                                 const EventQos& qos, bool from_isr) noexcept
+                                 const EventQos& qos, bool from_isr,
+                                 bool force_staging) noexcept
     {
         /* Monotonic clock is sampled only when the M4 policy or Low-aging
            staging path needs it. Cached here so those two paths share one
@@ -158,8 +171,17 @@ private:
 
         /* --- M1 direct dispatch (Task path only) ------------------------ */
         /* The allocation reference transfers directly to the successful
-           dispatch or, after a lost race, to the staging path below. */
+           dispatch or, after a lost race, to the staging path below.
+           Nested-dispatch guard: when the caller already runs on the
+           Dispatcher thread (i.e. this submit originates inside an AO
+           handler), taking the direct path would run the target handler
+           inline on the same stack - bypassing the serialization layer 1
+           guarantees and risking unbounded stack depth on an AO-to-AO chain.
+           Such submissions fall through to staging. ISR context never takes
+           the direct path anyway. */
         if (!from_isr
+            && !force_staging
+            && !PalT::in_dispatcher_thread()
             && ao->direct_eligible()
             && target_breaker.direct_allowed(target))
         {
