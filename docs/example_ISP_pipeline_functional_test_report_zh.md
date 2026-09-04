@@ -1,7 +1,5 @@
 # isp_pipeline_demo 功能测试报告
 
-**结论**：68 项自检断言全部通过（exit 0）。测试方法为程序自检：运行结束时逐项核对结果与不变量，覆盖 RS500 业务场景的架构级复现与故障修复。
-
 **关联文档**：架构说明见 `example_ISP_pipeline_design_architecture_zh.md`；故障处理见 `example_ISP_pipeline_design_consistency_avoidance_zh.md`；逐阶段运行输出见 `isp_pipeline_demo_run_log_fresh.txt`。
 
 ## 1. 测试范围
@@ -107,7 +105,7 @@ cd build && make -j12
 | 峰值时延突破缓冲窗口 | 显式窗口模型 + 溢出守卫 | 尖峰丢帧复现 + 深缓冲零丢帧 |
 | 未停稳即重启闪屏 | HSM 停稳弧 | 旧几何复现 + 对齐断言 |
 | 花屏（位宽错配） | 位宽假设单点验证 | 损坏复现 + 零损坏断言 |
-| 并发同步（worker 交互） | 单写路径 + 忙则拒绝 + 命令-中断闭环 | executed==4、pool.used==0 |
+| 并发同步（worker 交互） | 单写路径 + 忙则拒绝 + 命令-中断闭环 | `executed==4、pool.used==0` |
 
 机制归结为三项约束：**单一写入者**、**事件事务边界**、**明确的完成确认**。结果只说明 host 模拟通过，不代表板级行为。
 
