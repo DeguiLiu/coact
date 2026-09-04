@@ -379,8 +379,8 @@ int main()
     // Worker bring-up failures are fatal (review P1): a half-started
     // channel would reject every submit and the scenario would misreport.
     if (!cmd_dma.start(&pool, &rt, kIrscId)
-        || !isp_irq_enh.start(&pool, &rt, kEnId)
-        || !isp_irq_tpd.start(&pool, &rt, kTpdId)
+        || !isp_irq_enh.start(&pool, &rt, kEnId, 0U)      // trace id 0
+        || !isp_irq_tpd.start(&pool, &rt, kTpdId, 5U)     // trace id 5 (type 0)
         || !sout_dma.start(&pool, &rt, kPackVidId)
         || !mipi_irq.start(&pool, &rt, kMipiId)) {
         return 1;
@@ -1335,6 +1335,18 @@ int main()
     check(ddr.overrun_drops == 0U, "DDR slot guard: zero overrun degradations");
     check(diag_conservation_ok,
           "diag: lane conservation identity (drained+dropped==accepted)");
+    // AOP behavior assertions (design_static_aop review #6): the aspect
+    // chain must be observably ALIVE, not merely compiled - every
+    // completion worker accumulated real execution time and the periodic
+    // producer counted its frames.
+    check(cmd_dma.execution_duration_ns() > 0ULL
+              && isp_irq_enh.execution_duration_ns() > 0ULL
+              && isp_irq_tpd.execution_duration_ns() > 0ULL
+              && sout_dma.execution_duration_ns() > 0ULL
+              && mipi_irq.execution_duration_ns() > 0ULL,
+          "AOP: all five workers accumulated non-zero execution duration");
+    check(irsc.frames_produced() == kFrameCount,
+          "AOP: IRSC producer counted every frame");
     // Slot ownership protocol (the RS500 DMA descriptor ownership-bit mirror):
     // the writer must never have found a reader-claimed slot. On the demo's
     // pacing a single frame's lifetime is shorter than the ring wrap-around

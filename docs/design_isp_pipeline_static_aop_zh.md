@@ -259,7 +259,7 @@ RT-Thread 构建将 SoftIrq aspect 编译为空，保留直接 task-context comp
 | A2 | 接入 `MetricsAspect`，补 direct/dispatcher/worker elapsed 统计 | `pool.used()==0`、耗时累计非零 | 【已完成：per-worker execution_duration_ns】 |
 | A3 | 接入 `TraceAspect`，Trace 默认关闭 | `COACT_TRACE=0/1` 符号和行为对照 | 【已完成：kEvtWorkerExec=0x0103，COACT_TRACE 门控】 |
 | A4 | 接入 `FaultAspect` 和 `FaultReporter` | 水位、completion reject、FIFO overflow 边沿正确 | 【已完成：null-fn 零开销 FaultReporter 边界】 |
-| A5 | 将 `IrscWorker` 和 `UsbDmaWorker` 接入对应策略链 | host/coro/RTT 双后端矩阵 | 【已完成：IrscWorker 逐帧 Trace；UsbDmaWorker 保留既有 SoftIrq 统计避免双计】 |
+| A5 | 将 `IrscWorker` 和 `UsbDmaWorker` 接入对应策略链 | host/coro/RTT 双后端矩阵 | 【部分完成：IrscWorker 逐帧 Trace + frames_produced；UsbDmaWorker 决议**不接入**——其单槽交接 + SoftIrq 双线程生命周期（引擎线程 raise / 独立消费者线程 take）与 InvokePolicy 的单线程执行模型不符，强行接入是错位抽象；既有 kEvtFrameEof/raises/delivered 统计已是该 worker 的等价可观测面】 |
 | A6 | 删除重复的具体 worker 辅助代码 | diff 审查、栈/静态内存预算复核 | 【已完成：预算表补 aspect 状态行】 |
 
 每一阶段只允许一个行为变量变化。若策略链导致模板错误或栈增长超预算，回退到上一阶段，不引入运行时多态作为补偿。

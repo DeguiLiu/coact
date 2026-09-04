@@ -136,8 +136,12 @@ private:
             frames_produced_.fetch_add(1U, std::memory_order_relaxed);
 #if COACT_TRACE
             g_log.record_from_task<LogLevel::kInfo, kEvtWorkerExec>(
-                0U, static_cast<uint32_t>(Derived::kWorkerId), 0U,
-                static_cast<uint32_t>(monotonic_ns() - t0));
+                0U,
+                static_cast<uint32_t>(
+                    static_cast<Derived*>(this)->instance_id),
+                0U /* result: periodic production has no failure result */,
+                static_cast<uint32_t>(
+                    (monotonic_ns() - t0) & 0xFFFFFFFFU));
 #endif
         }
         static_cast<Derived*>(this)->producer_finished(frame_count_, period_us_);
@@ -296,7 +300,8 @@ struct IrscWorker : PeriodicProducerBase<IrscWorker> {
     TargetId high_target{};
 
     static constexpr const char* name() noexcept { return "irsc"; }
-    static constexpr uint16_t kWorkerId = 4U;   // kEvtWorkerExec arg0
+    static constexpr uint16_t kWorkerId = 4U;
+    uint16_t instance_id{kWorkerId};
 
     bool start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps)
     {
@@ -714,7 +719,8 @@ public:
 enum class WorkerResult : uint8_t {
     kOk = 0U,
     kRejected = 1U,
-    kFault = 2U
+    kTimeout = 2U,
+    kFault = 3U
 };
 
 // Default policy: the plain CRTP hook, behavior-identical to the pre-A1
@@ -745,26 +751,31 @@ struct MetricsAspect {
     template <typename Worker, typename Job>
     static WorkerResult invoke(Worker& worker, const Job& job) noexcept
     {
-        const uint64_t start_ns = monotonic_ns();
+        const uint64_t start_ns = worker.monotonic_ns();
         const WorkerResult result = Next::invoke(worker, job);
-        worker.add_execution_duration(monotonic_ns() - start_ns);
+        worker.add_execution_duration(worker.monotonic_ns() - start_ns);
         return result;
     }
 };
 
 // A3 Trace: one fixed-width diag record per job execution, gate-compiled by
-// COACT_TRACE (design §2.2: 0 compiles the record away entirely). Payload is
-// worker id + result only - never a payload read, string or Event*.
+// COACT_TRACE (design §2.2: 0 compiles the record away entirely). Catalog
+// layout: a0=worker_id (instance-level) a1=result a2=elapsed_lo - the same
+// field order for every worker kind, so a decoder needs no per-worker
+// knowledge. Never a payload read, string or Event*.
 template <typename Next>
 struct TraceAspect {
     template <typename Worker, typename Job>
     static WorkerResult invoke(Worker& worker, const Job& job) noexcept
     {
 #if COACT_TRACE
+        const uint64_t start_ns = worker.monotonic_ns();
         const WorkerResult result = Next::invoke(worker, job);
         g_log.record_from_task<LogLevel::kInfo, kEvtWorkerExec>(
             0U, static_cast<uint32_t>(worker.worker_id()),
-            static_cast<uint32_t>(result), 0U);
+            static_cast<uint32_t>(result),
+            static_cast<uint32_t>((worker.monotonic_ns() - start_ns)
+                                  & 0xFFFFFFFFU));
         return result;
 #else
         return Next::invoke(worker, job);
@@ -1008,11 +1019,20 @@ public:
         execution_duration_ns_.fetch_add(ns, std::memory_order_relaxed);
     }
 
+    // PAL-injected clock (review low-1): aspects sample time through the
+    // worker, not a global, so a test double can replace it.
+    [[nodiscard]] uint64_t monotonic_ns() const noexcept
+    {
+        return (nullptr != g_pal) ? g_pal->monotonic_ns() : 0U;
+    }
+
     // Trace: stable numeric id for the kEvtWorkerExec record (the compiled
     // name string stays the readable view; the record carries fixed widths).
+    // Instance-overridable so two instances of one worker TYPE (e.g. the two
+    // IspIrqWorker lines) stay distinguishable in the trace stream.
     [[nodiscard]] uint16_t worker_id() const noexcept
     {
-        return static_cast<uint16_t>(Derived::kWorkerId);
+        return static_cast<const Derived*>(this)->instance_id;
     }
 
     // Fault: an injected FaultReporter boundary (fault.hpp contract). Null
@@ -1020,11 +1040,17 @@ public:
     // report so a consumer can correlate.
     void report_fault(WorkerResult result, const Job&) noexcept
     {
-        fault_.report(static_cast<uint16_t>(Derived::kWorkerId),
+        // Graded severity (review low-3): a hard fault outranks a timeout.
+        const coact::FaultPriority priority =
+            (WorkerResult::kFault == result)
+                ? coact::FaultPriority::kHigh
+                : coact::FaultPriority::kMedium;
+        fault_.report(static_cast<uint16_t>(
+                          static_cast<Derived*>(this)->instance_id),
                       (static_cast<uint32_t>(result) << 16U)
                           | static_cast<uint32_t>(
                                 static_cast<Derived*>(this)->completion_rejects),
-                      coact::FaultPriority::kHigh);
+                      priority);
     }
     void bind_fault(const coact::FaultReporter& reporter) noexcept
     {
@@ -1051,6 +1077,13 @@ protected:
     }
 
 private:
+    // Lock-free gate (same discipline as ao.hpp/pal_rtthread.hpp): a 32-bit
+    // ARM target where 64-bit atomics degrade to libatomic locks must fail
+    // at compile time, never silently link a lock into the worker hot path.
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,
+                  "worker execution metrics require a lock-free 64-bit "
+                  "atomic; disable COACT_TRACE metrics or use 32-bit fields "
+                  "on this target");
     std::atomic<uint64_t> execution_duration_ns_{0U};
     coact::FaultReporter fault_{};   // null by default: zero-cost reporting
 };
@@ -1074,7 +1107,8 @@ struct CmdDmaWorker : CompletionWorkerBase<CmdDmaWorker, uint16_t, 4U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "cmd_dma"; }
-    static constexpr uint16_t kWorkerId = 3U;   // kEvtWorkerExec arg0
+    static constexpr uint16_t kWorkerId = 3U;
+    uint16_t instance_id{kWorkerId};
 
     bool start(PoolT* p, Rt* r, TargetId driver)
     {

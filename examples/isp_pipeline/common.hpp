@@ -164,7 +164,7 @@ enum LogEvt : uint16_t {
     kEvtTraceSubmit   = 0x0100U,  // a0=dst a1=signal a2=disposition a3=reason
     kEvtTraceDispatch = 0x0101U,  // a0=elapsed_lo a1=elapsed_hi a2=path a3=timeout
     kEvtTraceLease    = 0x0102U,  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
-    kEvtWorkerExec    = 0x0103U,  // a0=worker_id a1=result (WorkerResult)
+    kEvtWorkerExec    = 0x0103U,  // a0=worker_id a1=result a2=elapsed_lo
     kEvtWorkerFault   = 0x0104U,  // a0=worker_id a1=result a2=rejects
 };
 

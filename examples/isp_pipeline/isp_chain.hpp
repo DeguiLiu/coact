@@ -89,11 +89,16 @@ struct IspIrqWorker : CompletionWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "isp_irq"; }
-    static constexpr uint16_t kWorkerId = 0U;   // kEvtWorkerExec arg0
+    // Two instances share this type (enhance + TPD): instance_id overrides
+    // the static id in start() so per-job trace records stay distinguishable.
+    static constexpr uint16_t kWorkerId = 0U;
+    uint16_t instance_id{kWorkerId};   // kEvtWorkerExec arg0 (per instance)
 
-    bool start(PoolT* p, Rt* r, TargetId node_ao)
+    bool start(PoolT* p, Rt* r, TargetId node_ao,
+               uint16_t trace_id = kWorkerId)
     {
         reply_to = node_ao;
+        instance_id = trace_id;
         return CompletionWorkerBase::start(p, r);
     }
 
@@ -147,7 +152,8 @@ struct SoutDmaWorker : CompletionWorkerBase<SoutDmaWorker, SoutJob, 3U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "sout_dma"; }
-    static constexpr uint16_t kWorkerId = 1U;   // kEvtWorkerExec arg0
+    static constexpr uint16_t kWorkerId = 1U;
+    uint16_t instance_id{kWorkerId};
 
     bool start(PoolT* p, Rt* r, TargetId pack_ao)
     {
@@ -180,7 +186,8 @@ struct MipiIrqWorker : CompletionWorkerBase<MipiIrqWorker, uint16_t, 2U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "mipi_irq"; }
-    static constexpr uint16_t kWorkerId = 2U;   // kEvtWorkerExec arg0
+    static constexpr uint16_t kWorkerId = 2U;
+    uint16_t instance_id{kWorkerId};
 
     bool start(PoolT* p, Rt* r, TargetId sink_ao)
     {
