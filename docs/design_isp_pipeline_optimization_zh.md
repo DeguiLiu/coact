@@ -103,9 +103,9 @@ RT-Thread 路径还应：
 
 Profile 一致性是硬约束：Pool、Staging、Dispatcher 不能出现“队列是单核、回收器是 SMP、临界区又是 spinlock”的混搭。
 
-### P2：统一普通 worker 的 SPSC 交接【已完成，dad821a；分层扩展已完成】
+### P2：统一普通 worker 的 SPSC 交接【已完成，dad821a；分层与 AOP 扩展见 static_aop 文档】
 
-`WorkerBase<Derived, Job, Depth, PalT>` 的实际角色是“Dispatcher 单生产者、worker 单消费者”。当前已完成基础交接，并按语义增加三个 CRTP 层：
+`WorkerBase<Derived, Job, Depth, PalT>` 的实际角色是“Dispatcher 单生产者、worker 单消费者”。当前已完成基础交接，并按语义增加三个 CRTP 能力层（`CompletionWorkerBase` / `PeriodicProducerBase` / `SoftIrqCompletionWorker`，bace05c）与编译期 InvokePolicy 切面链（Trace/Metrics/Fault，见 design_isp_pipeline_static_aop_zh.md A0-A6）：
 
 1. 用 `coact::SpscRing<Job, Depth>` 保存 job；当前完成型 worker 通过 `CompletionWorkerBase` 复用同一交接能力。
 2. 用静态 semaphore 或 PAL 的轻量唤醒原语替代 cond variable；提交成功后唤醒 worker，worker 空闲时阻塞等待。该能力已由 `WorkerBase` 提供。

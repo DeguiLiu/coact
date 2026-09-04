@@ -311,7 +311,7 @@ AO 只在自己的事件处理步骤中修改状态，跨 AO 动作通过事件�
 | `MipiIrqWorker` | MIPI TX 完成中断 | `kMipiTxDone` |
 | `UsbDmaWorker` | WRAPE Bulk 发送 | `kFrameEof` |
 
-worker 不保存业务状态、不直接修改 AO 上下文。6 个有输入任务的 worker 实例分别管理自己的 mutex/cond 队列或单槽；`IrscWorker` 自主按帧节拍运行，不接收 AO job。完成后统一使用 `submit_from_task()` 产生 coact 事件，最终进入目标 AO 的事件队列。
+worker 不保存业务状态、不直接修改 AO 上下文。5 个完成型 worker 实例（`CmdDmaWorker`/两路 `IspIrqWorker`/`SoutDmaWorker`/`MipiIrqWorker`）经 `CompletionWorkerBase` 共享无锁交接：`SpscRing<Job>`（深度取 2 的幂）+ 单个 PAL 信号量唤醒，Dispatcher 单生产者 + worker 单消费者，满环忙则如实拒绝；`IrscWorker`（`PeriodicProducerBase`）自主按帧节拍运行，不接收 AO job；`UsbDmaWorker`（`SoftIrqCompletionWorker`）保留专用单槽交接与 SoftIrq 完成路径。完成后统一使用 `submit_from_task()` 产生 coact 事件，最终进入目标 AO 的事件队列。job 执行经编译期 InvokePolicy 策略链（Trace -> Metrics -> Fault -> 完成）织入横切观测（详见 design_isp_pipeline_static_aop_zh.md）。
 
 ### 3.3 运行模式边界
 
@@ -382,7 +382,7 @@ flowchart LR
 | 运行 | 处理控制事件和重配请求 | 处理帧并发送下一阶段事件 | 产生帧、模拟 DMA/中断完成 |
 | 停机 | 发送 stop/deinit 并等待结束 | 清空在途帧和状态 | 完成剩余 job 后退出 |
 
-这种分工保证“谁决定业务状态”和“谁模拟硬件耗时”不会混在同一个函数中。普通 worker 可以使用内核 mutex/cond 等同步原语等待 job，但业务结果必须通过 coact 事件返回 AO。
+这种分工保证“谁决定业务状态”和“谁模拟硬件耗时”不会混在同一个函数中。普通 worker 使用无锁 `SpscRing` + 信号量等待 job（不再使用 mutex/cond），但业务结果必须通过 coact 事件返回 AO。
 
 ### 3.6 关键业务不变量
 
