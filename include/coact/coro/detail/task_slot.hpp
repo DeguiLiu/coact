@@ -41,7 +41,7 @@ struct TaskSlot final {
                   "contract (trivially copyable/destructible, standard-layout)");
 
     // Identity (slot index implied by array position; generation identifies
-    // the incarnation). id.value == 0 marks a free slot.
+    // the incarnation). id.value() == 0 marks a free slot.
     // Generation starts at 1: a first-incarnation slot-0 task must never
     // pack into TaskId 0, which collides with kInvalidTaskId (the TaskId
     // packing is [15:8] generation | [7:0] slot index).

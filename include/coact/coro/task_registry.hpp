@@ -313,7 +313,7 @@ private:
         if (kInvalidTaskId == id) {
             return nullptr;
         }
-        const uint16_t index = slot_of(id).value;
+        const uint16_t index = slot_of(id).raw();
         if (index >= Capacity) {
             return nullptr;
         }

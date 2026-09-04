@@ -1,5 +1,5 @@
 // coact vocabulary types: NewType, ScopeGuard, optional, FixedFunction,
-// function_ref, TruncateToCapacity, FixedString, FixedVector.
+// function_ref, TruncateToCapacity, FixedString, FixedVector, Expected.
 // SPDX-License-Identifier: MIT
 //
 // Adapted from newosp include/osp/vocabulary.hpp (MIT License,
@@ -49,6 +49,7 @@ public:
     constexpr NewType() noexcept : val_() {}
 
     constexpr T value() const noexcept { return val_; }
+    constexpr T raw() const noexcept { return val_; }
     constexpr explicit operator bool() const noexcept { return T() != val_; }
 
     constexpr bool operator==(NewType rhs) const noexcept { return val_ == rhs.val_; }
@@ -63,10 +64,9 @@ private:
 // ScopeGuard - RAII exit action.
 // ===========================================================================
 
-// Runs a cleanup action on scope exit unless dismissed. Built on
-// FixedFunction<void()> so the cleanup and its captures live inline - zero
-// heap, unlike a std::function-based guard whose erased callable may
-// allocate. Move-construction transfers the armed state (the source
+// Runs a cleanup action on scope exit unless dismissed. The cleanup object is
+// stored directly in the guard, so no allocation is introduced by the guard
+// itself. Move-construction transfers the armed state (the source
 // disarms), so a guard can be returned or handed to an owner; assignment
 // and copy are deleted to keep the exit contract single-owner.
 //
@@ -737,6 +737,159 @@ private:
        the WHOLE vector - element-wise copy only. */
     alignas(T) unsigned char storage_[sizeof(T) * Capacity];
     uint32_t size_{0U};
+};
+
+// Expected<T, E> - fixed-storage error-or-value result.
+template <typename V, typename E>
+class [[nodiscard]] Expected final {
+    static_assert(std::is_nothrow_move_constructible<V>::value,
+                  "Expected value must be nothrow move constructible");
+    static_assert(std::is_nothrow_destructible<V>::value,
+                  "Expected value must be nothrow destructible");
+
+public:
+    static Expected success(const V& val) noexcept
+    {
+        static_assert(std::is_nothrow_copy_constructible<V>::value,
+                      "Expected copied value must be nothrow copy constructible");
+        Expected e;
+        e.has_value_ = true;
+        ::new (static_cast<void*>(e.storage_.bytes)) V(val);
+        return e;
+    }
+
+    static Expected success(V&& val) noexcept
+    {
+        Expected e;
+        e.has_value_ = true;
+        ::new (static_cast<void*>(e.storage_.bytes)) V(std::move(val));
+        return e;
+    }
+
+    static Expected error(E err) noexcept
+    {
+        Expected e;
+        e.has_value_ = false;
+        e.err_ = err;
+        return e;
+    }
+
+    Expected(Expected&& other) noexcept
+        : storage_{}, err_(other.err_), has_value_(false)
+    {
+        if (other.has_value_) {
+            ::new (static_cast<void*>(storage_.bytes)) V(std::move(other.value()));
+            has_value_ = true;
+            other.destroy_value();
+        }
+    }
+
+    Expected& operator=(Expected&& other) noexcept
+    {
+        if (this != &other) {
+            if (has_value_) {
+                destroy_value();
+            }
+            err_ = other.err_;
+            if (other.has_value_) {
+                ::new (static_cast<void*>(storage_.bytes)) V(std::move(other.value()));
+                has_value_ = true;
+                other.destroy_value();
+            }
+        }
+        return *this;
+    }
+
+    Expected(const Expected&) = delete;
+    Expected& operator=(const Expected&) = delete;
+
+    ~Expected()
+    {
+        if (has_value_) {
+            destroy_value();
+        }
+    }
+
+    bool has_value() const noexcept { return has_value_; }
+    explicit operator bool() const noexcept { return has_value_; }
+
+    V& value() & noexcept
+    {
+        COACT_ASSERT(has_value_);
+        return *value_ptr();
+    }
+
+    const V& value() const& noexcept
+    {
+        COACT_ASSERT(has_value_);
+        return *value_ptr();
+    }
+
+    E error() const noexcept
+    {
+        COACT_ASSERT(!has_value_);
+        return err_;
+    }
+
+private:
+    Expected() noexcept : storage_{}, err_{}, has_value_(false) {}
+
+    struct alignas(alignof(V)) Storage {
+        std::byte bytes[sizeof(V)];
+    };
+    Storage storage_{};
+    E err_{};
+    bool has_value_{false};
+
+    V* value_ptr() noexcept
+    {
+        return std::launder(reinterpret_cast<V*>(storage_.bytes));
+    }
+
+    const V* value_ptr() const noexcept
+    {
+        return std::launder(reinterpret_cast<const V*>(storage_.bytes));
+    }
+
+    void destroy_value() noexcept
+    {
+        value_ptr()->~V();
+        (void)std::exchange(has_value_, false);
+    }
+};
+
+template <typename E>
+class [[nodiscard]] Expected<void, E> final {
+public:
+    static Expected success() noexcept
+    {
+        Expected e;
+        e.has_value_ = true;
+        return e;
+    }
+
+    static Expected error(E err) noexcept
+    {
+        Expected e;
+        e.has_value_ = false;
+        e.err_ = err;
+        return e;
+    }
+
+    bool has_value() const noexcept { return has_value_; }
+    explicit operator bool() const noexcept { return has_value_; }
+
+    E error() const noexcept
+    {
+        COACT_ASSERT(!has_value_);
+        return err_;
+    }
+
+private:
+    Expected() noexcept : err_{}, has_value_(false) {}
+
+    E err_{};
+    bool has_value_{false};
 };
 
 }  // namespace coact

@@ -7,6 +7,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "coact/config.hpp"
+#include "coact/coro/task_id.hpp"
 #include "coact/vocabulary.hpp"
 
 namespace {
@@ -23,6 +25,14 @@ static_assert(std::is_trivially_copyable<WidgetId>::value,
               "NewType must be trivially copyable");
 static_assert(sizeof(WidgetId) == sizeof(uint32_t),
               "NewType must be zero-overhead");
+static_assert(std::is_trivially_copyable<coact::TargetId>::value,
+              "TargetId must be a trivial strong type");
+static_assert(sizeof(coact::TargetId) == sizeof(uint8_t),
+              "TargetId must be zero-overhead");
+static_assert(std::is_trivially_copyable<coact::coro::TaskSlotId>::value,
+              "TaskSlotId must be a trivial strong type");
+static_assert(sizeof(coact::coro::TaskSlotId) == sizeof(uint16_t),
+              "TaskSlotId must be zero-overhead");
 
 COACT_TEST(newtype_same_type_compares_and_differs)
 {
@@ -32,6 +42,7 @@ COACT_TEST(newtype_same_type_compares_and_differs)
     CHECK(a == b);
     CHECK(a != c);
     CHECK(a.value() == 7U);
+    CHECK(a.raw() == 7U);
 }
 
 COACT_TEST(newtype_same_value_different_tags_not_interchangeable)
@@ -46,6 +57,24 @@ COACT_TEST(newtype_same_value_different_tags_not_interchangeable)
     CHECK(w.value() == g.value());
     CHECK(w == WidgetId(3U));
     CHECK(g == GadgetId(3U));
+}
+
+COACT_TEST(newtype_based_ids_expose_raw_values)
+{
+    const coact::TargetId target(7U);
+    const coact::coro::TaskSlotId slot(3U);
+    CHECK(target.raw() == 7U);
+    CHECK(slot.raw() == 3U);
+}
+
+COACT_TEST(expected_is_available_from_vocabulary)
+{
+    const auto success = coact::Expected<uint16_t, uint8_t>::success(9U);
+    const auto failure = coact::Expected<uint16_t, uint8_t>::error(4U);
+    CHECK(success.has_value());
+    CHECK(success.value() == 9U);
+    CHECK(!failure.has_value());
+    CHECK(failure.error() == 4U);
 }
 
 /* ---------------------------------------------------------------------- */

@@ -64,7 +64,7 @@ static_assert(std::is_standard_layout<coact::coro::CompletionPayload>::value,
 
 /* TaskId packing checks. */
 static_assert(coact::coro::slot_of(coact::coro::make_task_id(
-                  coact::coro::TaskSlotId(3U), 5U)).value == 3U,
+                  coact::coro::TaskSlotId(3U), 5U)).raw() == 3U,
               "TaskId low bits are the slot index");
 static_assert(coact::coro::generation_of(coact::coro::make_task_id(
                   coact::coro::TaskSlotId(3U), 5U)) == 5U,
@@ -372,8 +372,8 @@ COACT_TEST(task_generation_guard_stale_handle)
     auto second_exp = rig.reg.create(coact::kInvalidTarget, 0U, coact::EventQos{false, false});
     REQUIRE(static_cast<bool>(second_exp));
     auto second = std::move(second_exp.value());
-    CHECK_EQ(coact::coro::slot_of(stale_id).value,
-             coact::coro::slot_of(second.task.id()).value);
+    CHECK_EQ(coact::coro::slot_of(stale_id).raw(),
+             coact::coro::slot_of(second.task.id()).raw());
     CHECK(coact::coro::generation_of(stale_id) !=
           coact::coro::generation_of(second.task.id()));
 

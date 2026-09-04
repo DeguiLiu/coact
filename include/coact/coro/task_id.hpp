@@ -15,14 +15,8 @@ namespace coro {
 
 // Raw slot index (0 .. Capacity-1). Never crosses an AO boundary by itself;
 // TaskId is the wire identity.
-struct TaskSlotId {
-    uint16_t value = 0U;
-    constexpr TaskSlotId() noexcept = default;
-    constexpr explicit TaskSlotId(uint16_t raw) noexcept : value(raw) {}
-    constexpr uint16_t raw() const noexcept { return value; }
-    constexpr bool operator==(TaskSlotId o) const noexcept { return value == o.value; }
-    constexpr bool operator!=(TaskSlotId o) const noexcept { return value != o.value; }
-};
+struct TaskSlotIdTag {};
+using TaskSlotId = coact::NewType<uint16_t, TaskSlotIdTag>;
 
 // Task identity handed to callers: slot index in the low bits, a generation
 // counter in the high bits. The generation increments on every slot release,
@@ -43,7 +37,7 @@ using TaskId = coact::NewType<uint16_t, TaskIdTag>;
 constexpr TaskId make_task_id(TaskSlotId slot, uint16_t gen) noexcept
 {
     return TaskId(static_cast<uint16_t>(
-        ((gen & 0xFFU) << 8U) | (slot.value & 0xFFU)));
+        ((gen & 0xFFU) << 8U) | (slot.raw() & 0xFFU)));
 }
 
 // Slot index half of a TaskId (low 8 bits).

@@ -4,6 +4,8 @@
 
 #include <cstdint>
 
+#include "coact/vocabulary.hpp"
+
 namespace coact {
 
 // ---------------------------------------------------------------------------
@@ -54,14 +56,8 @@ struct EventQos {
 // construction keeps arbitrary integers from silently becoming a target;
 // wire/array-index/printf sites use raw(). Zero-overhead proven by the
 // static_assert below. kInvalidTarget is the sole zero (never bound).
-struct TargetId {
-    uint8_t value = 0U;
-    constexpr TargetId() noexcept = default;
-    constexpr explicit TargetId(uint8_t v) noexcept : value(v) {}
-    constexpr uint8_t raw() const noexcept { return value; }
-    constexpr bool operator==(TargetId o) const noexcept { return value == o.value; }
-    constexpr bool operator!=(TargetId o) const noexcept { return value != o.value; }
-};
+struct TargetIdTag {};
+using TargetId = NewType<uint8_t, TargetIdTag>;
 inline constexpr TargetId kInvalidTarget(0U);
 static_assert(sizeof(TargetId) == 1U, "coact: TargetId must be zero-overhead");
 
