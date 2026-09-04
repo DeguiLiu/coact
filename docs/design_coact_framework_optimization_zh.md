@@ -91,6 +91,20 @@ coact 不新增动态 Worker 工厂，只规定普通工作线程与 AO 的交�
 
 **应用层事件暂存/丢弃策略**：状态未就绪时的应用层事件处理有两种已验证模式——吸收弧丢弃（demo `RecfgOrchAo` 的 4 条 stale `kRecfgStage` Internal 空弧：guard 只放行当前事务最近一次自驱，陈旧事件被无操作吸收）或应用侧暂存描述符（上述 parking ring 模式）。coact 不提供框架级 defer/recall（决议见 §6）。
 
+**应用层范式 1：HSM Internal 空弧丢弃（陈旧事件吸收）**
+
+- 场景：状态未就绪时到达的陈旧事件直接丢弃，不扰动当前事务（如前一次事务残留的 `kRecfgStage` 自驱）。
+- 写法：为每条会携带陈旧语义的 self-driven 弧紧邻配一条 `TransitionKind::Internal, nullptr, nullptr` 空弧；guard 只放行当前事务最近一次自驱对应的 stage 镜像值，其余落到 Internal 空弧被无操作吸收。参照 `examples/isp_pipeline/recfg_session.hpp:593-626` 的 `kRecfgTransitions`：`Sig::kRecfgStage` 的 4 条 External 自驱弧（:606-607、:610-611、:618-619、:622-623）各配一条 Internal 空弧（:608-609、:612-613、:620-621、:624-625）；guard 为 `at_syncing`/`at_resuming`/`at_reject_home`/`at_commit_home`（:580-591）。
+- demo 落点：`RecfgOrchAo` 重配置事务（recfg_session.hpp）。
+
+**应用层范式 2：应用侧描述符暂存（parking ring）**
+
+- 场景：完成结果需按序号匹配、非立即消费（异步完成按 frame_id 匹配，容许重叠、不容丢失）。
+- 写法：请求侧把业务描述符（IoMeta）存入固定容量 parking ring，完成侧按序号扫描匹配；匹配不到计 stale，FIFO 溢出清 parked。参照 `examples/isp_pipeline/isp_chain.hpp:477-629` 的 IspIrqWorker 交接：`request_irq`（:532-551）存 `IoMeta` 进固定容量 ring（`kParkDepth`，:486-492）；`complete_irq`（:573-604）按 `frame_id` 扫描匹配（:577-583）、陈旧计 `irq_stale`（:583-586）；`handle_fifo_ovf`（:618-629）清 parked。
+- demo 落点：7 个 worker 均按此模式（isp_chain.hpp），完成事件经 `coordinator().submit_from_task()` 回投。
+
+两范式与 §6 决议的关系：框架不提供 defer/recall，这两个应用层模式覆盖其实际需求——未就绪的陈旧事件走 Internal 空弧丢弃，需按序号匹配的完成结果走 parking ring 暂存；二者都不引入第四方事件归属，新同事不必再找框架级 defer。
+
 ### 4.4 强化事件生命周期【已实现】
 
 所有跨 AO 数据继续使用 `EventBlockLayout`、`alloc_typed()` 和 `event_gc()`。
