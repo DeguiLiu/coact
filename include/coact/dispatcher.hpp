@@ -101,6 +101,21 @@ public:
                The set wake latch coalesces producer signals while active. */
             staging_.begin_batch();
 
+            /* Single-point partition watermark sampling (production wiring):
+               the Dispatcher is the ONLY writer of Monitor's
+               prev_watermark_pct, so the threshold-crossing edge detection
+               inside sample_watermark races nothing - no ISR or producer
+               thread ever samples. Once per batch keeps the cost bounded. */
+            monitor_.sample_watermark(
+                PriorityClass::High,
+                staging_.watermark(Partition::High));
+            monitor_.sample_watermark(
+                PriorityClass::Normal,
+                staging_.watermark(Partition::Normal));
+            monitor_.sample_watermark(
+                PriorityClass::Low,
+                staging_.watermark(Partition::Low));
+
             /* Batched/immediate reclaim selected by the board profile. Every
                dequeued event releases its final reference here; the batched
                strategy collapses many single free_head CAS ops into one splice

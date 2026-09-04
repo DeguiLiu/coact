@@ -458,6 +458,71 @@ COACT_TEST(dispatcher_trace_dispatch_records)
     CHECK_EQ(0U, pool.used());
 }
 
+/* =========================================================================
+ * Dispatcher single-point watermark sampling: after the Runtime has drained
+ * at least one batch, all three partition watermarks must have been sampled
+ * into Monitor's global counters (the Dispatcher is the single writer of
+ * prev_watermark_pct, so the crossing edge detection races nothing).
+ * ========================================================================= */
+COACT_TEST(dispatcher_samples_partition_watermarks)
+{
+    g_counter_a.store(0);
+
+    AoA ao_a(kStates, 2U, kTransA, 1U, 1, 4U);
+    coact::Event init_e;
+    init_e.signal  = 0U;
+    init_e.pool_id = 0U;
+    init_e.ref_ctr = 0U;
+    ao_a.init(init_e);
+
+    IntPool pool;
+    pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs());
+
+    coact::pal::Posix pal;
+    coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
+
+    CHECK(rt.bind(&ao_a));
+    CHECK(rt.initialize());
+    rt.start();
+
+    /* AoA is PriorityClass::Normal (capacity 64, >52 queued = 80%). Keep the
+       producer pressure up until some Dispatcher per-batch sample observes
+       the Normal partition over the high-water mark (bounded by pool size:
+       each drained event returns to the pool, so the loop is sustainable).
+       The Dispatcher's batch-8 drain is slower than the alloc+submit burst,
+       so the backlog builds past 80% within a few rounds. */
+    bool crossed = false;
+    int submitted = 0;
+    for (int round = 0; round < 200; ++round) {
+        while (pool.used() < 60U) {
+            coact::Event* ev = pool.alloc(1U);
+            REQUIRE(ev != nullptr);
+            const coact::SubmitResult rr =
+                rt.coordinator().submit_from_task(
+                    coact::TargetId(1U), ev, coact::EventQos{false, false});
+            REQUIRE_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+                       static_cast<int>(rr.disposition));
+            ++submitted;
+        }
+        if (coact_test::relaxed(
+                rt.monitor().global().high_water_count[1]) > 0U) {
+            crossed = true;
+            break;
+        }
+        usleep(1000);
+    }
+    rt.stop();
+
+    /* All three partitions were sampled (pct in range). The loaded Normal
+       partition must have crossed the 80% high-water mark at least once. */
+    const auto& g = rt.monitor().global();
+    CHECK(coact_test::relaxed(g.watermark_pct[0]) <= 100U);
+    CHECK(coact_test::relaxed(g.watermark_pct[1]) <= 100U);
+    CHECK(coact_test::relaxed(g.watermark_pct[2]) <= 100U);
+    CHECK(crossed);
+    CHECK_EQ(0U, pool.used());
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

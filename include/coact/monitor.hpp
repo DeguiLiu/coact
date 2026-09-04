@@ -712,6 +712,15 @@ struct GlobalCounters {
 // includes coact/diag; the product adapter binds these to diag
 // record()/record_from_isr(). All callbacks are noexcept, non-blocking and
 // never allocate. Unbound (null) pointers make every trace no-op.
+//
+// ISR/task callback contract: on_submit carries from_isr so the adapter picks
+// the ISR-safe record entry (record_from_isr) for ISR-context submissions;
+// on_dispatch and on_lease_contention are Dispatcher/producer-thread
+// callbacks only. ISR-context callbacks (an on_submit invoked with
+// from_isr=true) must restrict themselves to fixed-width stores, lock-free
+// atomics and ISR-safe wakes: no mutex, no blocking semaphore, no
+// formatting, no allocation. The adapter that binds the ops owns this
+// guarantee.
 // ---------------------------------------------------------------------------
 struct TraceOps {
     void (*on_submit)(void* ctx, uint16_t source_id, TargetId target,

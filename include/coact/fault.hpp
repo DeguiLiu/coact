@@ -21,6 +21,12 @@ namespace coact {
 
 // ---------------------------------------------------------------------------
 // FaultPriority: severity carried with every fault report.
+//
+// coact ordering is ASCENDING (kLow=0 .. kCritical=3), matching BreakerLevel
+// and LogLevel where a higher value means higher severity. newosp's
+// FaultPriority uses the OPPOSITE direction (kCritical=0). The two encodings
+// must never be compared numerically across the boundary: an adapter wiring
+// a coact FaultReporter to a newosp-style sink owns the mapping.
 // ---------------------------------------------------------------------------
 enum class FaultPriority : uint8_t {
     kLow = 0U,
@@ -29,8 +35,14 @@ enum class FaultPriority : uint8_t {
     kCritical = 3U,
 };
 
-// Fault report callback signature. All implementations must be non-blocking,
-// noexcept, allocation-free and safe to call from ISR context.
+// Fault report callback signature. A callback may be invoked from either task
+// or ISR context (e.g. sample_watermark runs on the Dispatcher thread, but a
+// future ISR-side fault point may call from a handler). Every implementation
+// must therefore be ISR-SAFE, not merely task-safe:
+//   allowed:   fixed-width stores, lock-free atomic ops, ISR-safe wake hints.
+//   forbidden: mutex, blocking semaphore, formatting, allocation, thread
+//              creation. The adapter that binds fn owns this guarantee - a
+//              comment on the caller side is not sufficient.
 //   fault_index: module-defined fault point identifier.
 //   detail:      module-defined payload (may pack several fields).
 //   priority:    severity of this report.
