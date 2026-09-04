@@ -258,6 +258,21 @@ int main()
     // The callbacks only store pointers now; records begin once g_log starts.
     rt.monitor().bind_trace(DiagTrace::ops());
 
+    // Monitor watermark crossing faults (design P3.1): the Dispatcher-side
+    // single-point sampler reports 80% threshold crossings through this
+    // boundary (review P1: previously bound on no demo sink, so crossings
+    // were silently dropped). kWarn stays on the normal lane per the diag
+    // lane rule (only kError is critical); the sink's priority arg carries
+    // the severity.
+    static const coact::FaultReporter monitor_fault{
+        [](uint16_t partition, uint32_t detail,
+           coact::FaultPriority priority, void*) noexcept {
+            g_log.record_from_task<LogLevel::kWarn, kEvtWatermarkFault>(
+                partition, detail & 0xFFFFU, (detail >> 16U) & 0xFFFFU,
+                static_cast<uint32_t>(priority));
+        }, nullptr};
+    rt.monitor().bind_fault(monitor_fault);
+
     // TargetIds (1-based, in bind order):
     //   1=Orchestrator, 2=IRSC driver, 3=low_gain, 4=high_gain, 5=hl_fuse,
     //   6=enhance, 7=tpd_chain, 8=video FSM (merged PIC+TEMP), 9=video pack
@@ -360,15 +375,25 @@ int main()
 
     // Worker fault sink (design_static_aop A4): a completion-reject fault is
     // reported through each worker's FaultReporter boundary as
-    // kEvtWorkerFault (a0=worker_id a1=result a2=rejects). Null-bound would
-    // be zero cost but silent; the demo binds all five so the path is
-    // observable. Reports run on worker threads -> record_from_task.
+    // kEvtWorkerFault (a0=worker_id a1=result a2=rejects). Severity routing
+    // (review P2): kCritical/kHigh faults log at kError -> the diag CRITICAL
+    // lane (an error burst never consumes normal capacity); kMedium/kLow
+    // stay on normal. Null-bound would be zero cost but silent; the demo
+    // binds all five so the path is observable. Reports run on worker
+    // threads -> record_from_task.
     static const coact::FaultReporter worker_fault{
         [](uint16_t worker_id, uint32_t detail,
            coact::FaultPriority priority, void*) noexcept {
-            g_log.record_from_task<LogLevel::kWarn, kEvtWorkerFault>(
-                worker_id, (detail >> 16U) & 0xFFFFU, detail & 0xFFFFU,
-                static_cast<uint32_t>(priority));
+            if (coact::FaultPriority::kHigh <= priority) {
+                g_log.record_from_task<LogLevel::kError, kEvtWorkerFault>(
+                    worker_id, (detail >> 16U) & 0xFFFFU, detail & 0xFFFFU,
+                    static_cast<uint32_t>(priority));
+            }
+            else {
+                g_log.record_from_task<LogLevel::kWarn, kEvtWorkerFault>(
+                    worker_id, (detail >> 16U) & 0xFFFFU, detail & 0xFFFFU,
+                    static_cast<uint32_t>(priority));
+            }
         }, nullptr};
     cmd_dma.bind_fault(worker_fault);
     isp_irq_enh.bind_fault(worker_fault);

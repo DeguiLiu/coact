@@ -2,7 +2,7 @@
 
 ## 结论先行
 
-`isp_pipeline` 已经具备 CRTP worker 分层，但当前分层主要解决“代码复用”，还没有系统性承载计时、Trace、Fault 和生命周期切面。下一步建议采用 **CRTP + 编译期策略链** 做静态 AOP，不引入运行时 aspect 注册表、虚函数、`std::function` 或动态分配。
+`isp_pipeline` 已经具备 CRTP worker 分层。**本方案 A0-A6 已实施**（提交 bace05c/43ddb37/7422b77/5516e94）：计时、Trace、Fault 切面经 **CRTP + 编译期策略链** 静态织入（`InvokePolicy` 执行点闭合 CRTP 绕过问题），不引入运行时 aspect 注册表、虚函数、`std::function` 或动态分配。UsbDmaWorker 决议不接入（单槽交接 + SoftIrq 双线程生命周期与单线程执行模型不符，见 §4.3）。
 
 目标结构：
 
@@ -33,6 +33,13 @@ WorkerRuntime
 - `WorkerBase`、`PeriodicProducerBase`、`SoftIrqCompletionWorker`、`CompletionWorkerBase`：`examples/isp_pipeline/sensor_irsc.hpp`
 - 完成型 worker：`examples/isp_pipeline/isp_chain.hpp` 与 `sensor_irsc.hpp`
 - RT-Thread PAL：`include/coact/pal_rtthread.hpp`
+
+**实施期决议记录**（评审后固化）：
+
+1. `kEvtWorkerExec` 的 elapsed 只记录低 32 位（a2=elapsed_lo，与 24 字节 LogRecord 的 4 参数上限一致）。worker 单次执行是硬件延迟模拟（50-600 µs），低 32 位纳秒（约 4.3 s）不构成实际溢出；**不扩展高 32 位**。若未来出现真实长耗时 worker，再议 a3 或独立事件 id。
+2. `atomic<uint64_t>` 落入 `is_always_lock_free` 编译门（与 ao.hpp 同纪律）：目标工具链不支持（无 LDREXD 的 Cortex-M0/M3）时编译失败而非静默引入 libatomic 锁；届时回退为两个 `uint32_t` 计数（断言消息已提示）。板级验证清单保留此项核查。
+3. `submit_completion()` 检查 `SubmitResult`：任何丢弃类 disposition（RejectedFull/RejectedState/DroppedOverload 等）计入 completion_rejects，与分配失败同权重触发 Fault 路径。
+4. 高严重度 fault（kHigh 及以上）经 sink 映射为 `LogLevel::kError` 进入 diag critical lane（lane 规则：仅 Error 走 critical）；kMedium 以下保持 normal lane。
 
 ## 2. 为什么不用简单的外层继承
 

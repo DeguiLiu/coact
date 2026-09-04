@@ -166,6 +166,7 @@ enum LogEvt : uint16_t {
     kEvtTraceLease    = 0x0102U,  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
     kEvtWorkerExec    = 0x0103U,  // a0=worker_id a1=result a2=elapsed_lo
     kEvtWorkerFault   = 0x0104U,  // a0=worker_id a1=result a2=rejects
+    kEvtWatermarkFault = 0x0105U, // a0=partition a1=pct a2=priority
 };
 
 // ---------------------------------------------------------------------------

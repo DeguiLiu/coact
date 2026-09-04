@@ -74,6 +74,18 @@ target_include_directories(test_timer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 # BitFieldView: compile-time mask/shift boundaries, RMW isolation, and
 # end-to-end integration with PeriphRegCache's three-flag protocol through
 # the field-level write_field / read_field entry (the demo's regmap layer).
+# Static AOP worker-layer tests (design_static_aop A4): forced completion
+# rejects must fire the FaultAspect path through the bound FaultReporter.
+coact_add_test(test_worker_aop
+    test_worker_aop.cpp
+    pal_posix.cpp
+    ${CMAKE_SOURCE_DIR}/src/diag/log_rtthread.cpp)
+target_link_libraries(test_worker_aop PRIVATE Threads::Threads)
+target_compile_definitions(test_worker_aop PRIVATE COACT_RTT_STUB COACT_TRACE=1)
+target_include_directories(test_worker_aop PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    ${CMAKE_SOURCE_DIR}/examples)
+
 coact_add_test(test_bitfield
     test_bitfield.cpp
     pal_posix.cpp

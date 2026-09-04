@@ -70,7 +70,7 @@ flowchart LR
 | 文件 | 行数 | 角色 |
 |---|---|---|
 | common.hpp | ~950 | 共享词汇层（事件/黑板/PAL 选型/HSM 表） |
-| sensor_irsc.hpp/.cpp | 1103/37 | PeriodicProducerBase、SoftIrqCompletionWorker、WorkerBase/CompletionWorkerBase + CmdDmaWorker + IrscDriverAo |
+| sensor_irsc.hpp/.cpp | 1345/37 | PeriodicProducerBase、SoftIrqCompletionWorker、WorkerBase/CompletionWorkerBase + AOP 切面链 + CmdDmaWorker + IrscDriverAo |
 | isp_chain.hpp/.cpp | 746/40 | CompletionWorkerBase 派生的帧侧 worker + 增益双链 + HlFuseAo + VideoPackAo |
 | video_stream.hpp/.cpp | 934/40 | VideoFsmAo 乘积状态表 + QuiescePolicy |
 | output_itf.hpp/.cpp | 612/42 | 输出 sink + UsbDmaWorker + WrapeAo/WinHostAo |

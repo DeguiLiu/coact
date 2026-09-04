@@ -1071,8 +1071,29 @@ protected:
     void submit_completion(TargetId target, Layout* event) noexcept
     {
         if (nullptr != event) {
-            this->rt->coordinator().submit_from_task(target, &event->event,
-                                                     {false, false});
+            const coact::SubmitResult r =
+                this->rt->coordinator().submit_from_task(
+                    target, &event->event, {false, false});
+            // Review P1: a completed job whose event was DROPPED by the
+            // coordinator (RejectedFull/RejectedState/overload) is a lost
+            // completion - count it like an allocation reject so the
+            // rejects-delta fault signal in execute() sees it. Direct
+            // success and Queued are both deliveries; only drops count.
+            switch (r.disposition) {
+                case coact::SubmitDisposition::Direct:
+                case coact::SubmitDisposition::Queued:
+                    break;
+                case coact::SubmitDisposition::RejectedFull:
+                case coact::SubmitDisposition::RejectedState:
+                case coact::SubmitDisposition::DroppedOverload:
+                case coact::SubmitDisposition::DroppedRateLimit:
+                case coact::SubmitDisposition::DroppedPolicy:
+                case coact::SubmitDisposition::Merged:
+                    ++static_cast<Derived*>(this)->completion_rejects;
+                    break;
+                default:
+                    break;
+            }
         }
     }
 
