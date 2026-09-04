@@ -503,6 +503,47 @@ COACT_TEST(spsc_push_batch_empty_input)
     CHECK_EQ(q.size(), 0U);
 }
 
+// Boundary hardening (review R2 follow-up): pop_batch/peek must reject a null
+// output buffer, and a max_count larger than the capacity must clamp to the
+// ring contents, never over-run the caller's storage or wrap the sequences.
+COACT_TEST(spsc_pop_batch_null_out_returns_zero)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    uint16_t v = 1U;
+    REQUIRE(q.try_push(std::move(v)));
+    CHECK_EQ(q.pop_batch(nullptr, 4U), 0U);
+    CHECK_EQ(q.size(), 1U);   // nothing consumed
+}
+
+COACT_TEST(spsc_pop_batch_max_count_over_capacity_clamps)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    for (uint16_t i = 0U; i < 4U; ++i) {
+        REQUIRE(q.try_push(std::move(i)));
+    }
+    /* 100 > capacity 4 and > available 4: must clamp to 4, not 100. */
+    CHECK_EQ(q.pop_batch(nullptr, 100U), 0U);
+    uint16_t out[4] = {0U, 0U, 0U, 0U};
+    CHECK_EQ(q.pop_batch(out, 100U), 4U);
+    CHECK_EQ(out[0], 0U);
+    CHECK_EQ(out[3], 3U);
+    CHECK_EQ(q.size(), 0U);
+}
+
+// peek takes a reference, so a null buffer is unrepresentable at the API
+// level; its empty-contract is already covered by spsc_peek_empty_returns_
+// false. discard's max_count clamp mirrors pop_batch: over-capacity requests
+// discard exactly the available contents.
+COACT_TEST(spsc_discard_max_count_over_capacity_clamps)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    for (uint16_t i = 0U; i < 3U; ++i) {
+        REQUIRE(q.try_push(std::move(i)));
+    }
+    CHECK_EQ(q.discard(100U), 3U);
+    CHECK_EQ(q.size(), 0U);
+}
+
 // ---------------------------------------------------------------------------
 // Batch API under real SMP concurrency: a producer thread pushes in batches,
 // a consumer thread drains in batches. Total count must be conserved and the

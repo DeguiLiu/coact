@@ -174,6 +174,9 @@ public:
     // store of tail. Returns the count actually popped; 0 when empty.
     [[nodiscard]] uint16_t pop_batch(T* out, uint16_t max_count) noexcept
     {
+        if (nullptr == out) {
+            return 0U;
+        }
         const uint16_t t = tail_.load(std::memory_order_relaxed);
         const uint16_t h = head_.load(std::memory_order_acquire);
         const uint16_t available = static_cast<uint16_t>(h - t);
