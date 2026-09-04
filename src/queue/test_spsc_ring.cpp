@@ -357,6 +357,208 @@ COACT_TEST(spsc_single_producer_single_consumer_stress)
     CHECK_EQ(q.size(), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Consumer batch drain: pop_batch transfers at most max_count elements in
+// FIFO order with a single acquire load of head (single-drain discipline).
+// ---------------------------------------------------------------------------
+COACT_TEST(spsc_pop_batch_empty_returns_zero)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    uint16_t out[4] = {0U, 0U, 0U, 0U};
+    CHECK_EQ(q.pop_batch(out, 4U), 0U);
+    CHECK_EQ(q.size(), 0U);
+}
+
+COACT_TEST(spsc_pop_batch_transfers_in_order)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    for (uint16_t i = 0U; i < 3U; ++i) {
+        REQUIRE(q.try_push(std::move(i)));
+    }
+    uint16_t out[5] = {0U, 0U, 0U, 0U, 0U};
+    CHECK_EQ(q.pop_batch(out, 5U), 3U);
+    CHECK_EQ(out[0], 0U);
+    CHECK_EQ(out[1], 1U);
+    CHECK_EQ(out[2], 2U);
+    CHECK_EQ(q.size(), 0U);
+    CHECK_EQ(q.pop_batch(out, 5U), 0U);   // drained
+}
+
+COACT_TEST(spsc_pop_batch_respects_max)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    for (uint16_t i = 0U; i < 4U; ++i) {
+        REQUIRE(q.try_push(std::move(i)));
+    }
+    uint16_t out[2] = {0U, 0U};
+    CHECK_EQ(q.pop_batch(out, 2U), 2U);
+    CHECK_EQ(q.size(), 2U);
+    CHECK_EQ(q.pop_batch(out, 2U), 2U);   // remaining 2 still poppable
+    CHECK_EQ(out[0], 2U);
+    CHECK_EQ(out[1], 3U);
+    CHECK_EQ(q.size(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// discard: drop without reading, keeping FIFO semantics for the survivors
+// and the same slot-destruction discipline as try_pop.
+// ---------------------------------------------------------------------------
+COACT_TEST(spsc_discard_drops_without_read)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    for (uint16_t i = 0U; i < 3U; ++i) {
+        REQUIRE(q.try_push(std::move(i)));
+    }
+    CHECK_EQ(q.discard(2U), 2U);
+    CHECK_EQ(q.size(), 1U);
+    uint16_t v = 0U;
+    REQUIRE(q.try_pop(v));
+    CHECK_EQ(v, 2U);   // FIFO preserved: the survivor is the 3rd pushed value
+}
+
+COACT_TEST(spsc_discard_empty_returns_zero)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    CHECK_EQ(q.discard(2U), 0U);
+    CHECK_EQ(q.size(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// peek: observe the front element without consuming it.
+// ---------------------------------------------------------------------------
+COACT_TEST(spsc_peek_does_not_consume)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    REQUIRE(q.try_push(10U));
+    REQUIRE(q.try_push(11U));
+
+    uint16_t v = 0U;
+    REQUIRE(q.peek(v));
+    CHECK_EQ(v, 10U);
+    REQUIRE(q.peek(v));   // idempotent: same front, nothing consumed
+    CHECK_EQ(v, 10U);
+    CHECK_EQ(q.size(), 2U);
+
+    REQUIRE(q.try_pop(v));
+    CHECK_EQ(v, 10U);
+    REQUIRE(q.try_pop(v));
+    CHECK_EQ(v, 11U);
+}
+
+COACT_TEST(spsc_peek_empty_returns_false)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    uint16_t v = 0xAAAAU;
+    CHECK(!q.peek(v));
+    CHECK_EQ(v, 0xAAAAU);   // untouched on failure
+    CHECK_EQ(q.size(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Producer batch publish: push_batch clamps to free capacity, keeps partial
+// success (no rollback), and publishes the whole batch with one release
+// store of head.
+// ---------------------------------------------------------------------------
+COACT_TEST(spsc_push_batch_full_capacity_clamps)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    const uint16_t values[5] = {10U, 11U, 12U, 13U, 14U};
+    CHECK_EQ(q.push_batch(values, 5U), 4U);
+    CHECK_EQ(q.size(), 4U);
+
+    uint16_t out[4] = {0U, 0U, 0U, 0U};
+    CHECK_EQ(q.pop_batch(out, 4U), 4U);
+    CHECK_EQ(out[0], 10U);
+    CHECK_EQ(out[3], 13U);   // the 5th value was never pushed
+}
+
+COACT_TEST(spsc_push_batch_partial_after_partial_drain)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    for (uint16_t i = 0U; i < 3U; ++i) {
+        REQUIRE(q.try_push(std::move(i)));   // 0, 1, 2
+    }
+    uint16_t drained[2] = {0U, 0U};
+    REQUIRE_EQ(q.pop_batch(drained, 2U), 2U);   // 0, 1 gone; 2 remains
+
+    const uint16_t values[3] = {20U, 21U, 22U};
+    CHECK_EQ(q.push_batch(values, 3U), 3U);   // exactly 3 free slots
+    CHECK_EQ(q.size(), 4U);
+
+    uint16_t out[4] = {0U, 0U, 0U, 0U};
+    REQUIRE_EQ(q.pop_batch(out, 4U), 4U);
+    CHECK_EQ(out[0], 2U);    // FIFO across batches: survivor first
+    CHECK_EQ(out[1], 20U);
+    CHECK_EQ(out[2], 21U);
+    CHECK_EQ(out[3], 22U);
+}
+
+COACT_TEST(spsc_push_batch_empty_input)
+{
+    coact::SpscRing<uint16_t, 4> q;
+    const uint16_t values[1] = {0U};
+    CHECK_EQ(q.push_batch(nullptr, 0U), 0U);
+    CHECK_EQ(q.push_batch(values, 0U), 0U);
+    CHECK_EQ(q.push_batch(nullptr, 3U), 0U);   // defensive: null + count>0
+    CHECK_EQ(q.size(), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Batch API under real SMP concurrency: a producer thread pushes in batches,
+// a consumer thread drains in batches. Total count must be conserved and the
+// global FIFO order preserved (batches never reorder elements).
+// ---------------------------------------------------------------------------
+COACT_TEST(spsc_batch_producer_consumer_threaded)
+{
+    constexpr uint32_t kRounds = 2000U;
+    constexpr uint16_t kBatch = 4U;
+    constexpr uint32_t kTotal = kRounds * kBatch;
+    coact::SpscRing<uint32_t, 16> q;
+    std::atomic<bool> ok{true};
+    std::atomic<uint32_t> consumed{0U};
+
+    std::thread consumer([&q, &ok, &consumed]() {
+        uint32_t buf[kBatch];
+        uint32_t expected = 0U;
+        uint32_t count = 0U;
+        while (count < kTotal) {
+            const uint16_t n = q.pop_batch(buf, kBatch);
+            for (uint16_t i = 0U; i < n; ++i) {
+                if (buf[i] != expected) {
+                    ok.store(false, std::memory_order_relaxed);
+                }
+                ++expected;
+            }
+            count += n;
+            if (0U == n) {
+                std::this_thread::yield();
+            }
+        }
+        consumed.store(count, std::memory_order_relaxed);
+    });
+
+    for (uint32_t round = 0U; round < kRounds; ++round) {
+        uint32_t sent = 0U;
+        while (sent < kBatch) {
+            const uint32_t base = round * kBatch;
+            uint32_t values[kBatch];
+            for (uint16_t i = 0U; i < kBatch; ++i) {
+                values[i] = base + i;
+            }
+            sent += q.push_batch(values, kBatch);
+            if (sent < kBatch) {
+                std::this_thread::yield();
+            }
+        }
+    }
+    consumer.join();
+
+    CHECK(ok.load());
+    CHECK_EQ(consumed.load(), kTotal);
+    CHECK_EQ(q.size(), 0U);
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()
+

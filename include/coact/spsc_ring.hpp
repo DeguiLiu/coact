@@ -29,6 +29,20 @@
 // target toolchain ever proves 16-bit atomics non-lock-free, instantiation is
 // rejected and the caller must fall back to the short irq-mask ring. libatomic
 // lock fallback is never silently accepted.
+//
+// Batch API discipline (R2): pop_batch()/push_batch() keep the single-load /
+// single-store discipline of the scalar paths. The consumer loads head ONCE
+// with acquire, then pops up to min(available, max_count) slots and publishes
+// the recycled slots with ONE release store of tail - no per-slot reload of
+// head (tail is consumer-owned and cannot advance while the consumer is
+// running, so a single snapshot is safe). Symmetrically the producer loads
+// tail once with acquire, placement-constructs the whole batch, and publishes
+// it with ONE release store of head: intermediate slots stay invisible to the
+// consumer until that final store. Partial success is never rolled back; the
+// caller handles the returned count. Production motivation: a diag writer
+// that batch-drains avoids per-element cache-line ping-pong on the sequence
+// pair, and the pal_rtthread SoftIrq ring (a bare-array ring today) is a
+// future migration target for these APIs.
 #pragma once
 
 #include <atomic>
@@ -110,6 +124,34 @@ public:
         return QueueResult{true, static_cast<uint16_t>(n + 1U)};
     }
 
+    // Batch push (R2). Constructs up to `count` values (clamped to the free
+    // capacity) and publishes them with a single release store of head; the
+    // intermediate slots are invisible to the consumer until that final
+    // store. Returns the number actually pushed; a partial success is kept
+    // (never rolled back), so the caller advances by the return value. A null
+    // `values` with a non-zero count is rejected defensively.
+    [[nodiscard]] uint16_t push_batch(const T* values, uint16_t count) noexcept
+    {
+        if ((nullptr == values) && (0U != count)) {
+            return 0U;
+        }
+        const uint16_t h = head_.load(std::memory_order_relaxed);
+        const uint16_t t = tail_.load(std::memory_order_acquire);
+        const uint16_t n = static_cast<uint16_t>(h - t);
+        const uint16_t free_slots = static_cast<uint16_t>(Capacity - n);
+        /* min() on the promoted types would widen past uint16; compute the
+           clamp in uint32_t, then narrow once - the result is bounded by both
+           count and free_slots (both <= Capacity), so the cast is lossless. */
+        const uint32_t clamped = (count < free_slots) ? count : free_slots;
+        const uint16_t to_push = static_cast<uint16_t>(clamped);
+        for (uint16_t i = 0U; i < to_push; ++i) {
+            T* slot = slot_at(static_cast<uint16_t>(h + i));
+            new (static_cast<void*>(slot)) T(values[i]);
+        }
+        head_.store(static_cast<uint16_t>(h + to_push), std::memory_order_release);
+        return to_push;
+    }
+
     // Pop a payload into `out`. On failure (empty) `out` is untouched.
     [[nodiscard]] bool try_pop(T& out) noexcept
     {
@@ -122,6 +164,62 @@ public:
         out = std::move(*slot);
         slot->~T();
         tail_.store(static_cast<uint16_t>(t + 1U), std::memory_order_release);
+        return true;
+    }
+
+    // Batch pop (R2): move out up to max_count elements (FIFO) into `out`.
+    // Loads head ONCE with acquire (single-drain discipline: tail is
+    // consumer-owned and cannot advance concurrently), moves out
+    // min(available, max_count) slots, and recycles them with ONE release
+    // store of tail. Returns the count actually popped; 0 when empty.
+    [[nodiscard]] uint16_t pop_batch(T* out, uint16_t max_count) noexcept
+    {
+        const uint16_t t = tail_.load(std::memory_order_relaxed);
+        const uint16_t h = head_.load(std::memory_order_acquire);
+        const uint16_t available = static_cast<uint16_t>(h - t);
+        const uint32_t clamped = (max_count < available) ? max_count : available;
+        const uint16_t to_pop = static_cast<uint16_t>(clamped);
+        for (uint16_t i = 0U; i < to_pop; ++i) {
+            T* slot = slot_at(static_cast<uint16_t>(t + i));
+            out[i] = std::move(*slot);
+            slot->~T();
+        }
+        tail_.store(static_cast<uint16_t>(t + to_pop), std::memory_order_release);
+        return to_pop;
+    }
+
+    // Discard (R2): drop up to max_count front elements without moving them
+    // out, keeping the try_pop slot-destruction discipline (the payload is
+    // destroyed, not leaked). Returns the count actually discarded.
+    [[nodiscard]] uint16_t discard(uint16_t max_count) noexcept
+    {
+        const uint16_t t = tail_.load(std::memory_order_relaxed);
+        const uint16_t h = head_.load(std::memory_order_acquire);
+        const uint16_t available = static_cast<uint16_t>(h - t);
+        const uint32_t clamped = (max_count < available) ? max_count : available;
+        const uint16_t to_drop = static_cast<uint16_t>(clamped);
+        for (uint16_t i = 0U; i < to_drop; ++i) {
+            T* slot = slot_at(static_cast<uint16_t>(t + i));
+            slot->~T();
+        }
+        tail_.store(static_cast<uint16_t>(t + to_drop), std::memory_order_release);
+        return to_drop;
+    }
+
+    // Peek (R2): copy-observe the front element without consuming it. The
+    // head load uses acquire (not relaxed) to match try_pop: seeing head > t
+    // must guarantee the payload write of that slot (released by the
+    // producer's store to head) is visible to this thread. Both head_ and
+    // tail_ are read-only here, so the method is const.
+    [[nodiscard]] bool peek(T& out) const noexcept
+    {
+        const uint16_t t = tail_.load(std::memory_order_relaxed);
+        const uint16_t h = head_.load(std::memory_order_acquire);
+        if (t == h) {
+            return false;
+        }
+        T* slot = slot_at(t);
+        out = *slot;
         return true;
     }
 
@@ -140,13 +238,17 @@ public:
     }
 
 private:
-    T* slot_at(uint16_t seq) noexcept
+    T* slot_at(uint16_t seq) const noexcept
     {
         const uint16_t idx = static_cast<uint16_t>(seq & (Capacity - 1U));
         /* launder: cells_ is raw storage; the object at each slot began its
            lifetime via placement-new, so a plain cast back is formally UB
-           (CWG 2182) - the same discipline queue.hpp uses. */
-        return std::launder(static_cast<T*>(static_cast<void*>(&cells_[idx])));
+           (CWG 2182) - the same discipline queue.hpp uses. The const_cast is
+           required so const peek() can share this accessor; the underlying
+           slot objects are non-const (placement-new'd), so removing const on
+           the storage pointer is well-defined. */
+        return std::launder(const_cast<T*>(static_cast<const T*>(
+            static_cast<const void*>(&cells_[idx]))));
     }
 
     // Producer-owned head and consumer-owned tail live on separate cache
