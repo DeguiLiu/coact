@@ -416,9 +416,20 @@ struct Payload {
 constexpr size_t kPayloadAlign = 64U;
 using Layout = coact::EventBlockLayout<IoMeta, sizeof(Payload), kPayloadAlign>;
 
+// Platform profile (design_isp_pipeline_optimization P1): the RT-Thread build
+// uses the single-core profile end to end - plain irq-mask pool backend,
+// ImmediateReclaimer, SingleCoreCriticalRing staging - while the host/coro
+// builds keep HostSmpProfile (tagged-CAS pool, batched reclaim). PoolT, Rt
+// and the Dispatcher must never mix profiles.
+#ifdef ISP_DEMO_USE_RTT
+using DemoProfile = coact::RttSingleCoreProfile;
+#else
+using DemoProfile = coact::HostSmpProfile;
+#endif
+
 using PoolT = coact::EventPool<static_cast<uint16_t>(sizeof(Layout)),
-                               128U, coact::HostSmpProfile, kPayloadAlign>;
-using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal>;
+                               128U, DemoProfile, kPayloadAlign>;
+using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal, DemoProfile>;
 
 // ---------------------------------------------------------------------------
 // DDR image region. Mirrors isp_stream_dma (ISP domain) / stream_out_dma

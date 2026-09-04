@@ -225,11 +225,27 @@ int main()
     // alloc's load_next on the same free block, silently corrupting the
     // free list (lost/duplicated events under stress). The spinlock is held
     // only across alloc/reclaim/splice — a few stores, never user code.
+    // Pool critical section, platform-routed (design_isp_pipeline_optimization
+    // P1). RT-Thread single-core: the plain irq-mask section (O(1), and alloc
+    // vs reclaim are never concurrent on one core). Host/coro (SMP): the
+    // POSIX PAL's irq_save() is a no-op, so a pool shared by MULTIPLE
+    // allocating/reclaiming threads (Dispatcher + 7 worker pthreads) must
+    // inject the spin critical section - the no-op CS lets the batched
+    // reclaim's next-field writes race a concurrent alloc's load_next on the
+    // same free block, silently corrupting the free list. The spinlock is
+    // held only across alloc/reclaim/splice - a few stores, never user code.
+#ifdef ISP_DEMO_USE_RTT
+    alignas(kPayloadAlign) std::array<uint8_t, sizeof(Layout) * 128U + kPayloadAlign> storage{};
+    PoolT pool;
+    pool.init(storage.data(), storage.size(),
+              coact::make_critical_section(pal));
+#else
     coact::SpinCriticalSection pool_cs;
     alignas(kPayloadAlign) std::array<uint8_t, sizeof(Layout) * 128U + kPayloadAlign> storage{};
     PoolT pool;
     pool.init(storage.data(), storage.size(),
               coact::make_spin_critical_section(pool_cs));
+#endif
 
     Rt rt(pal);
 

@@ -395,6 +395,9 @@ struct ReservedFrontStaging {
     bool any_buffered() const noexcept { return !consumed_; }
     bool any_ready() const noexcept { return front_ready_ && !consumed_; }
     void release_front() noexcept { front_ready_ = true; }
+    // Dispatcher per-batch watermark sampling (production wiring): this mock
+    // serves a single synthetic slot, so every partition reports empty.
+    uint8_t watermark(coact::Partition) const noexcept { return 0U; }
 
 private:
     coact::Event event_{1U, 0U, 0U};

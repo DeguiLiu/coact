@@ -272,8 +272,10 @@ private:
         pending.increment();
         /* Cache the signal BEFORE enqueue: ownership transfers to the staging
            queue at this point, so the Dispatcher may dispatch and reclaim the
-           event concurrently with anything read below. */
-        const uint16_t staged_signal = e->signal;
+           event concurrently with anything read below. The cache itself is
+           the P0-2 race fix and stays compiled with COACT_TRACE=0; only the
+           trace consumers of the cached value are gate-compiled. */
+        [[maybe_unused]] const uint16_t staged_signal = e->signal;
         if (!staging_.enqueue(target, e, priority_class, now_ns)) {
             pending.decrement();
             COACT_TRACE_POINT(
