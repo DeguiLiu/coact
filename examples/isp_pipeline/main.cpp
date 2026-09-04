@@ -357,6 +357,25 @@ int main()
     IspIrqWorker isp_irq_tpd;    // TPD node-done line (ISP hw IRQ 1)
     SoutDmaWorker sout_dma;      // SOUT writeback (path id in the job)
     MipiIrqWorker mipi_irq;      // MIPI CSI TX completion
+
+    // Worker fault sink (design_static_aop A4): a completion-reject fault is
+    // reported through each worker's FaultReporter boundary as
+    // kEvtWorkerFault (a0=worker_id a1=result a2=rejects). Null-bound would
+    // be zero cost but silent; the demo binds all five so the path is
+    // observable. Reports run on worker threads -> record_from_task.
+    static const coact::FaultReporter worker_fault{
+        [](uint16_t worker_id, uint32_t detail,
+           coact::FaultPriority priority, void*) noexcept {
+            g_log.record_from_task<LogLevel::kWarn, kEvtWorkerFault>(
+                worker_id, (detail >> 16U) & 0xFFFFU, detail & 0xFFFFU,
+                static_cast<uint32_t>(priority));
+        }, nullptr};
+    cmd_dma.bind_fault(worker_fault);
+    isp_irq_enh.bind_fault(worker_fault);
+    isp_irq_tpd.bind_fault(worker_fault);
+    sout_dma.bind_fault(worker_fault);
+    mipi_irq.bind_fault(worker_fault);
+
     // Worker bring-up failures are fatal (review P1): a half-started
     // channel would reject every submit and the scenario would misreport.
     if (!cmd_dma.start(&pool, &rt, kIrscId)

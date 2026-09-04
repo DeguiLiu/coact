@@ -943,7 +943,8 @@ using DemoWorkerBase = WorkerBase<Derived, Job, kDepthV, DemoPal>;
 // chain; the chain is fixed in the type, never adjusted at runtime.
 // ---------------------------------------------------------------------------
 // CompletionInvoke: the innermost policy - routes through the
-// CompletionWorkerBase hook, which downcasts to the concrete execute_job.
+// CompletionWorkerBase hook, which downcasts to the concrete execute_job
+// and converts the completion_rejects delta into an explicit WorkerResult.
 // (The policy receives the CompletionWorkerBase reference, NOT the most
 // derived type, so this must call execute() - design §2's bypass hazard
 // applies to any double-CRTP chain.)
@@ -951,8 +952,7 @@ struct CompletionInvoke {
     template <typename Worker, typename Job>
     static WorkerResult invoke(Worker& worker, const Job& job) noexcept
     {
-        worker.execute(job);
-        return WorkerResult::kOk;
+        return worker.execute(job);
     }
 };
 
@@ -979,11 +979,22 @@ public:
 
     static constexpr const char* name() noexcept { return Derived::name(); }
 
-    // WorkerCore calls this hook after dequeuing a job. The concrete type owns
-    // only the hardware-facing execute_job implementation.
-    void execute(const Job& job)
+    // WorkerCore's policy chain lands here (CompletionInvoke). The concrete
+    // type owns the hardware-facing execute_job; the FAILURE signal is the
+    // completion_rejects delta across the invocation (execute_job stays
+    // void - coact failures are counters, not exceptions): any increment
+    // means the completion event could not be allocated/submitted, which is
+    // exactly what FaultAspect must see (review: the fault path was
+    // previously unreachable with a constant kOk).
+    WorkerResult execute(const Job& job)
     {
+        const uint32_t rejects_before =
+            static_cast<Derived*>(this)->completion_rejects;
         static_cast<Derived*>(this)->execute_job(job);
+        const uint32_t rejects_after =
+            static_cast<Derived*>(this)->completion_rejects;
+        return (rejects_after != rejects_before) ? WorkerResult::kFault
+                                                 : WorkerResult::kOk;
     }
 
     // ---- Aspect hooks (design_static_aop A2-A4) --------------------------
