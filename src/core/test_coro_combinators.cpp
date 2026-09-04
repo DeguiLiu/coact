@@ -81,7 +81,7 @@ struct Rig {
           groups(pool, rt.coordinator()),
           inputs(pool, rt.coordinator())
     {
-        pool.init(g_storage, sizeof(g_storage));
+        pool.init(g_storage, sizeof(g_storage), coact::detail::noop_cs());
         coact::Event init_e;
         init_e.signal = 0U;
         init_e.pool_id = 0U;

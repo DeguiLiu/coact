@@ -388,11 +388,31 @@ public:
     }
 
     // Initialize the lock-free indexed free list from external storage, bind
-    // the platform critical-section hook, and register this pool. The injected
-    // CriticalSection is the same hook the single-core queue backend uses:
-    // RT-Thread maps it to irq mask, POSIX tests inject no-ops.
-    bool init(void* storage, size_t bytes,
-              CriticalSection cs = detail::noop_cs()) noexcept
+    // the platform critical-section hook, and register this pool.
+    //
+    // CriticalSection selection rules (SMP-correctness footgun guard):
+    //  - A batched-reclaim profile (HostSmpProfile) has release() writing
+    //    each block's `next` field outside the head CAS, racing a concurrent
+    //    alloc's load_next unless the CS is a REAL serialization
+    //    (make_spin_critical_section). The two-arg overload (no explicit CS)
+    //    therefore REJECTS init on a batched profile: the caller must pass
+    //    one of the explicit-CS overloads below and think about it.
+    //  - The three-arg overload accepts any CS, including the explicit
+    //    detail::noop_cs(): that is the caller asserting "alloc and reclaim
+    //    never interleave here" (single-threaded test). Cross-thread release
+    //    under a no-op CS on a batched profile is a data race - the caller
+    //    owns that claim.
+    bool init(void* storage, size_t bytes) noexcept
+    {
+        if constexpr (!detail::is_single_core_pool_profile_v<Profile>) {
+            /* Batched reclaim with no CS injected: reject - the caller must
+               choose explicitly (spin CS for SMP, or an acknowledged no-op). */
+            return false;
+        }
+        return init(storage, bytes, detail::noop_cs());
+    }
+
+    bool init(void* storage, size_t bytes, CriticalSection cs) noexcept
     {
         if (pool_id_ != 0U || storage == nullptr || cs.save == nullptr ||
             cs.restore == nullptr) {

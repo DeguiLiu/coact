@@ -172,7 +172,7 @@ COACT_TEST(pool_lifecycle_alloc_placement_new)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* e = pool.alloc(0x1234U);
     REQUIRE(e != nullptr);
@@ -205,7 +205,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_basic)
     PoolStorage<kBlockSize, kCap> storage;
     std::memset(storage.data, 0xA5, sizeof(storage.data));
     coact::EventPool<kBlockSize, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     Layout* layout =
         pool.alloc_typed<Layout, TestPayload, kPayloadAlign>(0x11U);
@@ -245,7 +245,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_reuse)
 {
     PoolStorage<kBlockSize, kCap> storage;
     coact::EventPool<kBlockSize, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     Layout* l1 =
         pool.alloc_typed<Layout, TestPayload, kPayloadAlign>(0xAAU);
@@ -277,7 +277,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_runs_noexcept_default_constructors)
     PoolStorage<kBlockSize, kCap> payload_storage;
     std::memset(payload_storage.data, 0xA5, sizeof(payload_storage.data));
     coact::EventPool<kBlockSize, kCap> payload_pool;
-    payload_pool.init(payload_storage.data, sizeof(payload_storage.data));
+    payload_pool.init(payload_storage.data, sizeof(payload_storage.data), coact::detail::noop_cs());
 
     Layout* payload_layout =
         payload_pool.alloc_typed<Layout, CustomDefaultPayload, kPayloadAlign>(
@@ -293,7 +293,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_runs_noexcept_default_constructors)
     PoolStorage<kCustomBlockSize, kCap> layout_storage;
     std::memset(layout_storage.data, 0xA5, sizeof(layout_storage.data));
     coact::EventPool<kCustomBlockSize, kCap> layout_pool;
-    layout_pool.init(layout_storage.data, sizeof(layout_storage.data));
+    layout_pool.init(layout_storage.data, sizeof(layout_storage.data), coact::detail::noop_cs());
 
     CustomDefaultLayout* custom_layout =
         layout_pool.alloc_typed<CustomDefaultLayout, TestPayload,
@@ -314,7 +314,7 @@ COACT_TEST(pool_lifecycle_typed_alloc_exhausted)
 {
     PoolStorage<kBlockSize, 8U> storage;
     coact::EventPool<kBlockSize, 8U> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* all[8];
     std::uint16_t got = 0U;
@@ -356,7 +356,7 @@ COACT_TEST(pool_lifecycle_layout_geometry)
 
     PoolStorage<kBlockSize, kCap> storage;
     coact::EventPool<kBlockSize, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     Layout* l = pool.alloc_typed<Layout, TestPayload, kPayloadAlign>(0x5AU);
     REQUIRE(l != nullptr);

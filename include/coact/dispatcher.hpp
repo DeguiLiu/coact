@@ -204,6 +204,7 @@ private:
             }
             ao->pending().decrement();
             monitor_.record_pending(slot.target, ao->pending().load());
+            monitor_.record_dispatched(slot.target);
             target_breaker.on_dispatch_cycle();
             monitor_.record_disposition(SubmitDisposition::Queued);
         }

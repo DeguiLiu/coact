@@ -77,7 +77,7 @@ int main()
     coact::pal::Posix pal;
     alignas(16) static unsigned char storage[32U * 32U + 32U];
     PoolT pool;
-    pool.init(storage, sizeof(storage));
+    pool.init(storage, sizeof(storage), coact::detail::noop_cs());
 
     DemoAo ao(kStates, 2U, kTrans, 1U, 1, 2U);
     coact::Event init_e{};

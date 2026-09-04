@@ -328,7 +328,7 @@ int main(int argc, char** argv)
     ao_d.init(init_e);
 
     coact::EventPool<kBlk, kCap> pool;
-    pool.init(g_storage, sizeof(g_storage));
+    pool.init(g_storage, sizeof(g_storage), coact::detail::noop_cs()); // single-threaded test
 
     coact::pal::Posix pal;
     if (tick_hz > 0) { pal.set_tick_hz(static_cast<uint32_t>(tick_hz)); }

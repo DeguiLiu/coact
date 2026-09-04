@@ -114,7 +114,7 @@ COACT_TEST(event_alloc_basic)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     CHECK_EQ(pool.used(), 0U);
     CHECK_EQ(pool.high_watermark(), 0U);
@@ -146,7 +146,7 @@ COACT_TEST(event_pool_failed_init_is_observable_and_closed)
     CHECK(!pool.init(nullptr, 0U));
     CHECK(pool.alloc(0x1235U) == nullptr);
 
-    CHECK(pool.init(storage.data, sizeof(storage.data)));
+    CHECK(pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs()));
     coact::Event* event = pool.alloc(0x1235U);
     REQUIRE(event != nullptr);
     coact::event_gc(event);
@@ -156,7 +156,7 @@ COACT_TEST(event_gc_zero_reference_does_not_reclaim)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* e = pool.alloc(0x1235U);
     REQUIRE(e != nullptr);
@@ -175,7 +175,7 @@ COACT_TEST(event_single_consumer)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* e = pool.alloc(0x0001U);
     REQUIRE(e != nullptr);
@@ -191,7 +191,7 @@ COACT_TEST(event_multicast_refcnt)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* e = pool.alloc(0x7777U);
     REQUIRE(e != nullptr);
@@ -231,7 +231,7 @@ COACT_TEST(event_pool_exhausted)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* blocks[kCap];
     for (std::uint16_t i = 0U; i < kCap; ++i) {
@@ -267,8 +267,8 @@ COACT_TEST(event_cross_pool_routing)
     PoolStorage<16U, kCap> storage_b;
     coact::EventPool<16U, kCap> pool_a;
     coact::EventPool<16U, kCap> pool_b;
-    pool_a.init(storage_a.data, sizeof(storage_a.data));
-    pool_b.init(storage_b.data, sizeof(storage_b.data));
+    pool_a.init(storage_a.data, sizeof(storage_a.data), coact::detail::noop_cs());
+    pool_b.init(storage_b.data, sizeof(storage_b.data), coact::detail::noop_cs());
 
     coact::Event* ea = pool_a.alloc(0xAAAAU);
     coact::Event* eb = pool_b.alloc(0xBBBBU);
@@ -295,7 +295,7 @@ COACT_TEST(event_block_reuse_after_gc)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* first = pool.alloc(0x1111U);
     REQUIRE(first != nullptr);
@@ -326,7 +326,7 @@ COACT_TEST(event_payload_storage)
     // a pool whose blocks carry payload beyond the Event base
     PoolStorage<32U, 4U> storage;
     coact::EventPool<32U, 4U> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* e0 = pool.alloc(0x100U);
     coact::Event* e1 = pool.alloc(0x200U);
@@ -365,7 +365,7 @@ COACT_TEST(event_zero_heap)
 
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* blocks[kCap];
     for (std::uint16_t round = 0U; round < 8U; ++round) {

@@ -79,7 +79,7 @@ COACT_TEST(reclaimer_batcher_five_pools_no_assert)
     PoolStorage<kBlock, kCap> storage[5];
     HostPool pools[5];
     for (int i = 0; i < 5; ++i) {
-        pools[i].init(storage[i].data, sizeof(storage[i].data));
+        pools[i].init(storage[i].data, sizeof(storage[i].data), coact::detail::noop_cs());
     }
 
     coact::Event* ev[5];
@@ -116,7 +116,7 @@ void run_equivalent_scenario(HostPool* pools,
                              PoolStorage<kBlock, kCap>* storage)
 {
     for (int i = 0; i < 3; ++i) {
-        pools[i].init(storage[i].data, sizeof(storage[i].data));
+        pools[i].init(storage[i].data, sizeof(storage[i].data), coact::detail::noop_cs());
     }
     coact::Event* ev[3][2];
     for (int i = 0; i < 3; ++i) {
@@ -168,7 +168,7 @@ COACT_TEST(reclaimer_batcher_table_full_degrades_to_immediate)
     PoolStorage<kBlock, kCap> storage[3];
     HostPool pools[3];
     for (int i = 0; i < 3; ++i) {
-        pools[i].init(storage[i].data, sizeof(storage[i].data));
+        pools[i].init(storage[i].data, sizeof(storage[i].data), coact::detail::noop_cs());
     }
 
     coact::Event* ev[3];
@@ -193,7 +193,7 @@ COACT_TEST(reclaimer_batcher_zero_reference_does_not_reclaim)
 {
     PoolStorage<kBlock, kCap> storage;
     HostPool pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* event = pool.alloc(0x41U);
     REQUIRE(event != nullptr);
@@ -217,7 +217,7 @@ COACT_TEST(reclaimer_batcher_consumes_one_of_multiple_references)
 {
     PoolStorage<kBlock, kCap> storage;
     HostPool pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* event = pool.alloc(0x42U);
     REQUIRE(event != nullptr);
@@ -245,7 +245,7 @@ COACT_TEST(reclaimer_immediate_single_core_drains)
 {
     PoolStorage<kBlock, kCap> storage;
     CorePool pool;
-    pool.init(storage.data, sizeof(storage.data));
+    pool.init(storage.data, sizeof(storage.data), coact::detail::noop_cs());
 
     coact::Event* ev[2];
     for (int i = 0; i < 2; ++i) {

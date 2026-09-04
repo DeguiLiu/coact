@@ -143,7 +143,10 @@ private:
     T* slot_at(uint16_t seq) noexcept
     {
         const uint16_t idx = static_cast<uint16_t>(seq & (Capacity - 1U));
-        return static_cast<T*>(static_cast<void*>(&cells_[idx]));
+        /* launder: cells_ is raw storage; the object at each slot began its
+           lifetime via placement-new, so a plain cast back is formally UB
+           (CWG 2182) - the same discipline queue.hpp uses. */
+        return std::launder(static_cast<T*>(static_cast<void*>(&cells_[idx])));
     }
 
     // Producer-owned head and consumer-owned tail live on separate cache

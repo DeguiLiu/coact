@@ -94,7 +94,7 @@ struct Rig {
     {
         g_timer_fired.store(0);
         clock.reset();
-        pool.init(g_storage, sizeof(g_storage));
+        pool.init(g_storage, sizeof(g_storage), coact::detail::noop_cs());
         coact::Event init_e;
         init_e.signal = 0U;
         init_e.pool_id = 0U;

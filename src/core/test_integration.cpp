@@ -100,7 +100,7 @@ COACT_TEST(integration_two_ao_fifty_events_each)
     ao_b.init(init_e);
 
     IntPool pool;
-    pool.init(g_pool_storage, sizeof(g_pool_storage));
+    pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs()); // single-threaded test
 
     coact::pal::Posix pal;
     coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);

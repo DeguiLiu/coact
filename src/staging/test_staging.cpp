@@ -549,7 +549,7 @@ COACT_TEST(staging_never_changes_refcount)
     constexpr std::uint16_t kCap = 4U;
     alignas(64) std::uint8_t storage[16U * 4U];
     coact::EventPool<16U, kCap> pool;
-    pool.init(storage, sizeof(storage));
+    pool.init(storage, sizeof(storage), coact::detail::noop_cs()); // single-threaded test: explicit no-op CS (SMP guard)
 
     coact::Event* e = pool.alloc(0x1234U);
     REQUIRE(e != nullptr);

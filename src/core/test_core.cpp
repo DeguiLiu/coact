@@ -164,7 +164,7 @@ COACT_TEST(coordinator_normal_submit_queued)
     CHECK(registry.bind(&ao, ao.logical_prio()));
 
     TestPool pool;
-    pool.init(g_pool_storage, sizeof(g_pool_storage));
+    pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs()); // single-threaded test
 
     coact::Event* e = pool.alloc(1U);
     REQUIRE(e != nullptr);
@@ -216,7 +216,7 @@ COACT_TEST(coordinator_dynamic_unknown_and_direct_consume_allocated_reference)
     BankCoordinatorT coord(
         staging, registry, monitor, breaker, pal);
     TestPool pool;
-    pool.init(g_pool_storage, sizeof(g_pool_storage));
+    pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs()); // single-threaded test
     const coact::EventQos qos{false, false};
 
     coact::Event* rejected = pool.alloc(1U);

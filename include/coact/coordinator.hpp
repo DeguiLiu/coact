@@ -189,6 +189,7 @@ private:
                     }
                     /* direct completed: consume the allocation reference */
                     event_gc(e);
+                    monitor_.record_dispatched(target);
                     monitor_.record_disposition(SubmitDisposition::Direct);
                     return {SubmitDisposition::Direct, 0U};
                 }

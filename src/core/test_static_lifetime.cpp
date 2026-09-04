@@ -108,7 +108,7 @@ COACT_TEST(static_runtime_end_to_end)
     coact::Event init_e;
     init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
     g_ao.init(init_e);
-    g_pool.init(g_pool_storage, sizeof(g_pool_storage));
+    g_pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs());
 
     CHECK(g_rt.bind(&g_ao));
     CHECK(g_rt.initialize());

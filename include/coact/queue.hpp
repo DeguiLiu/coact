@@ -204,6 +204,15 @@ private:
             if (state == kFree) {
                 continue;
             }
+            /* kConsuming means pop_ready is INSIDE its consume window: it has
+               already run ~T() and will store kFree on its way out. Running
+               ~T() here again would double-destroy. The queue contract is
+               that the destructor runs with producers and the consumer
+               quiesced, so the only way to observe kConsuming is a consumer
+               that was destroyed mid-pop - treat the slot as consumed. */
+            if (state == kConsuming) {
+                continue;
+            }
             T* slot = detail::slot_ptr(cell.storage);
             slot->~T();
         }

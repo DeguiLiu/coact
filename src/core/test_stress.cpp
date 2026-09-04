@@ -109,7 +109,7 @@ COACT_TEST(stress_multiproducer_concurrent)
     ao.init(init_e);
 
     coact::EventPool<kBlk, kCap> pool;
-    pool.init(g_storage, sizeof(g_storage));
+    pool.init(g_storage, sizeof(g_storage), coact::detail::noop_cs());
 
     coact::pal::Posix pal;
     coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
@@ -228,7 +228,7 @@ COACT_TEST(stress_zero_heap_hot_path)
     ao.init(init_e);
 
     coact::EventPool<kBlk, kCap> pool;
-    pool.init(g_storage, sizeof(g_storage));
+    pool.init(g_storage, sizeof(g_storage), coact::detail::noop_cs());
 
     coact::pal::Posix pal;
     coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);

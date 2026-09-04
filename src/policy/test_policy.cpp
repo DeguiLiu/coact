@@ -258,7 +258,7 @@ COACT_TEST(policy_mergecell_merged_event_releases_allocated_reference)
 {
     alignas(16) std::uint8_t storage[32U * 2U];
     coact::EventPool<32U, 2U> pool;
-    pool.init(storage, sizeof(storage));
+    pool.init(storage, sizeof(storage), coact::detail::noop_cs()); // single-threaded test: explicit no-op CS (SMP guard)
     coact::Event* owned = pool.alloc(0x202U);
     REQUIRE(owned != nullptr);
     CHECK_EQ(owned->ref_ctr, 1U);

@@ -663,6 +663,11 @@ struct AoCounters {
     std::atomic<uint32_t> lease_contention{0};          // C5 execution lease contention
     std::atomic<uint16_t> pending{0};                   // current pending count
     std::atomic<uint16_t> pending_max{0};               // high-watermark of pending
+    std::atomic<uint64_t> dispatched{0};                // cumulative events dispatched to this AO
+                                                        // (Dispatcher RTC + direct-submit paths)
+                                                        // closes M-7: monitoring no longer needs
+                                                        // per-business-ctx counters to report
+                                                        // "how many events did this AO process"
 };
 
 // ---------------------------------------------------------------------------
@@ -704,6 +709,7 @@ public:
     void record_rejection(TargetId ao, RejectReason reason) noexcept;
     void record_lease_contention(TargetId ao) noexcept;
     void record_pending(TargetId ao, uint16_t pending) noexcept;
+    void record_dispatched(TargetId ao) noexcept;
 
     // -- Partition watermarks --
     void sample_watermark(PriorityClass p, uint8_t pct) noexcept;
@@ -824,6 +830,15 @@ inline void Monitor<Config>::record_pending(TargetId ao, uint16_t pending) noexc
     if (pending > global_.pending_max.load(std::memory_order_relaxed)) {
         global_.pending_max.store(pending, std::memory_order_relaxed);
     }
+}
+
+template <typename Config>
+inline void Monitor<Config>::record_dispatched(TargetId ao) noexcept {
+    AoCounters* s = slot(ao);
+    if (nullptr == s) {
+        return;
+    }
+    s->dispatched.fetch_add(1U, std::memory_order_relaxed);
 }
 
 template <typename Config>
