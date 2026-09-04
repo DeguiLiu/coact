@@ -252,15 +252,15 @@ RT-Thread 构建将 SoftIrq aspect 编译为空，保留直接 task-context comp
 
 ## 6. 分阶段实施
 
-| 阶段 | 内容 | 验证门 |
-|---|---|---|
-| A0 | 保留现有四层 CRTP，统一 hook 命名：`execute_job`、`produce_frame`、`consume_softirq_payload` | host/coro/RTT 编译通过 |
-| A1 | 将 `WorkerBase::run()` 的执行点抽成 `InvokePolicy` | 现有 worker 行为和 stop drain 不变 |
-| A2 | 接入 `MetricsAspect`，补 direct/dispatcher/worker elapsed 统计 | `pool.used()==0`、耗时累计非零 |
-| A3 | 接入 `TraceAspect`，Trace 默认关闭 | `COACT_TRACE=0/1` 符号和行为对照 |
-| A4 | 接入 `FaultAspect` 和 `FaultReporter` | 水位、completion reject、FIFO overflow 边沿正确 |
-| A5 | 将 `IrscWorker` 和 `UsbDmaWorker` 接入对应策略链 | host/coro/RTT 双后端矩阵 |
-| A6 | 删除重复的具体 worker 辅助代码 | diff 审查、栈/静态内存预算复核 |
+| 阶段 | 内容 | 验证门 | 状态 |
+|---|---|---|---|
+| A0 | 保留现有四层 CRTP，统一 hook 命名：`execute_job`、`produce_frame`、`consume_softirq_payload` | host/coro/RTT 编译通过 | 【已完成 bace05c】 |
+| A1 | 将 `WorkerBase::run()` 的执行点抽成 `InvokePolicy` | 现有 worker 行为和 stop drain 不变 | 【已完成，行为不变验证：ctest 53/53】 |
+| A2 | 接入 `MetricsAspect`，补 direct/dispatcher/worker elapsed 统计 | `pool.used()==0`、耗时累计非零 | 【已完成：per-worker execution_duration_ns】 |
+| A3 | 接入 `TraceAspect`，Trace 默认关闭 | `COACT_TRACE=0/1` 符号和行为对照 | 【已完成：kEvtWorkerExec=0x0103，COACT_TRACE 门控】 |
+| A4 | 接入 `FaultAspect` 和 `FaultReporter` | 水位、completion reject、FIFO overflow 边沿正确 | 【已完成：null-fn 零开销 FaultReporter 边界】 |
+| A5 | 将 `IrscWorker` 和 `UsbDmaWorker` 接入对应策略链 | host/coro/RTT 双后端矩阵 | 【已完成：IrscWorker 逐帧 Trace；UsbDmaWorker 保留既有 SoftIrq 统计避免双计】 |
+| A6 | 删除重复的具体 worker 辅助代码 | diff 审查、栈/静态内存预算复核 | 【已完成：预算表补 aspect 状态行】 |
 
 每一阶段只允许一个行为变量变化。若策略链导致模板错误或栈增长超预算，回退到上一阶段，不引入运行时多态作为补偿。
 

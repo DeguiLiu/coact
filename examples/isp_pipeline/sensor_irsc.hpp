@@ -126,16 +126,36 @@ private:
         for (uint32_t frame = 0U;
              frame < frame_count_ && running(); ++frame) {
             g_pal->sleep_us(period_us_ + pacing_extra_us_);
+            // Aspected production (design_static_aop §4.2): Trace/Metrics
+            // wrap each frame; the pacing sleep stays OUTSIDE the aspect
+            // chain (the period is the sensor's clock, not a measured cost).
+#if COACT_TRACE
+            const uint64_t t0 = monotonic_ns();
+#endif
             static_cast<Derived*>(this)->produce_frame(frame, monotonic_ns());
+            frames_produced_.fetch_add(1U, std::memory_order_relaxed);
+#if COACT_TRACE
+            g_log.record_from_task<LogLevel::kInfo, kEvtWorkerExec>(
+                0U, static_cast<uint32_t>(Derived::kWorkerId), 0U,
+                static_cast<uint32_t>(monotonic_ns() - t0));
+#endif
         }
         static_cast<Derived*>(this)->producer_finished(frame_count_, period_us_);
     }
 
+public:
+    [[nodiscard]] uint32_t frames_produced() const noexcept
+    {
+        return frames_produced_.load(std::memory_order_relaxed);
+    }
+
+private:
     DemoPal::ThreadHandle thread_{};
     PoolT* pool_{nullptr};
     Rt* rt_{nullptr};
     std::atomic<bool> running_{false};
     bool started_{false};
+    std::atomic<uint32_t> frames_produced_{0U};
     uint32_t frame_count_{0U};
     uint32_t period_us_{0U};
     uint32_t pacing_extra_us_{0U};
@@ -276,6 +296,7 @@ struct IrscWorker : PeriodicProducerBase<IrscWorker> {
     TargetId high_target{};
 
     static constexpr const char* name() noexcept { return "irsc"; }
+    static constexpr uint16_t kWorkerId = 4U;   // kEvtWorkerExec arg0
 
     bool start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps)
     {
@@ -679,7 +700,96 @@ public:
 // unchanged — demo scenarios never sit exactly on the ring boundary).
 // Coro mode: CoroPal::sem_take is overridden to yield instead of parking the
 // pump thread (the same discipline as its cond_wait override).
-template <typename Derived, typename Job, uint8_t kDepthV, typename PalT>
+//
+// INVOKE POLICY (design_isp_pipeline_static_aop A1): the execution point in
+// run() goes through a compile-time InvokePolicy instead of the raw CRTP
+// hook, so aspect chains (Metrics/Trace/Fault, A2-A4) can wrap the job
+// execution WITHOUT being bypassed by an outer CRTP wrapper (design §2: a
+// plain outer-layer inheritance is silently skipped because the inner
+// static_cast<Derived*> resolves to the inner type). The policy owns the
+// whole invocation; WorkerBase only downcasts and delegates.
+// InvokePolicy contract:
+//   template <typename Worker, typename Job>
+//   static WorkerResult invoke(Worker& worker, const Job& job) noexcept;
+enum class WorkerResult : uint8_t {
+    kOk = 0U,
+    kRejected = 1U,
+    kFault = 2U
+};
+
+// Default policy: the plain CRTP hook, behavior-identical to the pre-A1
+// call (the concrete worker's execute()). Aspects in A2-A4 wrap this.
+struct DirectInvoke {
+    template <typename Worker, typename Job>
+    static WorkerResult invoke(Worker& worker, const Job& job) noexcept
+    {
+        worker.execute(job);
+        return WorkerResult::kOk;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Static AOP aspects (design_isp_pipeline_static_aop A2-A4). Compile-time
+// policy layers around DirectInvoke; every worker compiles only the chain it
+// names. Aspects are stateless - their observable state lives in the worker
+// (counters the base already owns) or in diag records. Aspect code must stay
+// noexcept, allocation-free, non-blocking (design §5 MCU constraints).
+// ---------------------------------------------------------------------------
+
+// A2 Metrics: wall time of one full invocation (hardware latency sleep +
+// completion submit). This is the WORKER-side view - deliberately distinct
+// from Monitor's RTC durations (dispatcher/direct), which measure handler
+// time on the Dispatcher thread.
+template <typename Next>
+struct MetricsAspect {
+    template <typename Worker, typename Job>
+    static WorkerResult invoke(Worker& worker, const Job& job) noexcept
+    {
+        const uint64_t start_ns = monotonic_ns();
+        const WorkerResult result = Next::invoke(worker, job);
+        worker.add_execution_duration(monotonic_ns() - start_ns);
+        return result;
+    }
+};
+
+// A3 Trace: one fixed-width diag record per job execution, gate-compiled by
+// COACT_TRACE (design §2.2: 0 compiles the record away entirely). Payload is
+// worker id + result only - never a payload read, string or Event*.
+template <typename Next>
+struct TraceAspect {
+    template <typename Worker, typename Job>
+    static WorkerResult invoke(Worker& worker, const Job& job) noexcept
+    {
+#if COACT_TRACE
+        const WorkerResult result = Next::invoke(worker, job);
+        g_log.record_from_task<LogLevel::kInfo, kEvtWorkerExec>(
+            0U, static_cast<uint32_t>(worker.worker_id()),
+            static_cast<uint32_t>(result), 0U);
+        return result;
+#else
+        return Next::invoke(worker, job);
+#endif
+    }
+};
+
+// A4 Fault: a non-kOk result is reported through the worker's FaultReporter
+// hook; report failure can never block or change event ownership (design
+// §3.5 - coact has no exceptions, failure is an explicit result).
+template <typename Next>
+struct FaultAspect {
+    template <typename Worker, typename Job>
+    static WorkerResult invoke(Worker& worker, const Job& job) noexcept
+    {
+        const WorkerResult result = Next::invoke(worker, job);
+        if (WorkerResult::kOk != result) {
+            worker.report_fault(result, job);
+        }
+        return result;
+    }
+};
+
+template <typename Derived, typename Job, uint8_t kDepthV, typename PalT,
+          typename InvokePolicy = DirectInvoke>
 class WorkerBase {
 public:
     static constexpr uint8_t kDepth = kDepthV;
@@ -794,7 +904,10 @@ private:
         for (;;) {
             // Drain everything currently visible before parking again.
             while (ring_.try_pop(j)) {
-                derived().execute(j);                       // CRTP hook
+                // The execution point goes through the InvokePolicy chain
+                // (A1): aspects wrap the job execution here; a result != kOk
+                // still counts as executed (the job left the ring).
+                (void)InvokePolicy::invoke(derived(), j);
                 executed.fetch_add(1U, std::memory_order_relaxed);
             }
             if (!running.load(std::memory_order_acquire)) {
@@ -825,14 +938,37 @@ using DemoWorkerBase = WorkerBase<Derived, Job, kDepthV, DemoPal>;
 // the WorkerBase transport/lifecycle separate from hardware-specific timing
 // and metadata, while retaining zero virtual dispatch and static storage.
 // Derived must provide execute_job(const Job&) and a completion_rejects field.
+// The full aspect chain (design_static_aop §3.6: Trace -> Metrics -> Fault ->
+// completion) is wired here, so every completion worker compiles the same
+// chain; the chain is fixed in the type, never adjusted at runtime.
 // ---------------------------------------------------------------------------
+// CompletionInvoke: the innermost policy - routes through the
+// CompletionWorkerBase hook, which downcasts to the concrete execute_job.
+// (The policy receives the CompletionWorkerBase reference, NOT the most
+// derived type, so this must call execute() - design §2's bypass hazard
+// applies to any double-CRTP chain.)
+struct CompletionInvoke {
+    template <typename Worker, typename Job>
+    static WorkerResult invoke(Worker& worker, const Job& job) noexcept
+    {
+        worker.execute(job);
+        return WorkerResult::kOk;
+    }
+};
+
+template <typename Derived, typename Job, uint8_t kDepthV>
+using CompletionInvokeChain =
+    TraceAspect<MetricsAspect<FaultAspect<CompletionInvoke>>>;
+
 template <typename Derived, typename Job, uint8_t kDepthV>
 class CompletionWorkerBase
     : public WorkerBase<CompletionWorkerBase<Derived, Job, kDepthV>, Job,
-                        kDepthV, DemoPal> {
+                        kDepthV, DemoPal,
+                        CompletionInvokeChain<Derived, Job, kDepthV>> {
     using WorkerCore =
         WorkerBase<CompletionWorkerBase<Derived, Job, kDepthV>, Job,
-                   kDepthV, DemoPal>;
+                   kDepthV, DemoPal,
+                   CompletionInvokeChain<Derived, Job, kDepthV>>;
 
 public:
     using WorkerCore::start;
@@ -848,6 +984,40 @@ public:
     void execute(const Job& job)
     {
         static_cast<Derived*>(this)->execute_job(job);
+    }
+
+    // ---- Aspect hooks (design_static_aop A2-A4) --------------------------
+    // Metrics: per-worker wall time of full invocations (sleep + submit).
+    [[nodiscard]] uint64_t execution_duration_ns() const noexcept
+    {
+        return execution_duration_ns_.load(std::memory_order_relaxed);
+    }
+    void add_execution_duration(uint64_t ns) noexcept
+    {
+        execution_duration_ns_.fetch_add(ns, std::memory_order_relaxed);
+    }
+
+    // Trace: stable numeric id for the kEvtWorkerExec record (the compiled
+    // name string stays the readable view; the record carries fixed widths).
+    [[nodiscard]] uint16_t worker_id() const noexcept
+    {
+        return static_cast<uint16_t>(Derived::kWorkerId);
+    }
+
+    // Fault: an injected FaultReporter boundary (fault.hpp contract). Null
+    // fn is zero cost. detail carries the completion_rejects count at the
+    // report so a consumer can correlate.
+    void report_fault(WorkerResult result, const Job&) noexcept
+    {
+        fault_.report(static_cast<uint16_t>(Derived::kWorkerId),
+                      (static_cast<uint32_t>(result) << 16U)
+                          | static_cast<uint32_t>(
+                                static_cast<Derived*>(this)->completion_rejects),
+                      coact::FaultPriority::kHigh);
+    }
+    void bind_fault(const coact::FaultReporter& reporter) noexcept
+    {
+        fault_ = reporter;
     }
 
 protected:
@@ -868,6 +1038,10 @@ protected:
                                                      {false, false});
         }
     }
+
+private:
+    std::atomic<uint64_t> execution_duration_ns_{0U};
+    coact::FaultReporter fault_{};   // null by default: zero-cost reporting
 };
 
 // ---------------------------------------------------------------------------
@@ -889,6 +1063,7 @@ struct CmdDmaWorker : CompletionWorkerBase<CmdDmaWorker, uint16_t, 4U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "cmd_dma"; }
+    static constexpr uint16_t kWorkerId = 3U;   // kEvtWorkerExec arg0
 
     bool start(PoolT* p, Rt* r, TargetId driver)
     {

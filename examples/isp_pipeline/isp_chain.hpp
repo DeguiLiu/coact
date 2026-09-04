@@ -89,6 +89,7 @@ struct IspIrqWorker : CompletionWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "isp_irq"; }
+    static constexpr uint16_t kWorkerId = 0U;   // kEvtWorkerExec arg0
 
     bool start(PoolT* p, Rt* r, TargetId node_ao)
     {
@@ -146,6 +147,7 @@ struct SoutDmaWorker : CompletionWorkerBase<SoutDmaWorker, SoutJob, 3U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "sout_dma"; }
+    static constexpr uint16_t kWorkerId = 1U;   // kEvtWorkerExec arg0
 
     bool start(PoolT* p, Rt* r, TargetId pack_ao)
     {
@@ -178,6 +180,7 @@ struct MipiIrqWorker : CompletionWorkerBase<MipiIrqWorker, uint16_t, 2U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "mipi_irq"; }
+    static constexpr uint16_t kWorkerId = 2U;   // kEvtWorkerExec arg0
 
     bool start(PoolT* p, Rt* r, TargetId sink_ao)
     {

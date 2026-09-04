@@ -164,6 +164,7 @@ enum LogEvt : uint16_t {
     kEvtTraceSubmit   = 0x0100U,  // a0=dst a1=signal a2=disposition a3=reason
     kEvtTraceDispatch = 0x0101U,  // a0=elapsed_lo a1=elapsed_hi a2=path a3=timeout
     kEvtTraceLease    = 0x0102U,  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
+    kEvtWorkerExec    = 0x0103U,  // a0=worker_id a1=result (WorkerResult)
 };
 
 // ---------------------------------------------------------------------------
@@ -459,6 +460,10 @@ using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal, DemoProfile>;
 //                                     stack / producer slots / worker slots
 //                                     / worker stack)
 //   Diag lanes            32/8        LogRtThreadBase (log_rtthread.hpp)
+//   Worker aspect state   8+2 B/worker execution_duration_ns (uint64) +
+//                                     FaultReporter (2 ptrs) in
+//                                     CompletionWorkerBase; PeriodicProducer
+//                                     adds 4 B frames_produced (AOP A2-A5)
 //
 // Tuning rule: any depth change must re-justify its row here AND re-run the
 // demo's reject-path assertions (normal path stays zero-reject; injected
