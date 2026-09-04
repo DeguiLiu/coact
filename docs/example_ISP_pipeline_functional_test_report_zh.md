@@ -2,7 +2,7 @@
 
 **关联文档**：架构说明见 `example_ISP_pipeline_design_architecture_zh.md`；故障处理见 `example_ISP_pipeline_design_consistency_avoidance_zh.md`；逐阶段运行输出见 `isp_pipeline_demo_run_log_fresh.txt`。
 
-**本次验收更新**：2026-09-05，基于提交 `03cc959` 及随后 `Runtime` 析构停机修复；以下结果均为当前工作区重新执行，不沿用旧日志的测试结论。
+**本次验收更新**：2026-09-05，基于提交 `107b823`；以下结果均为当前工作区重新执行，不沿用旧日志的测试结论。
 
 ## 1. 测试范围
 
@@ -43,8 +43,8 @@ main() 末尾逐项核对运行终态与不变量，任一失败打印 `[FAIL]` 
 1. **链路不变量**：各环节帧计数一致（IRSC 产帧 30 → 增益/融合/增强/打包 → WRAPE 封帧 45 → 主机观察者收帧 45），帧序无缺失。
 2. **数据面字节级校验**：像素按确定性公式逐节点变换，WRAPE 入口重新读取 DDR 复算比对（byte_mismatch==0）；读侧校验槽位帧戳防止读到被覆盖的旧槽位。
 3. **一致性故障复现与规避**：U1-U9 与花屏逐类"先复现、再验证修复"。如参数回灌断言产测值 0xBEEF 被旧影子值 0x1002 覆盖（故障侧）、修复后零漂移；T37 提前封帧断言截断字节数恰为 655360（与真实抓包一致）。
-4. **worker 交互协议**：7 实例 executed/rejected 计数核对；命令通道 executed==4（命令与中断回执一一对应）；USB 完成路径经软中断转发零丢失。**AOP 切面活性**：5 个完成型 worker 的 execution_duration 非零、IRSC 逐帧计数等于帧总数（策略链不仅编译通过且真实运行）。
-5. **资源回收**：事件池终态 used==0；AO 在途等待计数归零（停机排空不丢完成事件）；diag 双 lane 守恒（drained==accepted）。
+4. **worker 交互协议**：7 实例 executed/rejected 计数核对；命令通道 executed==4（命令与中断回执一一对应）；USB 完成路径经软中断转发零丢失。**AOP 切面活性**：5 个完成型 worker 的 execution_duration 非零、IRSC 逐帧计数等于帧总数（策略链不仅编译通过且真实运行）。启动后另有一个无副作用事件通过 `try_submit_from_isr()` 入队，验证 ISR-safe Trace 分流。
+5. **资源回收**：事件池终态 used==0；AO 在途等待计数归零（停机排空不丢完成事件）；diag 双 lane 守恒（drained==accepted）；三分区均记录 watermark samples、used 和 capacity。
 
 ### 2.2 日志交叉验证
 
@@ -52,7 +52,7 @@ main() 末尾逐项核对运行终态与不变量，任一失败打印 `[FAIL]` 
 
 ### 2.3 日志范围
 
-本次 host coro 运行输出 2138 行，分四层：
+host coro 输出行数会随异步 writer 调度变化，分为四层；行数仅作阅读索引，完整性以结构化 diag 守恒统计为准：
 
 | 层级 | 内容 | 频次 |
 |---|---|---|
@@ -91,7 +91,7 @@ main() 末尾逐项核对运行终态与不变量，任一失败打印 `[FAIL]` 
 | host coro | 16 coroutine slots × 256 KiB = 4 MiB | 主要占用 host `.bss`；当前 demo `.bss` 约 4.05 MiB，峰值 RSS 约 7.0 MiB |
 | Demo 工作集 | AO/Runtime/DDR/worker 对象约 15.7 KiB | 函数内静态对象，位于 `.bss`；仍需板级实测栈水位 |
 
-本次 host 运行还观测到 `pool.used=0`；diag normal lane `accepted=1679, drained=1679, dropped=28`，critical lane `accepted=0, drained=0, dropped=0`，均满足守恒。资源表是 demo 的预算基线，移植到 MCU 时应按真实帧大小、栈水位和 `RT_CPUS_NR=1` 板级测量重新核定。
+本次 host 运行还观测到 `pool.used=0`；diag normal lane `accepted=1679, drained=1679, dropped=30`，critical lane `accepted=0, drained=0, dropped=0`，均满足守恒。资源表是 demo 的预算基线，移植到 MCU 时应按真实帧大小、栈水位和 `RT_CPUS_NR=1` 板级测量重新核定。
 
 ## 3. 测试边界
 

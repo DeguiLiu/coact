@@ -71,7 +71,7 @@ flowchart LR
 
 这是所有性能优化的前置门禁。五项均已实现并有 TDD 覆盖：
 
-1. **Trace ISR 入口分离**【已完成】：`TraceOps::on_submit` 携带 `from_isr`；demo `DiagTrace::on_submit` 据此分流 `record_from_isr()`/`record_from_task()`（common.hpp）。
+1. **Trace ISR 入口分离**【已完成】：`TraceOps::on_submit` 携带 `from_isr`；demo `DiagTrace::on_submit` 据此分流 `record_from_isr()`/`record_from_task()`（common.hpp），并由启动后的无副作用 ISR 探针实际触发该分支。
 2. **缓存事件 signal**【已完成】：`staged_signal` 在 `staging_.enqueue()` 之前缓存（coordinator.hpp），发布后不再读 `e->signal`。
 3. **补齐 direct dispatch Trace**【已完成】：direct 成功同时产生 `TraceSubmit(Direct)` 与 `TraceDispatch(path=0)`。
 4. **补齐 Monitor 耗时累计**【已完成】：direct/dispatcher 的 elapsed 分别进 `add_direct_duration()`/`add_dispatcher_duration()`。

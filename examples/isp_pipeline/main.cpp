@@ -240,7 +240,7 @@ int main()
     // static-resource budget table (common.hpp).
     alignas(kPayloadAlign) static std::array<uint8_t, sizeof(Layout) * 128U + kPayloadAlign> storage{};
 #ifdef ISP_DEMO_USE_RTT
-    PoolT pool;
+    static PoolT pool;
     pool.init(storage.data(), storage.size(),
               coact::make_critical_section(pal));
 #else
