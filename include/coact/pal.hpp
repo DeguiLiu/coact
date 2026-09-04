@@ -138,6 +138,7 @@ using ThreadEntry = void (*)(void* context);
 //   CriticalToken irq_save() noexcept;
 //   void irq_restore(CriticalToken token) noexcept;
 //   ExecutionContext current_context() const noexcept;
+//   static bool in_dispatcher_thread() noexcept;
 //   uint64_t monotonic_ns() const noexcept;
 //   uint64_t clock_resolution_ns() const noexcept;
 //   void wait_dispatcher(uint32_t timeout_ms) noexcept;

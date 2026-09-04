@@ -49,6 +49,10 @@ struct CountingPal {
     int signals = 0;
     bool in_thread = false;
     uint64_t monotonic_ns() const noexcept { return 0ULL; }
+    coact::ExecutionContext current_context() const noexcept
+    {
+        return {coact::ContextKind::Task, 10U, 0U, true};
+    }
     void signal_dispatcher_from_task() noexcept { ++signals; }
     void signal_dispatcher_from_isr() noexcept { ++signals; }
     void enter_direct() noexcept {}
@@ -166,6 +170,24 @@ struct OverBudgetPal {
         now += 2000ULL;  // each sample advances past the 1000ns budget
         return v;
     }
+    coact::ExecutionContext current_context() const noexcept
+    {
+        return {coact::ContextKind::Task, 10U, 0U, true};
+    }
+    void signal_dispatcher_from_task() noexcept { ++signals; }
+    void signal_dispatcher_from_isr() noexcept { ++signals; }
+    void enter_direct() noexcept {}
+    void leave_direct() noexcept {}
+    static bool in_dispatcher_thread() noexcept { return false; }
+};
+
+struct MaxDirectDepthPal {
+    int signals = 0;
+    uint64_t monotonic_ns() const noexcept { return 0ULL; }
+    coact::ExecutionContext current_context() const noexcept
+    {
+        return {coact::ContextKind::Task, 10U, SmallCfg::kMaxDirectDepth, true};
+    }
     void signal_dispatcher_from_task() noexcept { ++signals; }
     void signal_dispatcher_from_isr() noexcept { ++signals; }
     void enter_direct() noexcept {}
@@ -202,6 +224,34 @@ COACT_TEST(coordinator_direct_over_budget_trips_breaker)
     }
     CHECK_EQ(static_cast<int>(coact::BreakerLevel::BrokenL1),
              static_cast<int>(breaker.level()));
+}
+
+COACT_TEST(coordinator_direct_depth_limit_forces_staging)
+{
+    coact::Event init_e{};
+    DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    MaxDirectDepthPal pal;
+    coact::DispatchCoordinator<StageT, MaxDirectDepthPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    staging.arm_dispatcher_wait();
+    coact::Event e{};
+    e.signal = 1U;
+    const coact::SubmitResult result =
+        coord.submit_from_task(coact::TargetId(1U), &e,
+                               coact::EventQos{false, false});
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(result.disposition));
+    CHECK_EQ(1, pal.signals);
 }
 
 COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
@@ -252,6 +302,10 @@ COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
 struct DispatcherContextPal {
     int signals = 0;
     uint64_t monotonic_ns() const noexcept { return 0ULL; }
+    coact::ExecutionContext current_context() const noexcept
+    {
+        return {coact::ContextKind::Dispatcher, 0U, 0U, false};
+    }
     void signal_dispatcher_from_task() noexcept { ++signals; }
     void signal_dispatcher_from_isr() noexcept { ++signals; }
     void enter_direct() noexcept {}

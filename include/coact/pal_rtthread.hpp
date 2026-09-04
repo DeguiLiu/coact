@@ -394,10 +394,10 @@ public:
 
     /* ---- Dispatcher heartbeat (external watchdog support) -------------- */
     /* Same contract as pal_posix.hpp: the Dispatcher records progress once
-       per batch-loop iteration (single writer, relaxed); external BSP
-       watchdog threads probe the queries. On real boards the hardware
-       watchdog (IWDG) stays BSP-owned: the BSP thread stops feeding it when
-       dispatcher_alive_within() goes false. window sizing: pal.hpp. */
+       per batch-loop iteration under the single-core irq-mask guard;
+       external BSP watchdog threads probe the queries. On real boards the
+       hardware watchdog (IWDG) stays BSP-owned: the BSP thread stops feeding
+       it when dispatcher_alive_within() goes false. window sizing: pal.hpp. */
     void watchdog_progress(uint32_t marker) noexcept;
     uint64_t dispatcher_progress_ns() const noexcept;
     bool dispatcher_alive_within(uint32_t window_ms) const noexcept;
@@ -527,9 +527,10 @@ private:
     uint32_t    dispatcher_stack_bytes_; /* default 4096; overridable */
     ClockOps    clock_ops_;              /* default: RT tick; §7.5 */
     uint64_t    ns_per_counter_;          /* zero selects exact fallback */
-    /* Dispatcher heartbeat timestamp (ns). 0 = never beat; single writer is
-       the Dispatcher thread, readers are external watchdog threads. */
-    std::atomic<uint64_t> last_progress_ns_{0U};
+    /* Dispatcher heartbeat timestamp (ns). 0 = never beat. RT-Thread is a
+       single-core PAL, so irq-mask protects the plain 64-bit value from the
+       external watchdog reader without a libatomic dependency. */
+    uint64_t last_progress_ns_ = 0U;
     mutable uint64_t counter_epoch_ = 0U;
     mutable uint64_t last_counter_ = 0U;
     mutable bool counter_seen_ = false;

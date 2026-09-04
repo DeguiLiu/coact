@@ -205,6 +205,11 @@ public:
         return coact::pal::Posix::in_dispatcher_thread();
     }
 
+    coact::ExecutionContext current_context() const noexcept
+    {
+        return pal_.current_context();
+    }
+
     uint64_t monotonic_ns() const noexcept
     {
         return pal_.monotonic_ns();

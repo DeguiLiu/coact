@@ -151,6 +151,8 @@ COACT_TEST(integration_two_ao_fifty_events_each)
  * in_dispatcher_thread() guard the coordinator would run B's handler inline
  * on the same stack, so B's handler would observe a_running == true. With the
  * guard the event goes to staging and B runs only after A's handler returns.
+ * (The demo's own AOs are all staged-only, so this regression surface is
+ * exercised only by the test traits below.)
  * ========================================================================= */
 static std::atomic<bool> g_a_running{false};
 static std::atomic<bool> g_b_ran_while_a_running{false};

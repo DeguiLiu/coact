@@ -178,10 +178,14 @@ private:
            inline on the same stack - bypassing the serialization layer 1
            guarantees and risking unbounded stack depth on an AO-to-AO chain.
            Such submissions fall through to staging. ISR context never takes
-           the direct path anyway. */
+           the direct path anyway. A direct-to-direct chain is also bounded by
+           Config::kMaxDirectDepth; once the producer's current direct depth
+           reaches that limit, this event falls through to staging. */
         if (!from_isr
             && !force_staging
             && !PalT::in_dispatcher_thread()
+            && (pal_.current_context().direct_depth
+                < StagingT::ConfigType::kMaxDirectDepth)
             && ao->direct_eligible()
             && target_breaker.direct_allowed(target))
         {
