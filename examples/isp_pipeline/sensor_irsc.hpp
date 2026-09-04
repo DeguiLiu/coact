@@ -8,8 +8,9 @@
  *   - IrscDriverAo：传感器驱动命令 AO，接收 kIrscCmd（init/start/ctrl/
  *     output_enable 四步），经 CmdDmaWorker 模拟 vdcmd rt_device_control
  *     寄存器写路径，回 kIrscDmaDone 步进，完成后上报 kIrscReady。
- *   - WorkerBase / DemoWorkerBase：CRTP 非 AO worker 骨架（定深环形队列 +
- *     drain-on-stop + PAL Mutex/Cond），全部硬件行为 worker 的公共底座。
+ *   - WorkerBase / CompletionWorkerBase / PeriodicProducerBase /
+ *     SoftIrqCompletionWorker：CRTP 非 AO worker 分层，分别承载定深环形
+ *     队列、完成事件回投、周期产帧和 SoftIrq mailbox 能力。
  *   - UsbDmaWorker：USB Bulk DMA 引擎（T37 §7.6.5），搬完帧后走 SoftIrq
  *     完成路径：worker（producer）raise 软中断（SIGRTMIN signalfd，无
  *     signal handler），独立原生 pthread 消费者 take 后投 kFrameEof 给
@@ -68,70 +69,256 @@
 namespace isp_demo {
 
 // ---------------------------------------------------------------------------
-// IRSC producer: PAL worker thread, mimics drv_irsc timing. Communicates via
-// events. Thread lifecycle goes through DemoPal::thread_create/join (POSIX:
-// pthread; RT-Thread: the PAL's fixed static thread table — zero heap).
+// PeriodicProducerBase: CRTP lifecycle and pacing for a worker that produces
+// events from an independent clock rather than consuming AO-submitted jobs.
+// The derived type supplies produce_frame() and producer_finished(); no queue
+// or virtual dispatch is introduced because this worker has no input mailbox.
 // ---------------------------------------------------------------------------
-struct IrscWorker {
-    DemoPal::ThreadHandle thread_{};
-    PoolT*          pool{nullptr};
-    Rt*             rt{nullptr};
-    TargetId        low_target{};
-    TargetId        high_target{};
-    std::atomic<bool> running{false};
-    uint32_t        period_us{33333U};
-
-    void start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps)
+template <typename Derived>
+class PeriodicProducerBase {
+public:
+    bool start(PoolT* p, Rt* r, uint32_t frame_count, uint32_t period_us,
+               uint32_t pacing_extra_us)
     {
-        pool = p;
-        rt = r;
-        low_target = low;
-        high_target = high;
-        period_us = (fps == 0U) ? 33333U : (1000000U / fps);
-        running.store(true);
-        std::printf("[worker] irsc started (frames=%u, period=%u us)\n",
-                    kFrameCount, period_us);
-        g_pal->thread_create(thread_, &IrscWorker::tramp, this);
+        pool_ = p;
+        rt_ = r;
+        frame_count_ = frame_count;
+        period_us_ = period_us;
+        pacing_extra_us_ = pacing_extra_us;
+        running_.store(true, std::memory_order_release);
+        if (!g_pal->thread_create(thread_, &PeriodicProducerBase::tramp, this)) {
+            running_.store(false, std::memory_order_release);
+            return false;
+        }
+        started_ = true;
+        std::printf("[worker] %s started (frames=%u, period=%u us)\n",
+                    Derived::name(), frame_count_, period_us_);
+        return true;
     }
+
     void stop()
     {
-        running.store(false);
+        if (!started_) {
+            return;
+        }
+        running_.store(false, std::memory_order_release);
         g_pal->thread_join(thread_);
+        started_ = false;
     }
+
+protected:
+    PoolT* pool() noexcept { return pool_; }
+    Rt* runtime() noexcept { return rt_; }
+    bool running() const noexcept
+    {
+        return running_.load(std::memory_order_acquire);
+    }
+    uint32_t period_us() const noexcept { return period_us_; }
+
 private:
-    static void tramp(void* arg) { static_cast<IrscWorker*>(arg)->run(); }
+    static void tramp(void* arg)
+    {
+        static_cast<PeriodicProducerBase*>(arg)->run();
+    }
+
     void run()
     {
-        for (uint32_t f = 0; f < kFrameCount && running.load(); ++f) {
-            // Relative pacing: sleep one full frame period per iteration. A
-            // sensor produces frames on its own clock regardless of how far
-            // behind the pipeline is — and keeps the in-flight span shallow
-            // so the DMA ring never legitimately overruns.
-            /* 阻塞模拟（保留真睡）：IRSC 传感器产帧节拍 + 增益模式判定的
-               寄存器耗时，合并为一次睡眠。发生在 IrscWorker 自己的线程，
-               不阻塞 AO 事件循环；且 30fps 节拍是封帧时序断言（frame pacing）
-               的真实时间依赖，虚拟时钟无法推进真实线程，故必须真睡 */
-            g_pal->sleep_us(period_us + (kLat.irsc_setup_us / 2U));
-            const uint64_t emit_ns = monotonic_ns();
+        for (uint32_t frame = 0U;
+             frame < frame_count_ && running(); ++frame) {
+            g_pal->sleep_us(period_us_ + pacing_extra_us_);
+            static_cast<Derived*>(this)->produce_frame(frame, monotonic_ns());
+        }
+        static_cast<Derived*>(this)->producer_finished(frame_count_, period_us_);
+    }
 
-            for (uint8_t ch = 0; ch < 2U; ++ch) {
-                Layout* e = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-                    static_cast<uint16_t>(Sig::kFrameIrscOut));
-                if (nullptr == e) { break; }
-                e->meta.frame_id = f;
-                e->meta.timestamp_ns = static_cast<uint32_t>(emit_ns & 0xFFFFFFFFu);
-                e->meta.payload_kind = 0U;
-                Payload* p = reinterpret_cast<Payload*>(&e->payload[0]);
-                p->control[0] = 'D'; p->control[1] = 'N';
-                p->control[2] = static_cast<uint8_t>((f >> 8U) & 0xFFu);
-                p->control[3] = static_cast<uint8_t>(f & 0xFFu);
-                p->ddr_id = DdrId::kDdrDn;      // writer fills actual pixels
-                const TargetId dst = (ch == 0U) ? low_target : high_target;
-                rt->coordinator().submit_from_task(dst, &e->event, {false, false});
+    DemoPal::ThreadHandle thread_{};
+    PoolT* pool_{nullptr};
+    Rt* rt_{nullptr};
+    std::atomic<bool> running_{false};
+    bool started_{false};
+    uint32_t frame_count_{0U};
+    uint32_t period_us_{0U};
+    uint32_t pacing_extra_us_{0U};
+};
+
+// ---------------------------------------------------------------------------
+// SoftIrqCompletionWorker: CRTP capability for workers that publish a packed
+// completion through the PAL SoftIrqOps mailbox. POSIX uses one dedicated
+// consumer pthread; RT-Thread builds compile this capability to a no-op and
+// keep their direct task-context completion path. The Derived type supplies
+// consume_softirq_payload(uint32_t), so payload decoding stays local to the
+// hardware protocol.
+// ---------------------------------------------------------------------------
+template <typename Derived>
+class SoftIrqCompletionWorker {
+protected:
+    bool start_softirq() noexcept
+    {
+#ifndef ISP_DEMO_USE_RTT
+        if constexpr (kUseSoftIrqCompletion) {
+            if (!g_pal->softirq_init(softirq_h_)) {
+                return false;
+            }
+            consumer_running_.store(true, std::memory_order_release);
+            softirq_thread_valid_ =
+                (0 == ::pthread_create(&softirq_thread_, nullptr,
+                                       &SoftIrqCompletionWorker::trampoline,
+                                       this));
+            if (!softirq_thread_valid_) {
+                consumer_running_.store(false, std::memory_order_release);
+                g_pal->softirq_deinit(softirq_h_);
+                return false;
             }
         }
-        std::printf("[irsc] emitted %u DN frames @ %u us\n", kFrameCount, period_us);
-        g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(0U, kFrameCount, period_us);
+#endif
+        return true;
+    }
+
+    void stop_softirq() noexcept
+    {
+#ifndef ISP_DEMO_USE_RTT
+        if constexpr (kUseSoftIrqCompletion) {
+            if (softirq_thread_valid_) {
+                consumer_running_.store(false, std::memory_order_release);
+                ::pthread_join(softirq_thread_, nullptr);
+                softirq_thread_valid_ = false;
+                // softirq_init() installed the signal mask and fd on the
+                // starting thread; restore them from that same thread after
+                // the consumer has stopped.
+                g_pal->softirq_deinit(softirq_h_);
+            }
+        }
+#endif
+    }
+
+    bool raise_softirq(int32_t payload) noexcept
+    {
+#ifndef ISP_DEMO_USE_RTT
+        if constexpr (kUseSoftIrqCompletion) {
+            if (g_pal->softirq_raise(softirq_h_, payload)) {
+                ++softirq_raises_;
+                return true;
+            }
+            return false;
+        }
+#else
+        (void)payload;
+#endif
+        return false;
+    }
+
+public:
+    uint32_t softirq_raises() const noexcept
+    {
+#ifndef ISP_DEMO_USE_RTT
+        return softirq_raises_.load(std::memory_order_relaxed);
+#else
+        return 0U;
+#endif
+    }
+
+    uint32_t softirq_delivered() const noexcept
+    {
+#ifndef ISP_DEMO_USE_RTT
+        return softirq_delivered_.load(std::memory_order_acquire);
+#else
+        return 0U;
+#endif
+    }
+
+private:
+#ifndef ISP_DEMO_USE_RTT
+    static void* trampoline(void* arg) noexcept
+    {
+        static_cast<SoftIrqCompletionWorker*>(arg)->consume_loop();
+        return nullptr;
+    }
+
+    void consume_loop() noexcept
+    {
+        sigset_t mask;
+        sigemptyset(&mask);
+        sigaddset(&mask, coact::pal::Posix::SoftIrqSignal);
+        (void)pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+
+        uint32_t delivered = 0U;
+        for (;;) {
+            const int32_t payload = g_pal->softirq_take(softirq_h_, 100U);
+            if (-1 != payload) {
+                static_cast<Derived*>(this)->consume_softirq_payload(
+                    static_cast<uint32_t>(payload));
+                ++delivered;
+                continue;
+            }
+            if (!consumer_running_.load(std::memory_order_acquire)) {
+                break;
+            }
+        }
+        softirq_delivered_.store(delivered, std::memory_order_release);
+    }
+
+    pthread_t softirq_thread_{};
+    bool softirq_thread_valid_{false};
+    std::atomic<bool> consumer_running_{false};
+    DemoPal::SoftIrqHandle softirq_h_{};
+    std::atomic<uint32_t> softirq_delivered_{0U};
+    std::atomic<uint32_t> softirq_raises_{0U};
+#endif
+};
+
+// ---------------------------------------------------------------------------
+// IRSC producer: PAL worker thread, mimics drv_irsc timing. Communicates via
+// events. Frame pacing/lifecycle come from PeriodicProducerBase; this type
+// keeps only the dual-target event fan-out and frame metadata.
+// ---------------------------------------------------------------------------
+struct IrscWorker : PeriodicProducerBase<IrscWorker> {
+    TargetId low_target{};
+    TargetId high_target{};
+
+    static constexpr const char* name() noexcept { return "irsc"; }
+
+    bool start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps)
+    {
+        low_target = low;
+        high_target = high;
+        const uint32_t period = (fps == 0U) ? 33333U : (1000000U / fps);
+        return PeriodicProducerBase::start(
+            p, r, kFrameCount, period, kLat.irsc_setup_us / 2U);
+    }
+
+    void produce_frame(uint32_t frame, uint64_t emit_ns)
+    {
+        // Relative pacing: the sensor keeps its own clock and the producer
+        // never blocks on AO work; each target receives an independent event.
+        for (uint8_t channel = 0U; channel < 2U; ++channel) {
+            Layout* event = pool()->alloc_typed<Layout, Payload,
+                                                kPayloadAlign>(
+                static_cast<uint16_t>(Sig::kFrameIrscOut));
+            if (nullptr == event) {
+                break;
+            }
+            event->meta.frame_id = frame;
+            event->meta.timestamp_ns =
+                static_cast<uint32_t>(emit_ns & 0xFFFFFFFFU);
+            event->meta.payload_kind = 0U;
+            Payload* payload = reinterpret_cast<Payload*>(&event->payload[0]);
+            payload->control[0] = 'D';
+            payload->control[1] = 'N';
+            payload->control[2] = static_cast<uint8_t>((frame >> 8U) & 0xFFU);
+            payload->control[3] = static_cast<uint8_t>(frame & 0xFFU);
+            payload->ddr_id = DdrId::kDdrDn;
+            const TargetId target = (channel == 0U) ? low_target : high_target;
+            runtime()->coordinator().submit_from_task(target, &event->event,
+                                                      {false, false});
+        }
+    }
+
+    void producer_finished(uint32_t frame_count, uint32_t period)
+    {
+        std::printf("[irsc] emitted %u DN frames @ %u us\n",
+                    frame_count, period);
+        g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(
+            0U, frame_count, period);
     }
 };
 
@@ -189,7 +376,7 @@ constexpr uint32_t kT37Phase4Rounds = 10U;
 // coupling is the event plane. Hand-off primitives are DemoPal
 // MutexOps/CondOps/ThreadOps (dual platform).
 // ---------------------------------------------------------------------------
-struct UsbDmaWorker {
+struct UsbDmaWorker : SoftIrqCompletionWorker<UsbDmaWorker> {
     struct Job {
         bool     valid{false};
         uint32_t frame_id{0U};
@@ -232,67 +419,58 @@ struct UsbDmaWorker {
     uint32_t completion_rejects{0U};
     uint32_t error_interrupts{0U};   // driver-side USB error interrupt count
 
-    // The completion-consumer thread (SoftIrq path, non-RTT builds).
-#ifndef ISP_DEMO_USE_RTT
-    pthread_t softirq_thread{};
-    bool      softirq_thread_valid{false};
-    std::atomic<bool> consumer_running{false};
-    DemoPal::SoftIrqHandle softirq_h{};
-    // Take deliveries observed by the consumer (asserted == raised EOFs at
-    // the end of the run: SIGRTMIN is queued per instance, so every raise
-    // the engine made must surface here exactly once — zero loss).
-    std::atomic<uint32_t> softirq_delivered{0U};
-    std::atomic<uint32_t> softirq_raises{0U};
-#endif
-
-    void start(PoolT* p, Rt* r, TargetId host)
+    bool start(PoolT* p, Rt* r, TargetId host)
     {
         pool = p;
         rt = r;
         host_target = host;
-        g_pal->mutex_init(mtx);
-        g_pal->cond_init(cond);
+        if (!g_pal->mutex_init(mtx)) {
+            return false;
+        }
+        if (!g_pal->cond_init(cond)) {
+            g_pal->mutex_deinit(mtx);
+            return false;
+        }
         running = true;
-        std::printf("[worker] usb_dma started (slot=1)\n");
 #ifndef ISP_DEMO_USE_RTT
         // SoftIrq path: the consumer MUST be live before the engine is, so a
         // raise can never land on an uninitialized handle. init() runs first
         // on THIS thread (softirq_init installs the signalfd); the consumer
         // pthread takes over the take/deinit role afterwards.
         if constexpr (kUseSoftIrqCompletion) {
-            if (g_pal->softirq_init(softirq_h)) {
-                consumer_running.store(true);
-                softirq_thread_valid =
-                    (0 == ::pthread_create(&softirq_thread, nullptr,
-                                           &UsbDmaWorker::softirq_trampoline,
-                                           this));
+            if (!start_softirq()) {
+                running = false;
+                g_pal->cond_deinit(cond);
+                g_pal->mutex_deinit(mtx);
+                return false;
             }
         }
 #endif
-        g_pal->thread_create(thread_, &UsbDmaWorker::tramp, this);
+        if (!g_pal->thread_create(thread_, &UsbDmaWorker::tramp, this)) {
+            running = false;
+            stop_softirq();
+            g_pal->cond_deinit(cond);
+            g_pal->mutex_deinit(mtx);
+            return false;
+        }
+        started = true;
+        std::printf("[worker] usb_dma started (slot=1)\n");
+        return true;
     }
     void stop()
     {
+        if (!started) {
+            return;
+        }
         g_pal->mutex_lock(mtx);
         running = false;
         g_pal->cond_signal(cond);
         g_pal->mutex_unlock(mtx);
         g_pal->thread_join(thread_);
-#ifndef ISP_DEMO_USE_RTT
-        // Zero-loss stop: the worker join above guarantees every raise is
-        // SIGRTMIN-queued; only THEN retire the consumer. It keeps taking
-        // until the 100 ms poll times out — a timeout means the queue is
-        // empty (realtime signals are queued, never coalesced), so every
-        // completion was delivered. deinit() runs INSIDE the consumer thread
-        // (the sigmask restore must hit the thread that installed the mask).
-        if constexpr (kUseSoftIrqCompletion) {
-            if (softirq_thread_valid) {
-                consumer_running.store(false);
-                ::pthread_join(softirq_thread, nullptr);
-                softirq_thread_valid = false;
-            }
-        }
-#endif
+        stop_softirq();
+        g_pal->cond_deinit(cond);
+        g_pal->mutex_deinit(mtx);
+        started = false;
     }
     // End-of-run reconciliation line (SoftIrq path evidence for the demo
     // viewer). Runs after stop(): raises/delivered counters are final.
@@ -301,8 +479,7 @@ struct UsbDmaWorker {
 #ifndef ISP_DEMO_USE_RTT
         std::printf("  usb_dma   : softirq raises=%u delivered=%u "
                     "(completion IRQ path)\n",
-                    softirq_raises.load(),
-                    softirq_delivered.load(std::memory_order_acquire));
+                    softirq_raises(), softirq_delivered());
 #else
         std::printf("  usb_dma   : softirq path off (RT-Thread build)\n");
 #endif
@@ -347,50 +524,6 @@ private:
         static_cast<UsbDmaWorker*>(arg)->run();
     }
 
-    // The interrupt-consumer body: what a real driver's interrupt thread does
-    // between "the ISR line fired" and "the AO queue holds the event".
-#ifndef ISP_DEMO_USE_RTT
-    static void* softirq_trampoline(void* arg) noexcept
-    {
-        static_cast<UsbDmaWorker*>(arg)->softirq_consume();
-        return nullptr;
-    }
-    void softirq_consume() noexcept
-    {
-        // Belt-and-braces: the consumer inherited the blocked completion
-        // signal from main, but re-block here so the invariant (the signal
-        // can only surface through this thread's signalfd) is local and
-        // self-evident, not an inheritance argument.
-        sigset_t mask;
-        sigemptyset(&mask);
-        sigaddset(&mask, coact::pal::Posix::SoftIrqSignal);
-        (void)pthread_sigmask(SIG_BLOCK, &mask, nullptr);
-        uint32_t delivered = 0U;
-        for (;;) {
-            const int32_t payload = g_pal->softirq_take(softirq_h, 100U);
-            // NOTE: the timeout sentinel is EXACTLY -1 (the SoftIrqOps take
-            // contract), not "negative": a real payload with the err_eof bit
-            // (bit 31) set IS a negative int32 and must be delivered. A true
-            // -1 payload is unreachable in this demo (it would need
-            // err_eof + X1 length + frame id 0x3FFFFFFF together).
-            if (-1 != payload) {
-                deliver_eof(static_cast<uint32_t>(payload));
-                ++delivered;
-                continue;
-            }
-            // Timeout: the SIGRTMIN queue is drained empty (realtime signals
-            // queue per raise). If the retire flag is set too, we are done.
-            if (!consumer_running.load(std::memory_order_acquire)) {
-                break;
-            }
-        }
-        softirq_delivered.store(delivered, std::memory_order_release);
-        // deinit must run on THIS thread: it unblocks the signal in the
-        // consumer's own sigmask (the thread softirq_init installed on).
-        g_pal->softirq_deinit(softirq_h);
-        std::printf("[worker] usb_dma softirq consumer exited "
-                    "(delivered=%u)\n", delivered);
-    }
     // Decode the packed payload and hand the EOF event to the host AO — the
     // "interrupt thread wakes the driver" hop of the real ISR path.
     void deliver_eof(uint32_t packed) noexcept
@@ -411,7 +544,11 @@ private:
             ++completion_rejects;
         }
     }
-#endif
+public:
+    void consume_softirq_payload(uint32_t packed) noexcept
+    {
+        deliver_eof(packed);
+    }
 
     void run()
     {
@@ -460,11 +597,11 @@ private:
                 // Raise the soft IRQ: this stands in for the hardware
                 // completion interrupt firing. The consumer thread below does
                 // the blocking take and the kFrameEof submit.
-                if (g_pal->softirq_raise(
-                        softirq_h,
+                if (raise_softirq(
                         usb_encode_payload(j.frame_id, j.payload_bytes,
                                            j.err_eof))) {
-                    ++softirq_raises;
+                    // The base owns raise accounting; this branch only keeps
+                    // the successful interrupt path explicit.
                 } else {
                     // Raise failed (e.g. the signal queue is full): fall back
                     // to the direct submit so the frame EOF is never lost -
@@ -499,21 +636,19 @@ private:
             ++completion_rejects;
         }
     }
+    bool started{false};
 };
 
 
 // ===========================================================================
-// WorkerBase<Derived, Job, Depth, PalT>: the CRTP skeleton shared by the
-// queued hardware workers. Owns the mutex+cond hand-off ring, the drain-on-stop
-// lifecycle and the executed/statistics counters; each concrete worker
-// supplies only the execute-hook (job -> "hardware latency -> completion
-// event") via CRTP, resolved at compile time through static_cast<Derived*>.
+// WorkerBase<Derived, Job, Depth, PalT>: the CRTP skeleton shared by queued
+// hardware workers. It owns the SPSC hand-off ring, PAL wake primitive,
+// drain-on-stop lifecycle and executed/rejected counters; each derived layer
+// supplies only the hardware-specific hook via compile-time dispatch.
 //
-// PalT is the concrete coact PAL (DemoPal): every primitive call — mutex
-// lock/unlock, cond wait/signal/broadcast, thread create/join, sleep — goes
+// PalT is the concrete coact PAL (DemoPal): semaphore and thread operations go
 // through the PAL instance (g_pal), so the same WorkerBase compiles and runs
-// on POSIX host (pthread) and RT-Thread target (rt_mutex/rt_sem/static thread
-// table) with zero runtime branching.
+// on POSIX host and RT-Thread target with zero runtime branching.
 //
 // Design points (deliberate):
 //   - SINGLE-SLOT hand-off (depth 1): a busy channel REJECTS the submit and
@@ -685,6 +820,57 @@ template <typename Derived, typename Job, uint8_t kDepthV>
 using DemoWorkerBase = WorkerBase<Derived, Job, kDepthV, DemoPal>;
 
 // ---------------------------------------------------------------------------
+// CompletionWorkerBase: CRTP layer for DMA/IRQ workers whose job execution
+// ends by allocating and submitting a coact completion event. The layer keeps
+// the WorkerBase transport/lifecycle separate from hardware-specific timing
+// and metadata, while retaining zero virtual dispatch and static storage.
+// Derived must provide execute_job(const Job&) and a completion_rejects field.
+// ---------------------------------------------------------------------------
+template <typename Derived, typename Job, uint8_t kDepthV>
+class CompletionWorkerBase
+    : public WorkerBase<CompletionWorkerBase<Derived, Job, kDepthV>, Job,
+                        kDepthV, DemoPal> {
+    using WorkerCore =
+        WorkerBase<CompletionWorkerBase<Derived, Job, kDepthV>, Job,
+                   kDepthV, DemoPal>;
+
+public:
+    using WorkerCore::start;
+    using WorkerCore::stop;
+    using WorkerCore::submit;
+    using WorkerCore::executed_count;
+    using WorkerCore::rejected_count;
+
+    static constexpr const char* name() noexcept { return Derived::name(); }
+
+    // WorkerCore calls this hook after dequeuing a job. The concrete type owns
+    // only the hardware-facing execute_job implementation.
+    void execute(const Job& job)
+    {
+        static_cast<Derived*>(this)->execute_job(job);
+    }
+
+protected:
+    Layout* allocate_completion(uint16_t signal) noexcept
+    {
+        Layout* event = this->pool->template alloc_typed<Layout, Payload,
+                                                         kPayloadAlign>(signal);
+        if (nullptr == event) {
+            ++static_cast<Derived*>(this)->completion_rejects;
+        }
+        return event;
+    }
+
+    void submit_completion(TargetId target, Layout* event) noexcept
+    {
+        if (nullptr != event) {
+            this->rt->coordinator().submit_from_task(target, &event->event,
+                                                     {false, false});
+        }
+    }
+};
+
+// ---------------------------------------------------------------------------
 // CmdDmaWorker: async vdcmd command channel. Maps the RS500 vdcmd service
 // layer's rt_device_control(DEV_IRSC_CTRL_*) path: the driver AO accepts a
 // sub-command, hands it to the channel, and the register-write engine drives
@@ -699,7 +885,7 @@ using DemoWorkerBase = WorkerBase<Derived, Job, kDepthV, DemoPal>;
 // arrives back-to-back) and MUST all execute in order — dropping a control
 // step would break the boot contract, so this channel carries a small
 // request queue instead (bounded, compile-time, still no blocking).
-struct CmdDmaWorker : DemoWorkerBase<CmdDmaWorker, uint16_t, 4U> {
+struct CmdDmaWorker : CompletionWorkerBase<CmdDmaWorker, uint16_t, 4U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "cmd_dma"; }
@@ -707,24 +893,20 @@ struct CmdDmaWorker : DemoWorkerBase<CmdDmaWorker, uint16_t, 4U> {
     bool start(PoolT* p, Rt* r, TargetId driver)
     {
         reply_to = driver;
-        return WorkerBase::start(p, r);
+        return CompletionWorkerBase::start(p, r);
     }
 
-    void execute(const uint16_t& cmd_arg)
+    void execute_job(const uint16_t& cmd_arg)
     {
         /* 阻塞模拟（保留真睡）：vdcmd 异步寄存器写通道的总线耗时，
            发生在 CmdDmaWorker 自己的线程，不阻塞 AO 事件循环；
            4 次完成事件的到达时序被 dma_done_count 断言真实观察 */
         g_pal->sleep_us(kIrscCmdLatencyUs);   // register-write bus time
-        Layout* done = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-            static_cast<uint16_t>(Sig::kIrscDmaDone));
+        Layout* done = allocate_completion(static_cast<uint16_t>(Sig::kIrscDmaDone));
         if (nullptr != done) {
             done->meta.cmd_arg = cmd_arg;
             done->meta.payload_kind = 3U;
-            rt->coordinator().submit_from_task(reply_to, &done->event,
-                                               {false, false});
-        } else {
-            ++completion_rejects;
+            submit_completion(reply_to, done);
         }
     }
 };

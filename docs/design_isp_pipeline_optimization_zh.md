@@ -17,9 +17,9 @@
 | 区域 | 当前实现 | 主要问题 |
 |---|---|---|
 | AO | 14 个 AO，统一由 `Runtime`/Dispatcher 驱动 | 数量不是当前瓶颈，不应为优化而合并状态机 |
-| 硬件 worker | 7 个 worker；部分使用 `WorkerBase` 的 mutex/cond 环，部分有独立生命周期 | RT-Thread 上同步原语和线程栈开销偏高；队列模型不统一 |
+| 硬件 worker | 7 个 worker；完成型 worker 使用 `CompletionWorkerBase`，IRSC 使用 `PeriodicProducerBase`，USB 使用 `SoftIrqCompletionWorker` 能力层 | 公共生命周期/回投机制已统一，硬件协议仍保持独立 |
 | 事件池 | `common.hpp` 中 `PoolT` 硬编码 `HostSmpProfile` | RT-Thread 单核仍走 SMP 风格 CAS/批量回收，需按平台选择 Profile |
-| 队列 | `WorkerBase` 由 mutex + cond + placement-new 槽位组成 | 生产者是 Dispatcher、消费者是 worker，天然满足 SPSC，却未使用 `SpscRing` |
+| 队列 | 普通完成型 worker 使用 `WorkerBase` 的 `SpscRing` + PAL semaphore；USB 保留专用单槽交接 | 普通 worker 已利用 SPSC；USB 的 SoftIrq/DMA 语义不强行合并 |
 | 中断完成 | RT-Thread 构建关闭 SoftIrq，worker 直接提交完成事件 | 语义简单，但 ISR/任务入口必须明确，不能把 task API 当 ISR API |
 | 诊断 | `DiagTrace`、`FaultReporter`、`HsmTrace` 已有基础 | Trace 的 ISR 入口、queued 事件生命周期和 direct dispatch 仍需收敛 |
 | 水位 | `Monitor::sample_watermark()` 已实现边沿告警 | 已接入生产采样点：Dispatcher 每批 `begin_batch()` 后单点采样三分区（dispatcher.hpp），唯一写者 |
@@ -79,9 +79,9 @@ flowchart LR
 
 验收：动态事件、ISR submit、direct、queued、lease contention、stop drain 均已通过 ctest（53/53）与 RT-Thread stub 编译门；ASan/TSan 与真板验证见 P5。
 
-### P1：建立 RT-Thread 单核 Profile
+### P1：建立 RT-Thread 单核 Profile【已完成，4376ef4】
 
-当前 `PoolT` 不应在所有平台固定使用 `HostSmpProfile`。建议在 `common.hpp` 中定义平台 Profile：
+`PoolT`、`Runtime`、`Dispatcher` 已通过 `DemoProfile` 统一选择平台 Profile：
 
 ```cpp
 #ifdef ISP_DEMO_USE_RTT
@@ -91,7 +91,7 @@ using DemoProfile = coact::HostSmpProfile;
 #endif
 ```
 
-并让 `PoolT`、`Runtime`、`Dispatcher` 使用同一 `DemoProfile`。
+RT-Thread 选择 `RttSingleCoreProfile`，host/coro 选择 `HostSmpProfile`。
 
 RT-Thread 路径还应：
 
@@ -103,19 +103,19 @@ RT-Thread 路径还应：
 
 Profile 一致性是硬约束：Pool、Staging、Dispatcher 不能出现“队列是单核、回收器是 SMP、临界区又是 spinlock”的混搭。
 
-### P2：统一普通 worker 的 SPSC 交接
+### P2：统一普通 worker 的 SPSC 交接【已完成，dad821a；分层扩展已完成】
 
-`WorkerBase<Derived, Job, Depth, PalT>` 的实际角色是“Dispatcher 单生产者、worker 单消费者”。建议按以下方式改造：
+`WorkerBase<Derived, Job, Depth, PalT>` 的实际角色是“Dispatcher 单生产者、worker 单消费者”。当前已完成基础交接，并按语义增加三个 CRTP 层：
 
-1. 用 `coact::SpscRing<Job, Depth>` 保存 job；当前实际深度 2、3、4，均满足 ring 的容量约束。
-2. 用静态 semaphore 或 PAL 的轻量唤醒原语替代 cond variable；提交成功后唤醒 worker，worker 空闲时阻塞等待。
+1. 用 `coact::SpscRing<Job, Depth>` 保存 job；当前完成型 worker 通过 `CompletionWorkerBase` 复用同一交接能力。
+2. 用静态 semaphore 或 PAL 的轻量唤醒原语替代 cond variable；提交成功后唤醒 worker，worker 空闲时阻塞等待。该能力已由 `WorkerBase` 提供。
 3. `submit()` 保留非阻塞满队列拒绝和 `rejected` 计数，不改为阻塞投递。
 4. `stop()` 先关闭提交、唤醒 worker、排空已接受 job，再 join；每个已接受 job 仍必须产生完成事件。
-5. 先使用 `try_pop()` 验证行为，再评估 `pop_batch()`；批量取 job 不能改变硬件延迟、完成顺序和 stop drain 语义。
+5. 先使用 `try_pop()` 验证行为，再评估 `pop_batch()`；当前完成型 worker 已通过 `CompletionWorkerBase` 统一回投，批量取 job 仍需单独证明不会改变硬件延迟、完成顺序和 stop drain 语义。
 
-迁移前置核验（每个 worker 逐个确认，不是全部无条件 SPSC）：`IspIrqWorker` 等经 SoftIrq/ISR 完成路径回投的 worker，其 job 环的提交侧可能不唯一（任务侧请求 + 完成中断并发），须先证明该 worker 的 job 生产者确实是单线程，再换 `SpscRing`；无法证明的保留 mutex 环。
+迁移前置核验已完成：`IspIrqWorker`、`SoutDmaWorker`、`MipiIrqWorker` 和 `CmdDmaWorker` 的 job 提交均来自 Dispatcher 单线程；SoftIrq/ISR 只回投完成事件，不触碰 job ring。
 
-不建议把 `UsbDmaWorker`、`IrscWorker` 强行塞进同一个泛化基类：它们分别承担周期产帧和 SoftIrq/错误 EOF 语义，保留独立实现更清晰。
+不建议把 `UsbDmaWorker`、`IrscWorker` 强行塞进 `CompletionWorkerBase`：它们分别承担周期产帧和 SoftIrq/错误 EOF 语义，当前通过 `PeriodicProducerBase` 与 `SoftIrqCompletionWorker` 分别复用公共能力。
 
 ### P3：生产级可观测性接入
 

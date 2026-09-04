@@ -472,7 +472,14 @@ int main()
     // T37 UVC chain: WRAPE frames the packed PIC; the non-AO USB DMA engine
     // ships the bulk transactions and posts EOF to the Windows host AO.
     UsbDmaWorker usb_dma;
-    usb_dma.start(&pool, &rt, kWinHostId);
+    if (!usb_dma.start(&pool, &rt, kWinHostId)) {
+        mipi_irq.stop();
+        sout_dma.stop();
+        isp_irq_tpd.stop();
+        isp_irq_enh.stop();
+        cmd_dma.stop();
+        return 1;
+    }
     wrape.context().pool = &pool;
     wrape.context().rt = &rt;
     wrape.context().ddr = &ddr;
@@ -628,7 +635,17 @@ int main()
 
     // ---- Start the IRSC producer pthread ----
     IrscWorker irsc;
-    irsc.start(&pool, &rt, kLowId, kHighId, cmd.fps);
+    if (!irsc.start(&pool, &rt, kLowId, kHighId, cmd.fps)) {
+        usb_dma.stop();
+        mipi_irq.stop();
+        sout_dma.stop();
+        isp_irq_tpd.stop();
+        isp_irq_enh.stop();
+        cmd_dma.stop();
+        rt.stop();
+        g_log.stop();
+        return 1;
+    }
 
     // ---- Drain ----
     coact::AoBase* aos[] = { &orch, &irsc_drv, &low, &high, &hl, &enhance, &tpd,
@@ -1405,11 +1422,11 @@ int main()
     // never coalesces), every take produced exactly one host-visible EOF, and
     // the delivered count reconciles with the WRAPE framing side.
 #ifndef ISP_DEMO_USE_RTT
-    check(usb_dma.softirq_delivered.load() == usb_dma.softirq_raises.load()
-              && usb_dma.softirq_raises
+    check(usb_dma.softirq_delivered() == usb_dma.softirq_raises()
+              && usb_dma.softirq_raises()
                      == wrape.context().frames_framed,
           "SoftIrq: raises == takes == framed frames (zero-loss ISR path)");
-    check(usb_dma.softirq_delivered.load()
+    check(usb_dma.softirq_delivered()
               == winhost.context().frames_received,
           "SoftIrq: every take delivered exactly one host EOF");
 #else

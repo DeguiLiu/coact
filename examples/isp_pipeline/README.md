@@ -54,7 +54,7 @@ flowchart LR
 ```
 
 - **AO 侧**：事件驱动状态推进（HSM），只做决策不做阻塞；读写寄存器/DDR 走等待态（提交→中断确认）
-- **worker 侧**：`WorkerBase<Derived,Job,Depth,PalT>` CRTP 骨架，无锁 `SpscRing` 交接（Dispatcher 单生产者 + worker 单消费者，深度取 2 的幂）+ 单 PAL 信号量唤醒，满环忙则拒绝 + parking ring 按 id 匹配，完成事件回 AO（中断路径模拟）
+- **worker 侧**：`WorkerBase<Derived,Job,Depth,PalT>` 提供无锁 `SpscRing`、PAL 信号量唤醒、启动失败回滚和 stop drain；`CompletionWorkerBase` 统一完成事件分配/回投，`PeriodicProducerBase` 统一 IRSC 节拍，`SoftIrqCompletionWorker` 封装 USB SoftIrq mailbox。具体 worker 只保留硬件时序、描述符和协议差异。
 - **coro 模式**（ISP_DEMO_CORO 宏开启）：worker 跑在单 pthread 绑核的 ucontext 有栈协程上，与 RT-Thread 单核公平对比
 
 ## 三、三块黑板（AO 与 worker 的数据交汇）
@@ -70,13 +70,13 @@ flowchart LR
 | 文件 | 行数 | 角色 |
 |---|---|---|
 | common.hpp | ~950 | 共享词汇层（事件/黑板/PAL 选型/HSM 表） |
-| sensor_irsc.hpp/.cpp | 699/37 | IrscWorker + WorkerBase 骨架 + CmdDmaWorker + IrscDriverAo |
-| isp_chain.hpp/.cpp | 745/40 | 帧侧 worker + 增益双链 + HlFuseAo + VideoPackAo |
+| sensor_irsc.hpp/.cpp | 1103/37 | PeriodicProducerBase、SoftIrqCompletionWorker、WorkerBase/CompletionWorkerBase + CmdDmaWorker + IrscDriverAo |
+| isp_chain.hpp/.cpp | 746/40 | CompletionWorkerBase 派生的帧侧 worker + 增益双链 + HlFuseAo + VideoPackAo |
 | video_stream.hpp/.cpp | 934/40 | VideoFsmAo 乘积状态表 + QuiescePolicy |
 | output_itf.hpp/.cpp | 612/42 | 输出 sink + UsbDmaWorker + WrapeAo/WinHostAo |
 | recfg_session.hpp/.cpp | 747/43 | RecfgOrchAo 8 态 + PeriphRegCache + BitFieldView 字段 |
 | main.cpp | ~1300 | 场景编排 + 66 项断言 |
-| coro_mode.hpp / coro_pal.hpp | 168/182 | coro 执行拓扑（可选编译） |
+| coro_mode.hpp / coro_pal.hpp | 174/206 | coro 执行拓扑（可选编译） |
 
 构建：`cd build && make -j12 && ./examples/isp_pipeline_demo`，期待 `RESULT: ALL PASS`。
 

@@ -85,7 +85,7 @@ static_assert(std::is_trivially_copyable<NodeIrqJob>::value,
 // §4.3). Normal runs never enqueue one (the demo asserts fifo_ovf == 0).
 static_assert(std::is_trivially_copyable<bool>::value, "trivial by definition");
 
-struct IspIrqWorker : DemoWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
+struct IspIrqWorker : CompletionWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "isp_irq"; }
@@ -93,24 +93,20 @@ struct IspIrqWorker : DemoWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
     bool start(PoolT* p, Rt* r, TargetId node_ao)
     {
         reply_to = node_ao;
-        return WorkerBase::start(p, r);
+        return CompletionWorkerBase::start(p, r);
     }
 
-    void execute(const NodeIrqJob& j)
+    void execute_job(const NodeIrqJob& j)
     {
         /* 阻塞模拟（保留真睡）：ISP 节点处理完成中断的延迟，发生在
            IspIrqWorker 自己的线程，不阻塞 AO 事件循环；完成事件的
            真实异步到达被 irq_done_count/irq_stale 断言观察 */
         g_pal->sleep_us(50U);        // node-done interrupt latency
-        Layout* done = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-            static_cast<uint16_t>(Sig::kIspNodeDone));
+        Layout* done = allocate_completion(static_cast<uint16_t>(Sig::kIspNodeDone));
         if (nullptr != done) {
             done->meta.cmd_arg = j.node_id;
             done->meta.frame_id = j.frame_id;
-            rt->coordinator().submit_from_task(reply_to, &done->event,
-                                               {false, false});
-        } else {
-            ++completion_rejects;
+            submit_completion(reply_to, done);
         }
     }
 
@@ -146,7 +142,7 @@ struct SoutJob {
 static_assert(std::is_trivially_copyable<SoutJob>::value,
               "SoutJob is placement-new'd into the worker ring slot");
 
-struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
+struct SoutDmaWorker : CompletionWorkerBase<SoutDmaWorker, SoutJob, 3U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "sout_dma"; }
@@ -154,24 +150,20 @@ struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
     bool start(PoolT* p, Rt* r, TargetId pack_ao)
     {
         reply_to = pack_ao;
-        return WorkerBase::start(p, r);
+        return CompletionWorkerBase::start(p, r);
     }
 
-    void execute(const SoutJob& j)
+    void execute_job(const SoutJob& j)
     {
         /* 阻塞模拟（保留真睡）：SOUT 写回 DMA 引擎延迟，发生在
            SoutDmaWorker 自己的线程，不阻塞 AO 事件循环；x3 环深度
            吸收的调度抖动语义依赖真实时延 */
         g_pal->sleep_us(60U);        // SOUT writeback engine latency
-        Layout* done = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-            static_cast<uint16_t>(Sig::kSoutDone));
+        Layout* done = allocate_completion(static_cast<uint16_t>(Sig::kSoutDone));
         if (nullptr != done) {
             done->meta.cmd_arg = j.path;
             done->meta.frame_id = j.frame_id;
-            rt->coordinator().submit_from_task(reply_to, &done->event,
-                                               {false, false});
-        } else {
-            ++completion_rejects;
+            submit_completion(reply_to, done);
         }
     }
 };
@@ -182,7 +174,7 @@ struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
 // simulates the line-transfer latency, then raises kMipiTxDone back into the
 // sink AO — the "frame shipped over the lane" callback.
 // ---------------------------------------------------------------------------
-struct MipiIrqWorker : DemoWorkerBase<MipiIrqWorker, uint16_t, 2U> {
+struct MipiIrqWorker : CompletionWorkerBase<MipiIrqWorker, uint16_t, 2U> {
     TargetId reply_to{};
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "mipi_irq"; }
@@ -190,23 +182,19 @@ struct MipiIrqWorker : DemoWorkerBase<MipiIrqWorker, uint16_t, 2U> {
     bool start(PoolT* p, Rt* r, TargetId sink_ao)
     {
         reply_to = sink_ao;
-        return WorkerBase::start(p, r);
+        return CompletionWorkerBase::start(p, r);
     }
 
-    void execute(const uint16_t& frame_id)
+    void execute_job(const uint16_t& frame_id)
     {
         /* 阻塞模拟（保留真睡）：MIPI CSI 线缓冲传输时间，发生在 MipiIrqWorker
            自己的线程，不阻塞 AO 事件循环；kMipiTxLatencyUs 同时被
            onMipiTxDone 记账，tx_done_count 断言观察真实异步完成 */
         g_pal->sleep_us(kMipiTxLatencyUs);   // CSI line-buffer transfer
-        Layout* done = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-            static_cast<uint16_t>(Sig::kMipiTxDone));
+        Layout* done = allocate_completion(static_cast<uint16_t>(Sig::kMipiTxDone));
         if (nullptr != done) {
             done->meta.frame_id = frame_id;
-            rt->coordinator().submit_from_task(reply_to, &done->event,
-                                               {false, false});
-        } else {
-            ++completion_rejects;
+            submit_completion(reply_to, done);
         }
     }
 
