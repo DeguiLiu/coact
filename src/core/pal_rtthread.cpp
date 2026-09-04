@@ -692,13 +692,16 @@ void RtThread::sleep_us(uint32_t us) noexcept
  * The handler registered in softirq_init() is deliberately EMPTY: it must run
  * in restricted thread context on the receiver, and the only state it would
  * touch is already visible through the SPSC ring. The signal itself is a
- * wake hint; take() polls the ring on a 1 ms tick so the host path does not
- * require rt_signal_wait emulation in the stub.
+ * wake hint: on a REAL target take() blocks in rt_signal_wait until the
+ * producer's rt_thread_kill delivers it (no polling, no wasted ticks); the
+ * host stub (rtthread_stub.h does not emulate signals) falls back to a
+ * 1 ms polling tick for deterministic tests.
  *
- * BOARD VERIFICATION PENDING: on a real RT-Thread 5.2.x target the empty
- * handler runs in the receiver's thread context. The polling take() is the
- * safe baseline; replacing it with rt_signal_wait is a follow-up that needs
- * to validate signal masking + siginfo payload propagation in the kernel.
+ * BOARD VERIFICATION PENDING: the rt_signal_wait path below is written
+ * against the RT-Thread 5.x kernel API (rtthread.h:
+ * int rt_signal_wait(const rt_sigset_t*, rt_siginfo_t*, rt_int32_t)) and the
+ * empty-handler context, but has not run on real hardware; first bring-up
+ * should confirm signal masking and spurious-wake handling on the target.
  * ------------------------------------------------------------------------- */
 namespace {
 
@@ -777,10 +780,28 @@ int32_t RtThread::softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept
                 return -1;
             }
         }
-        /* 1 ms tick: the smallest step that respects the drain-loop budget
-           without busy-spinning the receiver. rt_thread_mdelay rounds to
-           whole ms on the real 1 kHz tick. */
+#if !defined(COACT_RTT_STUB)
+        /* Real target: block in the kernel until rt_thread_kill delivers
+           SIGUSR1 (the wake hint from raise()); the signal handler is empty,
+           rt_signal_wait consumes the signal with the thread's mask applied.
+           Signature per RT-Thread 5.x (rtthread.h):
+             int rt_signal_wait(const rt_sigset_t*, rt_siginfo_t*, rt_int32_t);
+           A spurious wake (signal arrived but the ring still empty - can
+           happen when the producer's kill lands between our ring check and
+           the wait) simply loops: the ring re-check catches the payload. */
+        {
+            rt_sigset_t set = 1U << (SIGUSR1 - 1);
+            rt_siginfo_t info;
+            const rt_int32_t wait = (forever)
+                ? RT_WAITING_FOREVER
+                : static_cast<rt_int32_t>(budget_ticks);
+            (void)rt_signal_wait(&set, &info, wait);
+        }
+#else
+        /* Host stub: rt_signal_wait is not emulated (see rtthread_stub.h);
+           1 ms tick keeps the drain-loop deterministic. */
         rt_thread_mdelay(1);
+#endif
     }
 }
 

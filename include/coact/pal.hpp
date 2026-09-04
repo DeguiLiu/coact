@@ -181,6 +181,13 @@ using ThreadEntry = void (*)(void* context);
 //
 // MutexOps contract (binary, may be priority-inheriting on target):
 //   init / lock / unlock / deinit
+//   Priority-inversion notes: RT-Thread rt_mutex HAS priority inheritance
+//   built in (the kernel propagates the holder's priority through
+//   _mutex_update_priority) and every RtThread PAL ipc_init uses
+//   RT_IPC_FLAG_PRIO wake ordering; POSIX default pthread_mutex has NO PI.
+//   Callers must not rely on PI semantics being present: on Linux the PAL
+//   mutex is a plain normal mutex. If a target path depends on bounded
+//   priority inversion, that path must stay on the RT-Thread PAL only.
 //
 // CondOps contract (hand-off condition variable, always paired with a
 // MutexOps mutex):
