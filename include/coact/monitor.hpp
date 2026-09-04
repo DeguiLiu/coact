@@ -9,6 +9,7 @@
 
 #include "coact/assert.hpp"
 #include "coact/config.hpp"
+#include "coact/fault.hpp"
 
 // Compile-time trace gate (design_coact_trace §2.2). 0 (default) compiles the
 // instrumentation call sites out entirely - no sampling, no argument packing,
@@ -693,6 +694,7 @@ struct AoCounters {
 // ---------------------------------------------------------------------------
 struct GlobalCounters {
     std::atomic<uint8_t>  watermark_pct[3]{};
+    std::atomic<uint8_t>  prev_watermark_pct[3]{};   // last sampled pct (crossing edge)
     std::atomic<uint32_t> high_water_count[3]{};
     std::atomic<uint32_t> full_count[3]{};
     std::atomic<uint32_t> disposition_filter{0};
@@ -760,6 +762,9 @@ public:
 
     // -- Trace forwarding (core-neutral; no-op until bound) --
     void bind_trace(const TraceOps& ops) noexcept;
+
+    // -- Fault forwarding (core-neutral; no-op until bound) --
+    void bind_fault(const FaultReporter& reporter) noexcept;
     void trace_submit(uint16_t source_id, TargetId target, uint16_t signal,
                       SubmitDisposition d, uint32_t reason,
                       bool from_isr) noexcept;
@@ -779,7 +784,8 @@ private:
 
     AoCounters ao_[static_cast<size_t>(kMaxAo) + 1U];  // 1-based TargetId
     GlobalCounters global_;
-    TraceOps trace_{};  // null by default: zero-cost, no-op forwarding
+    TraceOps trace_{};     // null by default: zero-cost, no-op forwarding
+    FaultReporter fault_{};  // null by default: zero-cost, no-op fault reports
 };
 
 template <typename Config>
@@ -907,6 +913,22 @@ inline void Monitor<Config>::sample_watermark(PriorityClass p, uint8_t pct) noex
     if (pct >= kFullWatermarkPct) {
         global_.full_count[idx].fetch_add(1U, std::memory_order_relaxed);
     }
+
+    // Threshold-crossing fault (edge, not level): report only when the pct
+    // crosses kHighWatermarkPct between samples. Independent of COACT_TRACE -
+    // a null fault_ fn is already zero cost. ISR-safe: null check + forward.
+    const uint8_t prev = global_.prev_watermark_pct[idx].load(
+        std::memory_order_relaxed);
+    global_.prev_watermark_pct[idx].store(pct, std::memory_order_relaxed);
+    if (state_crossed<uint8_t>(prev, pct, kHighWatermarkPct)) {
+        const FaultPriority priority =
+            (pct >= kHighWatermarkPct) ? FaultPriority::kHigh
+                                       : FaultPriority::kMedium;
+        fault_.report(static_cast<uint16_t>(idx),
+                      (static_cast<uint32_t>(pct) << 8) |
+                          static_cast<uint32_t>(idx),
+                      priority);
+    }
 }
 
 template <typename Config>
@@ -952,6 +974,11 @@ inline void Monitor<Config>::record_platform_fault() noexcept {
 template <typename Config>
 inline void Monitor<Config>::bind_trace(const TraceOps& ops) noexcept {
     trace_ = ops;
+}
+
+template <typename Config>
+inline void Monitor<Config>::bind_fault(const FaultReporter& reporter) noexcept {
+    fault_ = reporter;
 }
 
 template <typename Config>

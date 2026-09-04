@@ -1,5 +1,6 @@
 // coact monitor (M6) host tests.
 // SPDX-License-Identifier: MIT
+#include "coact/fault.hpp"
 #include "coact/monitor.hpp"
 
 #include <atomic>
@@ -15,6 +16,8 @@ using coact::Breaker;
 using coact::BreakerBank;
 using coact::BreakerLevel;
 using coact::DefaultConfig;
+using coact::FaultPriority;
+using coact::FaultReporter;
 using coact::kInvalidTarget;
 using coact::Monitor;
 using coact::PriorityClass;
@@ -606,6 +609,114 @@ COACT_TEST(trace_ops_forwards_lease) {
     CHECK_EQ(captured.last_target_raw, 2U);
     CHECK_EQ(captured.last_kind, 2U);
     CHECK_EQ(captured.last_elapsed, 999ULL);
+}
+
+// ---------------------------------------------------------------------------
+// FaultReporter and state_crossed (fault injection boundary, R1)
+// ---------------------------------------------------------------------------
+
+COACT_TEST(state_crossed_up_and_down) {
+    constexpr uint8_t kThreshold = 80U;
+    // Crossing up: prev below, curr at or above the threshold.
+    CHECK(coact::state_crossed<uint8_t>(79U, 80U, kThreshold));
+    // Crossing down: prev at or above, curr below the threshold.
+    CHECK(coact::state_crossed<uint8_t>(80U, 79U, kThreshold));
+    // Steady high: both sides above, no state change.
+    CHECK(coact::state_crossed<uint8_t>(85U, 90U, kThreshold) == false);
+    // Both sides below: no state change.
+    CHECK(coact::state_crossed<uint8_t>(50U, 60U, kThreshold) == false);
+
+    // i32 overload carries the same edge semantics.
+    CHECK(coact::state_crossed<int32_t>(79, 80, 80));
+    CHECK(coact::state_crossed<int32_t>(80, 79, 80));
+    CHECK(coact::state_crossed<int32_t>(85, 90, 80) == false);
+    CHECK(coact::state_crossed<int32_t>(50, 60, 80) == false);
+    // Negative values must work for the i32 overload.
+    CHECK(coact::state_crossed<int32_t>(-1, 0, 0));
+}
+
+COACT_TEST(fault_reporter_null_is_noop) {
+    FaultReporter reporter{};  // default: fn == nullptr
+    reporter.report(0U, 0U, FaultPriority::kHigh);  // must not crash
+    CHECK(reporter.fn == nullptr);
+    CHECK_EQ(static_cast<uint8_t>(FaultPriority::kCritical), 3U);
+}
+
+struct CapturedFault {
+    uint32_t calls{0};
+    uint16_t last_index{0};
+    uint32_t last_detail{0};
+    FaultPriority last_priority{FaultPriority::kLow};
+};
+
+static void capture_fault(uint16_t fault_index, uint32_t detail,
+                          FaultPriority priority, void* ctx) noexcept
+{
+    CapturedFault* cap = static_cast<CapturedFault*>(ctx);
+    cap->calls++;
+    cap->last_index = fault_index;
+    cap->last_detail = detail;
+    cap->last_priority = priority;
+}
+
+COACT_TEST(fault_reporter_forwards) {
+    CapturedFault captured{};
+    FaultReporter reporter{};
+    reporter.fn = &capture_fault;
+    reporter.ctx = &captured;
+
+    reporter.report(2U, 0x1234U, FaultPriority::kCritical);
+
+    CHECK_EQ(captured.calls, 1U);
+    CHECK_EQ(captured.last_index, 2U);
+    CHECK_EQ(captured.last_detail, 0x1234U);
+    CHECK_EQ(captured.last_priority, FaultPriority::kCritical);
+}
+
+COACT_TEST(monitor_watermark_crossing_reports_fault) {
+    Monitor<> m;
+    CapturedFault captured{};
+    FaultReporter reporter{};
+    reporter.fn = &capture_fault;
+    reporter.ctx = &captured;
+    m.bind_fault(reporter);
+
+    m.sample_watermark(PriorityClass::High, 79U);  // below, no fault
+    CHECK_EQ(captured.calls, 0U);
+
+    m.sample_watermark(PriorityClass::High, 85U);  // crossing up: 79 -> 85
+    CHECK_EQ(captured.calls, 1U);
+    CHECK_EQ(captured.last_index, 0U);             // High partition
+    CHECK_EQ(captured.last_detail, (85U << 8) | 0U);
+    CHECK_EQ(captured.last_priority, FaultPriority::kHigh);
+
+    m.sample_watermark(PriorityClass::High, 50U);  // crossing down: 85 -> 50
+    CHECK_EQ(captured.calls, 2U);
+    CHECK_EQ(captured.last_priority, FaultPriority::kMedium);
+    CHECK_EQ(captured.last_detail, (50U << 8) | 0U);
+
+    // Counters keep their original semantics alongside the fault reports.
+    CHECK_EQ(coact_test::relaxed(m.global().high_water_count[0]), 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().watermark_pct[0]), 50U);
+}
+
+COACT_TEST(monitor_watermark_steady_no_repeat) {
+    Monitor<> m;
+    CapturedFault captured{};
+    FaultReporter reporter{};
+    reporter.fn = &capture_fault;
+    reporter.ctx = &captured;
+    m.bind_fault(reporter);
+
+    m.sample_watermark(PriorityClass::High, 85U);  // first sample: prev=0, up-cross
+    CHECK_EQ(captured.calls, 1U);
+    CHECK_EQ(captured.last_priority, FaultPriority::kHigh);
+
+    m.sample_watermark(PriorityClass::High, 85U);  // steady high: no repeat
+    m.sample_watermark(PriorityClass::High, 85U);  // steady high: no repeat
+    CHECK_EQ(captured.calls, 1U);
+
+    CHECK_EQ(coact_test::relaxed(m.global().high_water_count[0]), 3U);
 }
 
 }  // namespace
