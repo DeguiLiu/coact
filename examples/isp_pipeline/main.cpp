@@ -489,14 +489,19 @@ int main()
     wrape.init(init_e); winhost.init(init_e);
 
     rt.initialize();
-    rt.start();
 
-    // Bring up the coact::diag log channel (host stub renders to stdout).
+    // Bring up the coact::diag log channel BEFORE rt.start() (design P3.2
+    // fixed startup order: PAL/static -> diag/fault sink -> bind TraceOps/
+    // FaultReporter -> Runtime -> Dispatcher/workers -> first submit). The
+    // host stub renders to stdout; the RT-Thread build drives the static
+    // writer thread.
     const coact::diag::LogRtError log_err = g_log.initialize();
     if (coact::diag::LogRtError::kOk == log_err) {
         (void)g_log.start();
     }
     g_log.record_from_task<LogLevel::kInfo, kEvtBoot>(0U);
+
+    rt.start();
 
     // ============== Orchestrator ==============
     // Plays the role of app_start_preview_sync -> camera_stream_config_service.
@@ -1113,7 +1118,50 @@ int main()
     g_log.record_from_task<LogLevel::kInfo, kEvtWorkerStat>(
         6U, kFrameCount, 0U);   // irsc producer
     rt.stop();
+    // Structured diag statistics AFTER g_log.stop(): the stop join drains
+    // both lanes, so the conservation identity is drained == accepted per
+    // lane (admission-dropped records never entered the ring and are
+    // reported separately as dropped). stdout line counts are NOT the
+    // integrity proof (design P3.2).
     g_log.stop();
+    bool diag_conservation_ok = false;
+    {
+        const coact::diag::LogStats st = g_log.logger().snapshot();
+        std::printf("=== diag channel stats ===\n");
+        std::printf("  normal  : accepted=%u drained=%u dropped=%u "
+                    "(conservation %s) hwm=%u\n",
+                    static_cast<unsigned>(st.accepted_normal),
+                    static_cast<unsigned>(st.drained_normal),
+                    static_cast<unsigned>(st.dropped_at_enqueue_normal),
+                    (st.drained_normal == st.accepted_normal) ? "OK"
+                                                              : "BROKEN",
+                    static_cast<unsigned>(st.normal_high_watermark));
+        std::printf("  critical: accepted=%u drained=%u dropped=%u "
+                    "(conservation %s) hwm=%u\n",
+                    static_cast<unsigned>(st.accepted_critical),
+                    static_cast<unsigned>(st.drained_critical),
+                    static_cast<unsigned>(st.dropped_at_enqueue_critical),
+                    (st.drained_critical == st.accepted_critical) ? "OK"
+                                                                  : "BROKEN",
+                    static_cast<unsigned>(st.critical_high_watermark));
+        std::printf("  faults  : catalog_miss=%u truncated=%u sink_failed=%u "
+                    "wake_signals=%u\n",
+                    static_cast<unsigned>(st.catalog_miss),
+                    static_cast<unsigned>(st.formatter_truncated),
+                    static_cast<unsigned>(st.sink_failed),
+                    static_cast<unsigned>(st.wake_signal));
+        // Static lane capacities alongside the run stats (design P3.1: the
+        // sampling report carries capacity, occupancy and trace drops).
+        std::printf("  capacity: normal=%u critical=%u "
+                    "(normal watermark drops above)\n",
+                    static_cast<unsigned>(
+                        coact::diag::LogRtThreadBase::kNormalCapacity),
+                    static_cast<unsigned>(
+                        coact::diag::LogRtThreadBase::kCriticalCapacity));
+        diag_conservation_ok = (st.drained_normal == st.accepted_normal)
+                               && (st.drained_critical
+                                   == st.accepted_critical);
+    }
     // SoftIrq completion path: the winhost EOF drain above already awaited
     // every delivery; usb_dma.stop() (which joins the softirq consumer) has
     // meanwhile printed its own delivered count. Report the reconciliation
@@ -1232,6 +1280,8 @@ int main()
     // would replay the seed formula downstream and could still pass the byte
     // check, so overrun==0 is the only guard that the check ran on real data).
     check(ddr.overrun_drops == 0U, "DDR slot guard: zero overrun degradations");
+    check(diag_conservation_ok,
+          "diag: lane conservation identity (drained+dropped==accepted)");
     // Slot ownership protocol (the RS500 DMA descriptor ownership-bit mirror):
     // the writer must never have found a reader-claimed slot. On the demo's
     // pacing a single frame's lifetime is shorter than the ring wrap-around
