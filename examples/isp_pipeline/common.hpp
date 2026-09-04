@@ -159,6 +159,11 @@ enum LogEvt : uint16_t {
     kEvtWorkerStat  = 14U,  // a0=worker_id a1=executed a2=rejected a3=extra
     kEvtSession     = 15U,  // a0=prev a1=next (SessionState raw values)
     kEvtVideoFsm    = 16U,  // a0=stream a1=cmd a2=fsm
+    // Framework trace reserve block (design_coact_trace_zh §3.1): event ids
+    // 0x0100+ keep core TraceOps records out of the 1..16 business catalog.
+    kEvtTraceSubmit   = 0x0100U,  // a0=dst a1=signal a2=disposition a3=reason
+    kEvtTraceDispatch = 0x0101U,  // a0=elapsed_lo a1=elapsed_hi a2=path a3=timeout
+    kEvtTraceLease    = 0x0102U,  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
 };
 
 // ---------------------------------------------------------------------------
@@ -773,6 +778,63 @@ private:
     static uint32_t state_code_of(const char* s) noexcept
     {
         return static_cast<uint32_t>(static_cast<uint8_t>(s[0]) & 0xFFU);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// DiagTrace: binds core TraceOps to the coact::diag channel (design_trace
+// §3.1). Submit keeps the core source_id (0 = unknown for the current submit
+// API); Dispatch/LeaseContention carry the target id in source_id because
+// those core callbacks have no source AO parameter. Elapsed ns splits into
+// lo/hi uint32_t args so the 24-byte LogRecord keeps its fixed shape.
+// ---------------------------------------------------------------------------
+struct DiagTrace {
+    // from_isr routes to the ISR-safe record entry (review P0-1): an ISR
+    // context submit must never wake the writer through the task hook.
+    static void on_submit(void* ctx, uint16_t source_id, coact::TargetId target,
+                          uint16_t signal, uint8_t disposition, uint32_t reason,
+                          bool from_isr) noexcept
+    {
+        (void)ctx;
+        if (from_isr) {
+            g_log.record_from_isr<LogLevel::kInfo, kEvtTraceSubmit>(
+                source_id, static_cast<uint32_t>(target.raw()),
+                static_cast<uint32_t>(signal), static_cast<uint32_t>(disposition),
+                reason);
+        }
+        else {
+            g_log.record_from_task<LogLevel::kInfo, kEvtTraceSubmit>(
+                source_id, static_cast<uint32_t>(target.raw()),
+                static_cast<uint32_t>(signal), static_cast<uint32_t>(disposition),
+                reason);
+        }
+    }
+
+    static void on_dispatch(void* ctx, coact::TargetId target, uint64_t elapsed_ns,
+                            uint8_t path, uint8_t timeout) noexcept
+    {
+        (void)ctx;
+        g_log.record_from_task<LogLevel::kInfo, kEvtTraceDispatch>(
+            static_cast<uint16_t>(target.raw()),
+            static_cast<uint32_t>(elapsed_ns & 0xFFFFFFFFU),
+            static_cast<uint32_t>(elapsed_ns >> 32U),
+            static_cast<uint32_t>(path), static_cast<uint32_t>(timeout));
+    }
+
+    static void on_lease_contention(void* ctx, coact::TargetId target, uint8_t kind,
+                                    uint64_t elapsed_ns) noexcept
+    {
+        (void)ctx;
+        g_log.record_from_task<LogLevel::kInfo, kEvtTraceLease>(
+            static_cast<uint16_t>(target.raw()), static_cast<uint32_t>(kind),
+            static_cast<uint32_t>(elapsed_ns & 0xFFFFFFFFU),
+            static_cast<uint32_t>(elapsed_ns >> 32U), 0U);
+    }
+
+    static coact::TraceOps ops() noexcept
+    {
+        return coact::TraceOps{ &DiagTrace::on_submit, &DiagTrace::on_dispatch,
+                                &DiagTrace::on_lease_contention, nullptr };
     }
 };
 

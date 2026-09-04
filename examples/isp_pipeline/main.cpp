@@ -233,6 +233,12 @@ int main()
 
     Rt rt(pal);
 
+    // Bind the core TraceOps to the diag channel before the first submit so
+    // every framework submit/dispatch/lease-contention lands in g_log as
+    // kEvtTraceSubmit/kEvtTraceDispatch/kEvtTraceLease (design_trace T2).
+    // The callbacks only store pointers now; records begin once g_log starts.
+    rt.monitor().bind_trace(DiagTrace::ops());
+
     // TargetIds (1-based, in bind order):
     //   1=Orchestrator, 2=IRSC driver, 3=low_gain, 4=high_gain, 5=hl_fuse,
     //   6=enhance, 7=tpd_chain, 8=video FSM (merged PIC+TEMP), 9=video pack
