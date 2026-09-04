@@ -18,6 +18,7 @@
 // limitation as signal_dispatcher_from_isr, P2-11).
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <pthread.h>
@@ -117,7 +118,15 @@ public:
 
     void start_dispatcher(ThreadEntry entry, void* context) noexcept;
     void join_dispatcher() noexcept;
+
+    // Dispatcher heartbeat: the Dispatcher records its progress once per
+    // batch-loop iteration (single writer, relaxed store). External
+    // watchdogs probe the two queries below; window sizing contract lives
+    // in pal.hpp (must exceed kBatchSizeMax x max RTC budget + batch
+    // timeout). A PAL that never beat (0) is "not proven alive".
     void watchdog_progress(uint32_t marker) noexcept;
+    uint64_t dispatcher_progress_ns() const noexcept;
+    bool dispatcher_alive_within(uint32_t window_ms) const noexcept;
 
     // -- M1 C3 extension: track the calling thread's direct-dispatch depth --
     void enter_direct() noexcept;
@@ -191,6 +200,10 @@ private:
     void* user_ctx_;
     uint32_t tick_hz_;        /* 0 = ns resolution (host native) */
     uint64_t ns_per_tick_;    /* 1e9 / tick_hz_, valid when tick_hz_ != 0 */
+    /* Dispatcher heartbeat timestamp (ns, monotonic). 0 = never beat. The
+       Dispatcher thread is the only writer; external watchdog threads only
+       read, so relaxed ordering is sufficient for both sides. */
+    std::atomic<uint64_t> last_progress_ns_;
     static thread_local ExecutionContext tls_ctx_;
 };
 

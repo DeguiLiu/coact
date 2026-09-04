@@ -86,7 +86,16 @@ public:
     {
         StagingSlot deferred;
         bool has_deferred = false;
+        uint32_t batch_seq = 0U;
         while (!stop_.load(std::memory_order_acquire)) {
+            /* Single heartbeat point: once per loop iteration it covers the
+               busy, idle, deferred-retry and stop-drain-entry paths. If a
+               handler blocks forever, this call stops firing and an external
+               watchdog probing pal_.dispatcher_alive_within() can detect
+               the hang. No heartbeat exists mid-batch by design: the loop
+               only beats between RTC steps. */
+            pal_.watchdog_progress(batch_seq);
+            ++batch_seq;
             /* Open a new batch; the Low aging clock is refreshed per dequeue
                below so mid-batch arrivals are judged against current time.
                The set wake latch coalesces producer signals while active. */
@@ -151,8 +160,9 @@ public:
                 continue;
             }
             if (!any) {
-                /* Feed watchdog on idle cycles so the breaker cooldown
-                   does not stall when there is no traffic. */
+                /* Advance the breaker cooldown on idle cycles so it does not
+                   stall when there is no traffic. (Not the PAL heartbeat:
+                   that beats once per loop-iteration top, above.) */
                 detail::breaker_idle_cycle(breaker_);
                 /* Arm the wait with an acq_rel exchange, then re-check Ready
                    payloads. Publication-before-arm is acquired here; a

@@ -551,6 +551,19 @@ COACT_TEST(static_pal_dispatcher_profile_assembly)
     CHECK_EQ(0U, pool.used());
 }
 
+COACT_TEST(rtthread_watchdog_progress_alive_query)
+{
+    /* RED-8: the RT-Thread PAL host stub implements the same heartbeat
+       contract as Posix: progress records a timestamp; alive_within goes
+       true after a beat and stays false for a never-beat PAL. */
+    coact::pal::RtThread pal;
+    CHECK(!pal.dispatcher_alive_within(1000U));
+    CHECK_EQ(0ULL, pal.dispatcher_progress_ns());
+    pal.watchdog_progress(1U);
+    CHECK(pal.dispatcher_alive_within(1000U));
+    CHECK(pal.dispatcher_progress_ns() >= 1ULL);
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

@@ -149,6 +149,22 @@ using ThreadEntry = void (*)(void* context);
 //       // start or after stop. Posix keeps void.
 //   void join_dispatcher() noexcept;
 //   void watchdog_progress(uint32_t marker) noexcept;
+//   uint64_t dispatcher_progress_ns() const noexcept;
+//   bool dispatcher_alive_within(uint32_t window_ms) const noexcept;
+//       // Dispatcher heartbeat for external watchdog detection of a blocked
+//       // handler. watchdog_progress() is the single writer (the Dispatcher
+//       // thread, once per batch-loop iteration); dispatcher_progress_ns() /
+//       // dispatcher_alive_within() are the external-reader queries. A PAL
+//       // that never beat reports progress 0 and alive_within()==false ("not
+//       // proven alive"). No heartbeat exists MID-BATCH by design: the loop
+//       // only beats between RTC steps, so a handler that blocks forever
+//       // stops the beat and is thus detectable. Window sizing:
+//       //   window_ms >= kBatchSizeMax * max(RTC budget ms) + kBatchTimeoutMs
+//       //             + margin
+//       // (default config ~ 8*1ms + 5ms + headroom; the beat is the batch-loop
+//       // period, not a fixed timer). RTT targets: hardware watchdog (IWDG)
+//       // stays BSP-owned - a BSP thread feeds it only while
+//       // dispatcher_alive_within() holds, else stops feeding to reset.
 //   void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;   // may be no-op
 //   void set_clock_ops(ClockOps ops) noexcept;                  // optional (§7.5)
 //

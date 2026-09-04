@@ -236,6 +236,11 @@ public:
         pal_.join_dispatcher();
     }
 
+    void watchdog_progress(uint32_t) noexcept
+    {
+        pal_.watchdog_progress(0U);
+    }
+
     void enter_direct() noexcept
     {
         pal_.enter_direct();
@@ -399,6 +404,7 @@ struct ReservedFrontPal {
 
     static bool in_dispatcher_thread() noexcept { return true; }
     uint64_t monotonic_ns() const noexcept { return 0U; }
+    void watchdog_progress(uint32_t) noexcept {}
     void wait_dispatcher(uint32_t) noexcept
     {
         ++wait_count;

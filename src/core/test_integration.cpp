@@ -268,6 +268,109 @@ COACT_TEST(nested_submit_from_handler_serializes)
     CHECK_EQ(0U, pool.used());
 }
 
+/* =========================================================================
+ * Dispatcher hang detection (RTC layer-3 hole): the RTC budget only fires
+ * after a handler RETURNS; a handler that blocks forever freezes the
+ * Dispatcher inside try_dispatch_queued with no breaker trip. The heartbeat
+ * added to the Dispatcher loop tops this: while the handler spins, progress
+ * stops advancing and an external thread probing dispatcher_alive_within()
+ * observes the hang.
+ * ========================================================================= */
+static std::atomic<bool> g_hang_release{false};
+static std::atomic<bool> g_hang_entered{false};
+
+static void h_noop_entry(NestedCtx&) {}
+static void h_noop_exit(NestedCtx&)  {}
+static bool h_ok(const NestedCtx&, const coact::Event&) { return true; }
+
+static void h_action_hang(NestedCtx&, const coact::Event&)
+{
+    g_hang_entered.store(true, std::memory_order_release);
+    /* Controllable hang: spin in 1 ms slices so the RAII release flag is
+       observed promptly. Never blocks the CI beyond the test body. */
+    while (!g_hang_release.load(std::memory_order_acquire)) {
+        usleep(1000);
+    }
+}
+
+static const coact::StateDef<NestedCtx> kHStates[] = {
+    { -1, nullptr, nullptr },
+    {  0, h_noop_entry, h_noop_exit },
+};
+static const coact::TransitionDef<NestedCtx> kHTrans[] = {
+    { 1, 1U, 1, coact::TransitionKind::Internal, h_ok, h_action_hang },
+};
+
+struct HangTraits {
+    static coact::LogicalPrio   logical_prio()   { return 30U; }
+    static coact::PriorityClass priority_class() { return coact::PriorityClass::Normal; }
+    static bool direct_eligible() { return false; }
+    static bool isr_direct_safe() { return false; }
+    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+};
+using HangAo = coact::Ao<NestedCtx, coact::Hsm<NestedCtx>, HangTraits>;
+
+/* RAII: releases the hang on ANY scope exit (including CHECK failure) so
+   rt.stop() can always join and the CI never deadlocks. */
+struct HangReleaseGuard {
+    ~HangReleaseGuard() { g_hang_release.store(true, std::memory_order_release); }
+};
+
+COACT_TEST(dispatcher_hang_is_externally_detectable)
+{
+    g_hang_release.store(false);
+    g_hang_entered.store(false);
+
+    HangAo ao(kHStates, 2U, kHTrans, 1U, 1, 4U);
+    coact::Event init_e;
+    init_e.signal  = 0U;
+    init_e.pool_id = 0U;
+    init_e.ref_ctr = 0U;
+    ao.init(init_e);
+
+    IntPool pool;
+    pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs());
+
+    coact::pal::Posix pal;
+    coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
+
+    CHECK(rt.bind(&ao));
+    CHECK(rt.initialize());
+    rt.start();
+
+    HangReleaseGuard guard;
+
+    coact::Event* e = pool.alloc(1U);
+    REQUIRE(e != nullptr);
+    rt.coordinator().submit_from_task(coact::TargetId(1U), e,
+                                      coact::EventQos{false, false});
+
+    /* Wait until the handler is inside its spin (1 s deadline). */
+    for (int w = 0; w < 200; ++w) {
+        if (g_hang_entered.load(std::memory_order_acquire)) {
+            break;
+        }
+        usleep(5000);
+    }
+    REQUIRE(g_hang_entered.load());
+
+    /* External watchdog view: while the handler holds the Dispatcher, the
+       heartbeat is stale. Sample, wait past a 50 ms window, assert dead. */
+    const uint64_t progress_during_hang =
+        pal.dispatcher_progress_ns();
+    usleep(100000);
+    CHECK(!pal.dispatcher_alive_within(50U));
+    CHECK_EQ(progress_during_hang, pal.dispatcher_progress_ns());
+
+    /* Release the hang: the loop resumes beating. */
+    g_hang_release.store(true, std::memory_order_release);
+    usleep(50000);
+    CHECK(pal.dispatcher_alive_within(200U));
+
+    rt.stop();
+    CHECK_EQ(0U, pool.used());
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

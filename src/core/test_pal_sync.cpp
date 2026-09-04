@@ -415,6 +415,40 @@ COACT_TEST(rtthread_worker_handoff_probe)
     CHECK_EQ(2, w.executed.load());
 }
 
+COACT_TEST(posix_watchdog_progress_records_timestamp)
+{
+    coact::pal::Posix pal;
+    /* Fresh PAL: no progress yet, so it is not "proven alive". */
+    CHECK(!pal.dispatcher_alive_within(1000U));
+    const uint64_t before = pal.monotonic_ns();
+    pal.watchdog_progress(1U);
+    const uint64_t recorded = pal.dispatcher_progress_ns();
+    CHECK(recorded >= before);
+    /* A tiny window from the last progress must now report alive. */
+    CHECK(pal.dispatcher_alive_within(1000U));
+}
+
+COACT_TEST(posix_alive_without_progress_is_false)
+{
+    coact::pal::Posix pal;
+    /* Never called watchdog_progress: dispatcher_progress_ns() == 0, so
+       alive_within() must be false regardless of window. */
+    CHECK_EQ(0ULL, pal.dispatcher_progress_ns());
+    CHECK(!pal.dispatcher_alive_within(1000U));
+    CHECK(!pal.dispatcher_alive_within(1U));
+}
+
+COACT_TEST(posix_alive_windows_expire)
+{
+    coact::pal::Posix pal;
+    pal.set_tick_hz(0U);  /* native ns resolution for the timing assertion */
+    pal.watchdog_progress(1U);
+    CHECK(pal.dispatcher_alive_within(1000U));
+    /* Sleep past a 1 ms window: the same progress timestamp is now stale. */
+    pal.sleep_us(3000U);
+    CHECK(!pal.dispatcher_alive_within(1U));
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

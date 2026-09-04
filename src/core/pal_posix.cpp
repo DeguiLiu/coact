@@ -39,7 +39,8 @@ Posix::Posix() noexcept
       user_entry_(nullptr),
       user_ctx_(nullptr),
       tick_hz_(0U),
-      ns_per_tick_(0U)
+      ns_per_tick_(0U),
+      last_progress_ns_(0U)
 {
     pthread_mutex_init(&mutex_, nullptr);
     pthread_cond_init(&cond_, nullptr);
@@ -185,7 +186,24 @@ void Posix::join_dispatcher() noexcept
 
 void Posix::watchdog_progress(uint32_t /*marker*/) noexcept
 {
-    /* no-op on POSIX host */
+    /* Single writer (the Dispatcher thread): a relaxed store is sufficient;
+       readers use a relaxed load and judge staleness by elapsed time. */
+    last_progress_ns_.store(monotonic_ns(), std::memory_order_relaxed);
+}
+
+uint64_t Posix::dispatcher_progress_ns() const noexcept
+{
+    return last_progress_ns_.load(std::memory_order_relaxed);
+}
+
+bool Posix::dispatcher_alive_within(uint32_t window_ms) const noexcept
+{
+    const uint64_t last = last_progress_ns_.load(std::memory_order_relaxed);
+    if (0U == last) {
+        return false;  /* never beat: not proven alive */
+    }
+    const uint64_t elapsed = monotonic_ns() - last;
+    return elapsed < (static_cast<uint64_t>(window_ms) * 1000000ULL);
 }
 
 void Posix::enter_direct() noexcept

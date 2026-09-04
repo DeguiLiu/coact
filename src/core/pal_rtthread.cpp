@@ -412,7 +412,26 @@ void RtThread::join_dispatcher() noexcept
 
 void RtThread::watchdog_progress(uint32_t /*marker*/) noexcept
 {
-    /* No-op: RS500 watchdog management is handled at the BSP layer. */
+    /* Record the Dispatcher heartbeat for the external liveness queries.
+       The hardware watchdog itself stays BSP-owned: a BSP thread feeds the
+       IWDG only while dispatcher_alive_within() holds. Single writer (the
+       Dispatcher thread), relaxed store; readers judge staleness by time. */
+    last_progress_ns_.store(monotonic_ns(), std::memory_order_relaxed);
+}
+
+uint64_t RtThread::dispatcher_progress_ns() const noexcept
+{
+    return last_progress_ns_.load(std::memory_order_relaxed);
+}
+
+bool RtThread::dispatcher_alive_within(uint32_t window_ms) const noexcept
+{
+    const uint64_t last = last_progress_ns_.load(std::memory_order_relaxed);
+    if (0U == last) {
+        return false;  /* never beat: not proven alive */
+    }
+    const uint64_t elapsed = monotonic_ns() - last;
+    return elapsed < (static_cast<uint64_t>(window_ms) * 1000000ULL);
 }
 
 void RtThread::enter_direct() noexcept
