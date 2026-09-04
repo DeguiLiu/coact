@@ -54,7 +54,7 @@ flowchart LR
 ```
 
 - **AO 侧**：事件驱动状态推进（HSM），只做决策不做阻塞；读写寄存器/DDR 走等待态（提交→中断确认）
-- **worker 侧**：`WorkerBase<Derived,Job,Depth,PalT>` CRTP 骨架，单槽忙则拒绝 + parking ring 按 id 匹配，完成事件回 AO（中断路径模拟）
+- **worker 侧**：`WorkerBase<Derived,Job,Depth,PalT>` CRTP 骨架，无锁 `SpscRing` 交接（Dispatcher 单生产者 + worker 单消费者，深度取 2 的幂）+ 单 PAL 信号量唤醒，满环忙则拒绝 + parking ring 按 id 匹配，完成事件回 AO（中断路径模拟）
 - **coro 模式**（ISP_DEMO_CORO 宏开启）：worker 跑在单 pthread 绑核的 ucontext 有栈协程上，与 RT-Thread 单核公平对比
 
 ## 三、三块黑板（AO 与 worker 的数据交汇）
@@ -79,3 +79,19 @@ flowchart LR
 | coro_mode.hpp / coro_pal.hpp | 168/182 | coro 执行拓扑（可选编译） |
 
 构建：`cd build && make -j12 && ./examples/isp_pipeline_demo`，期待 `RESULT: ALL PASS`。
+
+## 五、双后端验证矩阵（design_isp_pipeline_optimization P5）
+
+| 验证层 | host/POSIX（默认 + pthread 手工构建） | RT-Thread（ISP_DEMO_USE_RTT） |
+|---|---|---|
+| 构建 | pthread/coro；`-fno-exceptions -fno-rtti` 全程 | RTT stub 编译门（ctest isp_pipeline_demo_rtt） |
+| Profile | HostSmpProfile（tagged-CAS 池 + 批量回收 + spin CS） | RttSingleCoreProfile（irq-mask 池 + 即时回收 + IRQ CS） |
+| 队列 | SpscRing 顺序/压测（test_spsc_ring 24 用例含线程压测） | 同一 SpscRing（无平台分支） |
+| worker 交接 | 真阻塞 sem（pthread）/ 协作 yield（coro） | rt_sem（静态） |
+| 日志 | raw-hex sink（stdout） | 静态 writer 线程 + record_from_isr |
+| 生命周期 | pool.used()==0 + diag 守恒断言 | 同左（编译级；真板待板级验证） |
+| 覆盖 | ctest 53/53（含本 demo 68+ 断言） | 编译门 + 板级待办清单见设计文档 §5 |
+
+验收记录（2026-09 系列，分支 feature/isp-pipeline-demo）：
+- P0 Trace 修复（2baa919）、P1 Profile 统一（4376ef4）、P2 WorkerBase SPSC（dad821a）、P3 diag 启动顺序与守恒断言（db25075）、P4 静态资源预算表（cad9d8a）
+- 板级待办：真 RT_CPUS_NR=1 配置、中断嵌套、counter 回绕、IWDG 联动、栈水位实测（P1 注释中 16K/4K 的降额依据）

@@ -196,13 +196,13 @@ Trace、Fault 和业务日志继续共享 diag，但必须分别统计 accepted�
 ## 7. 推荐提交顺序
 
 ```text
-P0 Trace/事件生命周期修复【已完成】
-  -> P1 RT-Thread Profile 与静态资源表
-  -> P2 WorkerBase SPSC 化
-  -> P3 水位/Fault/Trace 生产接入【水位部分已完成；Trace/Fault 绑定与统计待办】
-  -> P4 栈与 DDR 临时缓冲预算
-  -> P5 host + RT-Thread 双后端验证
-  -> 更新 examples/isp_pipeline/README.md 与测试报告
+P0 Trace/事件生命周期修复【已完成 2baa919】
+  -> P1 RT-Thread Profile 与静态资源表【已完成 4376ef4】
+  -> P2 WorkerBase SPSC 化【已完成 dad821a】
+  -> P3 水位/Fault/Trace 生产接入【已完成：水位 6dd2bc0、启动顺序与守恒断言 db25075】
+  -> P4 栈与 DDR 临时缓冲预算【已完成 cad9d8a（预算表）】
+  -> P5 host + RT-Thread 双后端验证【host 侧完成；板级项列为待办】
+  -> 更新 examples/isp_pipeline/README.md 与测试报告【README 验证矩阵已更新】
 ```
 
 其中 P0、P1 是上板前硬门禁；P2 是主要 CPU/同步开销优化；P3/P4 用于把示例从“能跑”提升为“可证明、可复盘、可移植”。
