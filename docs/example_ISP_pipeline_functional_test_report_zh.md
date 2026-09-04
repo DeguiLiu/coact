@@ -2,6 +2,8 @@
 
 **关联文档**：架构说明见 `example_ISP_pipeline_design_architecture_zh.md`；故障处理见 `example_ISP_pipeline_design_consistency_avoidance_zh.md`；逐阶段运行输出见 `isp_pipeline_demo_run_log_fresh.txt`。
 
+**本次验收更新**：2026-09-05，基于提交 `03cc959` 及随后 `Runtime` 析构停机修复；以下结果均为当前工作区重新执行，不沿用旧日志的测试结论。
+
 ## 1. 测试范围
 
 ```mermaid
@@ -12,7 +14,7 @@ flowchart LR
         A2 --> A3["PIC/TEMP 双流打包<br/>节点序列→SOUT→OUT"]:::f1
         A3 --> A4["输出接口<br/>WRAPE→USB Bulk / MIPI TX"]:::f1
     end
-    subgraph ASSERT["自检断言五组（71 项）"]
+    subgraph ASSERT["自检断言五组（73 项）"]
         direction TB
         B1["链路不变量<br/>帧计数/帧序连续"]:::f2
         B2["数据面字节级校验"]:::f2
@@ -50,7 +52,7 @@ main() 末尾逐项核对运行终态与不变量，任一失败打印 `[FAIL]` 
 
 ### 2.3 日志范围
 
-最新运行输出 727 行，分四层：
+本次 host coro 运行输出 2138 行，分四层：
 
 | 层级 | 内容 | 频次 |
 |---|---|---|
@@ -61,9 +63,39 @@ main() 末尾逐项核对运行终态与不变量，任一失败打印 `[FAIL]` 
 
 全量记录只放在 HSM 轨迹（信息最紧凑）；帧进度每 10 帧一条；单次运行总量约 300 条，可完整审计。
 
+### 2.4 当前验证结果
+
+| 验证项 | 命令/证据 | 结果 |
+|---|---|---|
+| coact 全量测试 | `cmake --build build -j12 && ctest --test-dir build --output-on-failure` | **54/54 通过** |
+| host ISP 示例 | `./build/examples/isp_pipeline_demo` | **73 项通过，`RESULT: ALL PASS (fails=0)`，exit 0** |
+| RT-Thread PAL 编译门 | `ctest --test-dir build -R isp_pipeline_demo_rtt` | **编译、链接通过** |
+| RT-Thread stub 直接运行 | `timeout 30s ./build/examples/isp_pipeline_demo_rtt` | 1 项 T37 帧间隙断言失败；stub 的毫秒级 `mdelay` 只作编译门，不作为板级功能结论 |
+| Renode ARM smoke | STM32F407 + RT-Thread 5.2.2 基础组件脚本 | **`RENODE PASS spsc=8/8 fault=1 watermark=2`，exit 0** |
+| timer 稳定性 | `test_timer` 独立运行 100 次 | **100/100 通过** |
+
+此前偶发的 `test_timer` 段错误根因为 `Runtime` 缺少析构停机，线程在拥有者离开作用域后仍可能运行；现已由 `Runtime::~Runtime()` 统一调用 `stop()` 修复。Renode smoke 验证的是 coact 基础组件，不等价于完整 `isp_pipeline` ARM 镜像。
+
+### 2.5 资源消耗
+
+资源均为编译期定容和静态存储，不使用 demo 业务路径的动态分配；AO、`Runtime`、DDR 上下文和 worker 实例已迁移出 `main()` 任务栈。
+
+| 资源 | 配置/实测 | 说明 |
+|---|---:|---|
+| EventPool | 128 blocks × 128 B，存储 16,448 B | `.bss` 静态数组，含 64 B 对齐余量 |
+| Staging | High/Normal/Low = 32/64/128 | `DefaultConfig` 固定容量 |
+| DDR 模型 | 3-buffer，8 slots，7 个区域 | 8×8 小帧；不代表真实 DDR 带宽 |
+| Worker 环 | nominal 2/2/2/4/4，物理容量按 2 的幂取整 | 满环采用拒绝，不阻塞 Dispatcher |
+| RT-Thread PAL | Dispatcher 栈 buffer 16 KiB（当前实际配置 4 KiB）；8 producer slots；8 worker slots × 4 KiB | `RtThreadResources` 实测 `50,856 B`，第 8 个 worker slot 为 headroom |
+| Diag | normal/critical = 32/8；writer stack 4 KiB | `LogRtThread<>` 实测对象 `5,480 B`（不含 RT 内核控制块） |
+| host coro | 16 coroutine slots × 256 KiB = 4 MiB | 主要占用 host `.bss`；当前 demo `.bss` 约 4.05 MiB，峰值 RSS 约 7.0 MiB |
+| Demo 工作集 | AO/Runtime/DDR/worker 对象约 15.7 KiB | 函数内静态对象，位于 `.bss`；仍需板级实测栈水位 |
+
+本次 host 运行还观测到 `pool.used=0`；diag normal lane `accepted=1679, drained=1679, dropped=28`，critical lane `accepted=0, drained=0, dropped=0`，均满足守恒。资源表是 demo 的预算基线，移植到 MCU 时应按真实帧大小、栈水位和 `RT_CPUS_NR=1` 板级测量重新核定。
+
 ## 3. 测试边界
 
-host 模拟不等价板级行为（时序为建模值）；flash_proxy_demo 已单独注册 ctest。
+host 模拟不等价板级行为（时序为建模值）；flash_proxy_demo 已单独注册 ctest。RT-Thread stub 的直接运行仅用于辅助观察，不替代真实 BSP/中断/时钟验证。
 
 ## 4. 复现命令
 

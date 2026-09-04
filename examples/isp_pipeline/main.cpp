@@ -210,11 +210,11 @@ int main()
 #elif defined(ISP_DEMO_CORO)
     static coact::coro::posix::StackfulExecutor<16U, 256U * 1024U> coro_exec;
     isp_demo_coro::g_exec = &coro_exec;
-    DemoPal pal;
+    static DemoPal pal;
     isp_demo_coro::install_pump_hook();
     isp_demo_coro::start_executor();
 #else
-    DemoPal pal;
+    static DemoPal pal;
 #endif
     g_pal = &pal;
 
@@ -244,13 +244,13 @@ int main()
     pool.init(storage.data(), storage.size(),
               coact::make_critical_section(pal));
 #else
-    coact::SpinCriticalSection pool_cs;
-    PoolT pool;
+    static coact::SpinCriticalSection pool_cs;
+    static PoolT pool;
     pool.init(storage.data(), storage.size(),
               coact::make_spin_critical_section(pool_cs));
 #endif
 
-    Rt rt(pal);
+    static Rt rt(pal);
 
     // Bind the core TraceOps to the diag channel before the first submit so
     // every framework submit/dispatch/lease-contention lands in g_log as
@@ -261,15 +261,20 @@ int main()
     // Monitor watermark crossing faults (design P3.1): the Dispatcher-side
     // single-point sampler reports 80% threshold crossings through this
     // boundary (review P1: previously bound on no demo sink, so crossings
-    // were silently dropped). kWarn stays on the normal lane per the diag
-    // lane rule (only kError is critical); the sink's priority arg carries
-    // the severity.
+    // were silently dropped). High-priority crossings use the critical lane;
+    // lower-priority recoveries stay on normal and retain the priority arg.
     static const coact::FaultReporter monitor_fault{
         [](uint16_t partition, uint32_t detail,
            coact::FaultPriority priority, void*) noexcept {
-            g_log.record_from_task<LogLevel::kWarn, kEvtWatermarkFault>(
-                partition, detail & 0xFFFFU, (detail >> 16U) & 0xFFFFU,
-                static_cast<uint32_t>(priority));
+            const uint32_t pct = (detail >> 8U) & 0xFFU;
+            if (coact::FaultPriority::kHigh <= priority) {
+                g_log.record_from_task<LogLevel::kError, kEvtWatermarkFault>(
+                    0U, partition, pct, static_cast<uint32_t>(priority));
+            }
+            else {
+                g_log.record_from_task<LogLevel::kWarn, kEvtWatermarkFault>(
+                    0U, partition, pct, static_cast<uint32_t>(priority));
+            }
         }, nullptr};
     rt.monitor().bind_fault(monitor_fault);
 
@@ -278,46 +283,46 @@ int main()
     //   6=enhance, 7=tpd_chain, 8=video FSM (merged PIC+TEMP), 9=video pack
     //   (merged PIC+TEMP), 10=USB sink, 11=MIPI sink, 12=recfg, 13=WRAPE,
     //   14=Windows host. (16 AOs before the merge; 14 after.)
-    OrchestratorAo orch(kOrchStates, static_cast<uint16_t>(std::size(kOrchStates)),
+    static OrchestratorAo orch(kOrchStates, static_cast<uint16_t>(std::size(kOrchStates)),
                         kOrchTransitions, static_cast<uint16_t>(std::size(kOrchTransitions)),
                         1, 2U);
-    IrscDriverAo irsc_drv(kIrscStates, static_cast<uint16_t>(std::size(kIrscStates)),
+    static IrscDriverAo irsc_drv(kIrscStates, static_cast<uint16_t>(std::size(kIrscStates)),
                           kIrscTransitions, static_cast<uint16_t>(std::size(kIrscTransitions)),
                           1, 2U);
-    LowGainAo low(kChainStates, static_cast<uint16_t>(std::size(kChainStates)),
+    static LowGainAo low(kChainStates, static_cast<uint16_t>(std::size(kChainStates)),
                   kLowTransitions, static_cast<uint16_t>(std::size(kLowTransitions)),
                   1, 2U);
-    HighGainAo high(kChainStates, static_cast<uint16_t>(std::size(kChainStates)),
+    static HighGainAo high(kChainStates, static_cast<uint16_t>(std::size(kChainStates)),
                     kHighTransitions, static_cast<uint16_t>(std::size(kHighTransitions)),
                     1, 2U);
-    HlFuseAo hl(kHlStates, static_cast<uint16_t>(std::size(kHlStates)),
+    static HlFuseAo hl(kHlStates, static_cast<uint16_t>(std::size(kHlStates)),
                 kHlTransitions, static_cast<uint16_t>(std::size(kHlTransitions)),
                 1, 2U);
-    EnhanceAo enhance(kFusedStates, static_cast<uint16_t>(std::size(kFusedStates)),
+    static EnhanceAo enhance(kFusedStates, static_cast<uint16_t>(std::size(kFusedStates)),
                       kEnhanceTransitions, static_cast<uint16_t>(std::size(kEnhanceTransitions)),
                       1, 2U);           // initial state: Active (index 1)
-    TempChainAo tpd(kFusedStates, static_cast<uint16_t>(std::size(kFusedStates)),
+    static TempChainAo tpd(kFusedStates, static_cast<uint16_t>(std::size(kFusedStates)),
                     kTempTransitions, static_cast<uint16_t>(std::size(kTempTransitions)),
                     1, 2U);           // initial state: Active (index 1)
-    VideoFsmAo videofsm(kVideoStates, static_cast<uint16_t>(std::size(kVideoStates)),
+    static VideoFsmAo videofsm(kVideoStates, static_cast<uint16_t>(std::size(kVideoStates)),
                         kVideoTransitions, static_cast<uint16_t>(std::size(kVideoTransitions)),
                         1, 2U);         // initial state: PIC_IDLE (index 1)
-    VideoPackAo packvid(kPackStates, static_cast<uint16_t>(std::size(kPackStates)),
+    static VideoPackAo packvid(kPackStates, static_cast<uint16_t>(std::size(kPackStates)),
                         kPackTransitions, static_cast<uint16_t>(std::size(kPackTransitions)),
                         1, 2U);         // initial state: PIC_ACTIVE (index 1)
-    UsbSinkAo usb(kSinkStates, static_cast<uint16_t>(std::size(kSinkStates)),
+    static UsbSinkAo usb(kSinkStates, static_cast<uint16_t>(std::size(kSinkStates)),
                   kUsbSinkTransitions, static_cast<uint16_t>(std::size(kUsbSinkTransitions)),
                   1, 2U);
-    MipiSinkAo mipi(kMipiStates, static_cast<uint16_t>(std::size(kMipiStates)),
+    static MipiSinkAo mipi(kMipiStates, static_cast<uint16_t>(std::size(kMipiStates)),
                     kMipiSinkTransitions, static_cast<uint16_t>(std::size(kMipiSinkTransitions)),
                     1, 2U);
-    RecfgOrchAo recfg(kRecfgStates, static_cast<uint16_t>(std::size(kRecfgStates)),
+    static RecfgOrchAo recfg(kRecfgStates, static_cast<uint16_t>(std::size(kRecfgStates)),
                       kRecfgTransitions, static_cast<uint16_t>(std::size(kRecfgTransitions)),
                       1, 2U);
-    WrapeAo wrape(kWrapeStates, static_cast<uint16_t>(std::size(kWrapeStates)),
+    static WrapeAo wrape(kWrapeStates, static_cast<uint16_t>(std::size(kWrapeStates)),
                   kWrapeTransitions, static_cast<uint16_t>(std::size(kWrapeTransitions)),
                   1, 2U);
-    WinHostAo winhost(kWinHostStates, static_cast<uint16_t>(std::size(kWinHostStates)),
+    static WinHostAo winhost(kWinHostStates, static_cast<uint16_t>(std::size(kWinHostStates)),
                       kWinHostTransitions, static_cast<uint16_t>(std::size(kWinHostTransitions)),
                       1, 2U);
 
@@ -353,7 +358,7 @@ int main()
 
     // Single DDR owner: the one home of every pixel region. All node actions
     // hit it on the dispatcher thread (serialized), so no lock, no blackboard.
-    DdrCtx ddr;
+    static DdrCtx ddr;
 
     // ---- arm the session plane BEFORE any submission can happen ----------
     g_session_pool = &pool;
@@ -367,16 +372,17 @@ int main()
     // ---- non-AO workers: the hardware behavior plane ----------------------
     // (Started before the AOs accept events; stopped in reverse below, each
     //  drained of in-flight jobs — see the stop section near the end.)
-    CmdDmaWorker cmd_dma;
-    IspIrqWorker isp_irq_enh;    // enhance node-done line (ISP hw IRQ 0)
-    IspIrqWorker isp_irq_tpd;    // TPD node-done line (ISP hw IRQ 1)
-    SoutDmaWorker sout_dma;      // SOUT writeback (path id in the job)
-    MipiIrqWorker mipi_irq;      // MIPI CSI TX completion
+    static CmdDmaWorker cmd_dma;
+    static IspIrqWorker isp_irq_enh;    // enhance node-done line (ISP hw IRQ 0)
+    static IspIrqWorker isp_irq_tpd;    // TPD node-done line (ISP hw IRQ 1)
+    static SoutDmaWorker sout_dma;      // SOUT writeback (path id in the job)
+    static MipiIrqWorker mipi_irq;      // MIPI CSI TX completion
 
     // Worker fault sink (design_static_aop A4): a completion-reject fault is
     // reported through each worker's FaultReporter boundary as
-    // kEvtWorkerFault (a0=worker_id a1=result a2=rejects). Severity routing
-    // (review P2): kCritical/kHigh faults log at kError -> the diag CRITICAL
+    // kEvtWorkerFault (a0=worker_id a1=result a2=rejects a3=priority).
+    // Severity routing (review P2): kCritical/kHigh faults log at kError ->
+    // the diag CRITICAL
     // lane (an error burst never consumes normal capacity); kMedium/kLow
     // stay on normal. Null-bound would be zero cost but silent; the demo
     // binds all five so the path is observable. Reports run on worker
@@ -386,13 +392,13 @@ int main()
            coact::FaultPriority priority, void*) noexcept {
             if (coact::FaultPriority::kHigh <= priority) {
                 g_log.record_from_task<LogLevel::kError, kEvtWorkerFault>(
-                    worker_id, (detail >> 16U) & 0xFFFFU, detail & 0xFFFFU,
-                    static_cast<uint32_t>(priority));
+                    0U, worker_id, (detail >> 16U) & 0xFFFFU,
+                    detail & 0xFFFFU, static_cast<uint32_t>(priority));
             }
             else {
                 g_log.record_from_task<LogLevel::kWarn, kEvtWorkerFault>(
-                    worker_id, (detail >> 16U) & 0xFFFFU, detail & 0xFFFFU,
-                    static_cast<uint32_t>(priority));
+                    0U, worker_id, (detail >> 16U) & 0xFFFFU,
+                    detail & 0xFFFFU, static_cast<uint32_t>(priority));
             }
         }, nullptr};
     cmd_dma.bind_fault(worker_fault);
@@ -515,7 +521,7 @@ int main()
 
     // T37 UVC chain: WRAPE frames the packed PIC; the non-AO USB DMA engine
     // ships the bulk transactions and posts EOF to the Windows host AO.
-    UsbDmaWorker usb_dma;
+    static UsbDmaWorker usb_dma;
     if (!usb_dma.start(&pool, &rt, kWinHostId)) {
         mipi_irq.stop();
         sout_dma.stop();
@@ -570,6 +576,14 @@ int main()
     g_log.record_from_task<LogLevel::kInfo, kEvtBoot>(0U);
 
     rt.start();
+    bool isr_probe_accepted = false;
+    if (Event* probe = pool.alloc(0xFFFFU)) {
+        const coact::SubmitResult result =
+            rt.coordinator().try_submit_from_isr(
+                kOrchId, probe, coact::EventQos{false, false});
+        isr_probe_accepted =
+            (coact::SubmitDisposition::Queued == result.disposition);
+    }
 
     // ============== Orchestrator ==============
     // Plays the role of app_start_preview_sync -> camera_stream_config_service.
@@ -742,7 +756,7 @@ int main()
     // transaction window it opened is observably closed. The terminal arc is
     // guaranteed reachable (the recfg AO's own stage chain self-submits to
     // it), so this converges without a hard timeout.
-    auto wait_txn_closed = [&recfg]() {
+    auto wait_txn_closed = []() {
         for (uint32_t w = 0U; w < 500U; ++w) {
             if (SessionState::kRunning == g_session.load(std::memory_order_relaxed)) {
                 return;
@@ -1240,6 +1254,22 @@ int main()
                                && (st.drained_critical
                                    == st.accepted_critical);
     }
+    const coact::GlobalCounters& monitor_stats = rt.monitor().global();
+    bool watermark_observed = true;
+    for (size_t i = 0U; i < 3U; ++i) {
+        const uint32_t samples = monitor_stats.watermark_samples[i].load(
+            std::memory_order_relaxed);
+        const uint16_t used = monitor_stats.watermark_used[i].load(
+            std::memory_order_relaxed);
+        const uint16_t capacity = monitor_stats.watermark_capacity[i].load(
+            std::memory_order_relaxed);
+        std::printf("  watermark[%zu]: samples=%u used=%u capacity=%u\n", i,
+                    static_cast<unsigned>(samples),
+                    static_cast<unsigned>(used),
+                    static_cast<unsigned>(capacity));
+        watermark_observed = watermark_observed && (samples > 0U)
+                              && (capacity > 0U);
+    }
     // SoftIrq completion path: the winhost EOF drain above already awaited
     // every delivery; usb_dma.stop() (which joins the softirq consumer) has
     // meanwhile printed its own delivered count. Report the reconciliation
@@ -1360,6 +1390,11 @@ int main()
     check(ddr.overrun_drops == 0U, "DDR slot guard: zero overrun degradations");
     check(diag_conservation_ok,
           "diag: lane conservation identity (drained+dropped==accepted)");
+    check(isr_probe_accepted &&
+              g_isr_trace_submits.load(std::memory_order_relaxed) > 0U,
+          "ISR submit: accepted and traced through ISR-safe sink");
+    check(watermark_observed,
+          "monitor: watermark samples include usage and capacity");
     // AOP behavior assertions (design_static_aop review #6): the aspect
     // chain must be observably ALIVE, not merely compiled - every
     // completion worker accumulated real execution time and the periodic

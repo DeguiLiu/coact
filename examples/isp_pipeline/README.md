@@ -6,7 +6,7 @@ RS500 红外视频链路架构演示（Linux host / RT-Thread 双平台）。定
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ main.cpp        场景编排 + 66 项自检断言（上层入口）        │
+│ main.cpp        场景编排 + 73 项自检断言（上层入口）        │
 ├─────────────────────────────────────────────────────────┤
 │ 业务模块层（每模块 = AO 状态机 + worker 硬件代理）           │
 │   sensor_irsc    产帧 + vdcmd 命令通道（RS500 sensor_input）│
@@ -75,7 +75,7 @@ flowchart LR
 | video_stream.hpp/.cpp | 934/40 | VideoFsmAo 乘积状态表 + QuiescePolicy |
 | output_itf.hpp/.cpp | 612/42 | 输出 sink + UsbDmaWorker + WrapeAo/WinHostAo |
 | recfg_session.hpp/.cpp | 747/43 | RecfgOrchAo 8 态 + PeriphRegCache + BitFieldView 字段 |
-| main.cpp | ~1300 | 场景编排 + 66 项断言 |
+| main.cpp | ~1300 | 场景编排 + 73 项断言 |
 | coro_mode.hpp / coro_pal.hpp | 174/206 | coro 执行拓扑（可选编译） |
 
 构建：`cd build && make -j12 && ./examples/isp_pipeline_demo`，期待 `RESULT: ALL PASS`。
@@ -89,7 +89,7 @@ flowchart LR
 | worker 交接 | 真阻塞 sem（pthread 手工构建）/ 协作 yield（coro 默认） | rt_sem（静态） |
 | 日志 | raw-hex sink（stdout） | 静态 writer 线程 + record_from_isr |
 | 生命周期 | pool.used()==0 + diag 守恒断言 | 同左（编译级；真板待板级验证） |
-| 覆盖 | ctest 53/53（含本 demo 68+ 断言） | 编译门 + 板级待办清单见设计文档 §5 |
+| 覆盖 | ctest 54/54（含本 demo 73 项断言） | 编译门 + 板级待办清单见设计文档 §5 |
 
 pthread 完整 demo 手工构建（无独立 CMake target）：
 ```sh

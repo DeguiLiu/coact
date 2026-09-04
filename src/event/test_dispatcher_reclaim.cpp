@@ -398,6 +398,8 @@ struct ReservedFrontStaging {
     // Dispatcher per-batch watermark sampling (production wiring): this mock
     // serves a single synthetic slot, so every partition reports empty.
     uint8_t watermark(coact::Partition) const noexcept { return 0U; }
+    uint16_t size(coact::Partition) const noexcept { return 0U; }
+    uint16_t capacity(coact::Partition) const noexcept { return 0U; }
 
 private:
     coact::Event event_{1U, 0U, 0U};

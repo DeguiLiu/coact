@@ -719,6 +719,16 @@ COACT_TEST(monitor_watermark_steady_no_repeat) {
     CHECK_EQ(coact_test::relaxed(m.global().high_water_count[0]), 3U);
 }
 
+COACT_TEST(monitor_watermark_snapshot_records_usage) {
+    Monitor<> m;
+
+    m.sample_watermark(PriorityClass::Normal, 25U, 16U, 64U);
+
+    CHECK_EQ(coact_test::relaxed(m.global().watermark_samples[1]), 1U);
+    CHECK_EQ(coact_test::relaxed(m.global().watermark_used[1]), 16U);
+    CHECK_EQ(coact_test::relaxed(m.global().watermark_capacity[1]), 64U);
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

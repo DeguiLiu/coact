@@ -19,6 +19,19 @@
 
 namespace coact {
 
+namespace detail {
+
+template <typename StagingT, typename = void>
+struct staging_has_watermark_metrics : std::false_type {};
+
+template <typename StagingT>
+struct staging_has_watermark_metrics<StagingT, std::void_t<
+    decltype(std::declval<const StagingT&>().size(Partition::High)),
+    decltype(std::declval<const StagingT&>().capacity(Partition::High))>>
+    : std::true_type {};
+
+}  // namespace detail
+
 // ---------------------------------------------------------------------------
 // Single-threaded Dispatcher. Runs on a dedicated thread started by the PAL.
 // Each batch: tick(now) -> begin_batch -> dequeue loop ->
@@ -106,15 +119,7 @@ public:
                prev_watermark_pct, so the threshold-crossing edge detection
                inside sample_watermark races nothing - no ISR or producer
                thread ever samples. Once per batch keeps the cost bounded. */
-            monitor_.sample_watermark(
-                PriorityClass::High,
-                staging_.watermark(Partition::High));
-            monitor_.sample_watermark(
-                PriorityClass::Normal,
-                staging_.watermark(Partition::Normal));
-            monitor_.sample_watermark(
-                PriorityClass::Low,
-                staging_.watermark(Partition::Low));
+            sample_watermarks();
 
             /* Batched/immediate reclaim selected by the board profile. Every
                dequeued event releases its final reference here; the batched
@@ -210,6 +215,32 @@ public:
     }
 
 private:
+    void sample_watermarks() noexcept
+    {
+        if constexpr (detail::staging_has_watermark_metrics<StagingT>::value) {
+            monitor_.sample_watermark(
+                PriorityClass::High, staging_.watermark(Partition::High),
+                staging_.size(Partition::High),
+                staging_.capacity(Partition::High));
+            monitor_.sample_watermark(
+                PriorityClass::Normal, staging_.watermark(Partition::Normal),
+                staging_.size(Partition::Normal),
+                staging_.capacity(Partition::Normal));
+            monitor_.sample_watermark(
+                PriorityClass::Low, staging_.watermark(Partition::Low),
+                staging_.size(Partition::Low),
+                staging_.capacity(Partition::Low));
+        }
+        else {
+            monitor_.sample_watermark(
+                PriorityClass::High, staging_.watermark(Partition::High));
+            monitor_.sample_watermark(
+                PriorityClass::Normal, staging_.watermark(Partition::Normal));
+            monitor_.sample_watermark(
+                PriorityClass::Low, staging_.watermark(Partition::Low));
+        }
+    }
+
     bool try_dispatch_slot(const StagingSlot& slot,
                            ReclaimerT& reclaim) noexcept
     {

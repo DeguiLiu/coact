@@ -47,8 +47,11 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+
+#ifndef ISP_DEMO_USE_RTT
 #include <pthread.h>
 #include <signal.h>
+#endif
 
 // PAL alias switch (see the DemoPal alias below): pull the RT-Thread PAL
 // header BEFORE the coact framework headers (pal_rtthread.hpp needs the
@@ -138,6 +141,7 @@ inline void softirq_block_completion_signal() noexcept
 // ---------------------------------------------------------------------------
 using LogLevel = coact::diag::LogLevel;
 inline coact::diag::LogRtThread<> g_log;
+inline std::atomic<uint32_t> g_isr_trace_submits{0U};
 
 enum LogEvt : uint16_t {
     kEvtBoot         = 1U,
@@ -165,8 +169,8 @@ enum LogEvt : uint16_t {
     kEvtTraceDispatch = 0x0101U,  // a0=elapsed_lo a1=elapsed_hi a2=path a3=timeout
     kEvtTraceLease    = 0x0102U,  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
     kEvtWorkerExec    = 0x0103U,  // a0=worker_id a1=result a2=elapsed_lo
-    kEvtWorkerFault   = 0x0104U,  // a0=worker_id a1=result a2=rejects
-    kEvtWatermarkFault = 0x0105U, // a0=partition a1=pct a2=priority
+    kEvtWorkerFault   = 0x0104U,  // a0=worker_id a1=result a2=rejects a3=priority
+    kEvtWatermarkFault = 0x0105U, // a0=0 a1=partition a2=pct a3=priority
 };
 
 // ---------------------------------------------------------------------------
@@ -849,6 +853,7 @@ struct DiagTrace {
     {
         (void)ctx;
         if (from_isr) {
+            g_isr_trace_submits.fetch_add(1U, std::memory_order_relaxed);
             g_log.record_from_isr<LogLevel::kInfo, kEvtTraceSubmit>(
                 source_id, static_cast<uint32_t>(target.raw()),
                 static_cast<uint32_t>(signal), static_cast<uint32_t>(disposition),

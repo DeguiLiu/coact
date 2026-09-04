@@ -695,6 +695,9 @@ struct AoCounters {
 struct GlobalCounters {
     std::atomic<uint8_t>  watermark_pct[3]{};
     std::atomic<uint8_t>  prev_watermark_pct[3]{};   // last sampled pct (crossing edge)
+    std::atomic<uint16_t> watermark_used[3]{};
+    std::atomic<uint16_t> watermark_capacity[3]{};
+    std::atomic<uint32_t> watermark_samples[3]{};
     std::atomic<uint32_t> high_water_count[3]{};
     std::atomic<uint32_t> full_count[3]{};
     std::atomic<uint32_t> disposition_filter{0};
@@ -760,6 +763,8 @@ public:
 
     // -- Partition watermarks --
     void sample_watermark(PriorityClass p, uint8_t pct) noexcept;
+    void sample_watermark(PriorityClass p, uint8_t pct, uint16_t used,
+                          uint16_t capacity) noexcept;
     void record_overflow() noexcept;
 
     // -- M4 dispositions --
@@ -914,8 +919,18 @@ inline void Monitor<Config>::record_dispatched(TargetId ao) noexcept {
 
 template <typename Config>
 inline void Monitor<Config>::sample_watermark(PriorityClass p, uint8_t pct) noexcept {
+    sample_watermark(p, pct, 0U, 0U);
+}
+
+template <typename Config>
+inline void Monitor<Config>::sample_watermark(PriorityClass p, uint8_t pct,
+                                               uint16_t used,
+                                               uint16_t capacity) noexcept {
     const size_t idx = partition_index(p);
     global_.watermark_pct[idx].store(pct, std::memory_order_relaxed);
+    global_.watermark_used[idx].store(used, std::memory_order_relaxed);
+    global_.watermark_capacity[idx].store(capacity, std::memory_order_relaxed);
+    global_.watermark_samples[idx].fetch_add(1U, std::memory_order_relaxed);
     if (pct >= kHighWatermarkPct) {
         global_.high_water_count[idx].fetch_add(1U, std::memory_order_relaxed);
     }

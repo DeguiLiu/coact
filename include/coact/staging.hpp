@@ -369,6 +369,20 @@ public:
         }
     }
 
+    uint16_t capacity(Partition p) const noexcept
+    {
+        switch (p) {
+        case Partition::High:
+            return Config::kHighCapacity;
+        case Partition::Normal:
+            return Config::kNormalCapacity;
+        case Partition::Low:
+            return Config::kLowCapacity;
+        default:
+            return 0U;
+        }
+    }
+
 private:
     static constexpr uint32_t kAdmissionClosed = 0x80000000U;
     static constexpr uint32_t kAdmissionCountMask = ~kAdmissionClosed;

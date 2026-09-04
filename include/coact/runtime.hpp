@@ -96,6 +96,8 @@ public:
     {
     }
 
+    ~Runtime() { stop(); }
+
     /* Phase 1: register an AO. Returns false if registry is full or prio
        conflicts; must be called before initialize(). */
     bool bind(AoBase* ao) noexcept

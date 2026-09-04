@@ -77,7 +77,7 @@ flowchart LR
 4. **补齐 Monitor 耗时累计**【已完成】：direct/dispatcher 的 elapsed 分别进 `add_direct_duration()`/`add_dispatcher_duration()`。
 5. **完善公共 POD 默认值**【已完成】：`Monitor` 的 `trace_{}`/`fault_{}` 成员默认初始化为 nullptr。
 
-验收：动态事件、ISR submit、direct、queued、lease contention、stop drain 均已通过 ctest（53/53）与 RT-Thread stub 编译门；ASan/TSan 与真板验证见 P5。
+验收：动态事件、ISR submit、direct、queued、lease contention、stop drain 均已通过 ctest（54/54）与 RT-Thread stub 编译门；ASan/TSan 与真板验证见 P5。
 
 ### P1：建立 RT-Thread 单核 Profile【已完成，4376ef4】
 
@@ -126,7 +126,7 @@ Profile 一致性是硬约束：Pool、Staging、Dispatcher 不能出现“队�
 - 只有 Dispatcher 更新 `prev_watermark_pct[]`，避免 load/store 边沿竞争（已实现）；
 - 80% 上穿报告 `FaultPriority::kHigh`；下穿报告 `FaultPriority::kMedium`（已实现）；
 - 稳态区间不重复上报（已实现，集成测试覆盖）；
-- 采样点同时记录队列容量、当前占用和 Trace 丢弃计数【待办】。
+- 采样点同时记录队列容量、当前占用和采样次数；Trace/Diag 丢弃计数在同一验收收尾快照中核对。
 
 RT-Thread 若需要 ISR 即时故障，只允许使用单独的 ISR-safe fault sink，不复用会阻塞的任务 sink。
 
@@ -147,6 +147,8 @@ Trace、Fault 和业务日志继续共享 diag，但必须分别统计 accepted�
 
 ### P4：数据面与场景负载优化
 
+当前预算表已完成，`main.cpp` 中的 AO、`Runtime`、DDR 上下文和 worker 实例已迁移到函数内静态资源区；通过真 RT-Thread 前仍必须完成栈水位实测。
+
 保持现有 `DdrCtx + IoMeta + parking ring` 设计，只做以下收敛：
 
 - 继续让 `IoMeta` 只携带 frame id、DDR slot、路径和结果，不携带像素数据；
@@ -161,7 +163,7 @@ Trace、Fault 和业务日志继续共享 diag，但必须分别统计 accepted�
 
 | 验证层 | host/POSIX | RT-Thread MCU |
 |---|---|---|
-| 构建 | 默认 pthread、`ISP_DEMO_CORO` | `ISP_DEMO_USE_RTT`、单核 Profile |
+| 构建 | 默认 `ISP_DEMO_CORO`（单 pump）；pthread 完整模式手工构建 | `ISP_DEMO_USE_RTT`、单核 Profile |
 | 队列 | SPSC 顺序/压测/TSan | IRQ 临界区、ISR submit、满队列 |
 | 线程 | 允许 pthread 诊断 | 只允许静态 TCB/栈/信号量 |
 | 日志 | raw-hex sink | RT-Thread writer + `record_from_isr()` |
@@ -200,7 +202,7 @@ P0 Trace/事件生命周期修复【已完成 2baa919】
   -> P1 RT-Thread Profile 与静态资源表【已完成 4376ef4】
   -> P2 WorkerBase SPSC 化【已完成 dad821a】
   -> P3 水位/Fault/Trace 生产接入【已完成：水位 6dd2bc0、启动顺序与守恒断言 db25075】
-  -> P4 栈与 DDR 临时缓冲预算【已完成 cad9d8a（预算表）】
+  -> P4 栈与 DDR 临时缓冲预算【预算表与 main 对象静态化已完成；栈水位实测待板级门禁】
   -> P5 host + RT-Thread 双后端验证【host 侧完成；板级项列为待办】
   -> 更新 examples/isp_pipeline/README.md 与测试报告【README 验证矩阵已更新】
 ```
