@@ -1316,7 +1316,7 @@ int main()
     // never coalesces), every take produced exactly one host-visible EOF, and
     // the delivered count reconciles with the WRAPE framing side.
 #ifndef ISP_DEMO_USE_RTT
-    check(usb_dma.softirq_delivered.load() == usb_dma.softirq_raises
+    check(usb_dma.softirq_delivered.load() == usb_dma.softirq_raises.load()
               && usb_dma.softirq_raises
                      == wrape.context().frames_framed,
           "SoftIrq: raises == takes == framed frames (zero-loss ISR path)");

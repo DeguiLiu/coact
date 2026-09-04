@@ -267,12 +267,15 @@ inline YieldRequest Coroutine::resume(ResumeArg arg) noexcept
     if (!armed_ || !running_) {
         return YieldRequest{WaitReason::kDone, 0U, 0U};
     }
-    active_ = this;
-    pending_arg_ = arg;
-    if (swapcontext(&return_ctx_, &ctx_) != 0) {
+    Coroutine* const prev_active = active_;   // restore on the way back so
+    active_ = this;                           // the executor never sees a
+    pending_arg_ = arg;                       // suspended coroutine as
+    if (swapcontext(&return_ctx_, &ctx_) != 0) {  // "current" after a yield
         running_ = false;
+        active_ = prev_active;
         return YieldRequest{WaitReason::kDone, 0U, 0U};
     }
+    active_ = prev_active;
     return last_yield_;
 }
 
@@ -287,12 +290,15 @@ inline YieldRequest Coroutine::start(ResumeArg arg) noexcept
     }
     running_ = true;
     started_ = true;
-    active_ = this;
-    pending_arg_ = arg;
-    if (swapcontext(&return_ctx_, &ctx_) != 0) {
-        running_ = false;
+    Coroutine* const prev_active = active_;   // same restore discipline as
+    active_ = this;                           // resume(): after the body
+    pending_arg_ = arg;                       // yields or returns, the
+    if (swapcontext(&return_ctx_, &ctx_) != 0) {  // executor must observe its
+        running_ = false;                     // own view in current(), not a
+        active_ = prev_active;                // suspended coroutine
         return YieldRequest{WaitReason::kDone, 0U, 0U};
     }
+    active_ = prev_active;
     return last_yield_;
 }
 

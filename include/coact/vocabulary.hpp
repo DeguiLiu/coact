@@ -729,6 +729,12 @@ private:
         return *(std::launder(reinterpret_cast<const T*>(storage_)) + index);
     }
 
+    /* Raw storage for element-wise placement-new. data()/begin()/end()
+       treat the laundered head as a T array for iteration; strictly the
+       element objects do not form a T[] (CWG 2182), but this is the
+       storage pattern libstdc++ used pre-P0593 and every supported
+       compiler treats it as defined. Do not use data() for memcpy of
+       the WHOLE vector - element-wise copy only. */
     alignas(T) unsigned char storage_[sizeof(T) * Capacity];
     uint32_t size_{0U};
 };

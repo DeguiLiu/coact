@@ -241,7 +241,7 @@ struct UsbDmaWorker {
     // the end of the run: SIGRTMIN is queued per instance, so every raise
     // the engine made must surface here exactly once — zero loss).
     std::atomic<uint32_t> softirq_delivered{0U};
-    uint32_t              softirq_raises{0U};
+    std::atomic<uint32_t> softirq_raises{0U};
 #endif
 
     void start(PoolT* p, Rt* r, TargetId host)
@@ -300,7 +300,7 @@ struct UsbDmaWorker {
 #ifndef ISP_DEMO_USE_RTT
         std::printf("  usb_dma   : softirq raises=%u delivered=%u "
                     "(completion IRQ path)\n",
-                    softirq_raises,
+                    softirq_raises.load(),
                     softirq_delivered.load(std::memory_order_acquire));
 #else
         std::printf("  usb_dma   : softirq path off (RT-Thread build)\n");
@@ -465,7 +465,12 @@ private:
                                            j.err_eof))) {
                     ++softirq_raises;
                 } else {
+                    // Raise failed (e.g. the signal queue is full): fall back
+                    // to the direct submit so the frame EOF is never lost -
+                    // the zero-loss contract holds even when the IRQ path is
+                    // unavailable.
                     ++completion_rejects;
+                    submit_eof_direct(j);
                 }
             } else {
                 submit_eof_direct(j);

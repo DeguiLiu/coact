@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <pthread.h>
 #include <signal.h>
 
 // PAL alias switch (see the DemoPal alias below): pull the RT-Thread PAL
