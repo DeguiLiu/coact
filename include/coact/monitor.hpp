@@ -10,6 +10,23 @@
 #include "coact/assert.hpp"
 #include "coact/config.hpp"
 
+// Compile-time trace gate (design_coact_trace §2.2). 0 (default) compiles the
+// instrumentation call sites out entirely - no sampling, no argument packing,
+// no callback dispatch. 1 keeps them; an unbound TraceOps is still a no-op.
+#if !defined(COACT_TRACE)
+#define COACT_TRACE 0
+#endif
+
+// Wraps a trace instrumentation statement. With COACT_TRACE=0 the statement
+// is never referenced, so its arguments are never evaluated.
+#if COACT_TRACE
+#define COACT_TRACE_POINT(statement) \
+    do { statement; } while (false)
+#else
+#define COACT_TRACE_POINT(statement) \
+    do { } while (false)
+#endif
+
 namespace coact {
 
 // ---------------------------------------------------------------------------
@@ -661,6 +678,7 @@ struct AoCounters {
     std::atomic<uint32_t> rtc_timeouts{0};
     std::atomic<uint32_t> rejections[static_cast<size_t>(RejectReason::kRejectCount)]{};
     std::atomic<uint32_t> lease_contention{0};          // C5 execution lease contention
+    std::atomic<uint64_t> lease_contention_duration_ns{0};  // accumulated failed direct race time
     std::atomic<uint16_t> pending{0};                   // current pending count
     std::atomic<uint16_t> pending_max{0};               // high-watermark of pending
     std::atomic<uint64_t> dispatched{0};                // cumulative events dispatched to this AO
@@ -688,6 +706,23 @@ struct GlobalCounters {
 };
 
 // ---------------------------------------------------------------------------
+// TraceOps: core-neutral trace boundary (design_trace §2.1). Core never
+// includes coact/diag; the product adapter binds these to diag
+// record()/record_from_isr(). All callbacks are noexcept, non-blocking and
+// never allocate. Unbound (null) pointers make every trace no-op.
+// ---------------------------------------------------------------------------
+struct TraceOps {
+    void (*on_submit)(void* ctx, uint16_t source_id, TargetId target,
+                      uint16_t signal, uint8_t disposition, uint32_t reason,
+                      bool from_isr) noexcept;
+    void (*on_dispatch)(void* ctx, TargetId target, uint64_t elapsed_ns,
+                        uint8_t path, uint8_t timeout) noexcept;
+    void (*on_lease_contention)(void* ctx, TargetId target, uint8_t kind,
+                                uint64_t elapsed_ns) noexcept;
+    void* ctx;
+};
+
+// ---------------------------------------------------------------------------
 // Monitor: fixed counters only. The hot path writes counters, never formats
 // strings and never blocks. SMP may keep per-CPU instances and fold them at a
 // higher layer; this module provides the per-instance accounting.
@@ -704,6 +739,7 @@ public:
     // -- Per-AO accounting --
     void add_direct_duration(TargetId ao, uint64_t ns) noexcept;
     void add_dispatcher_duration(TargetId ao, uint64_t ns) noexcept;
+    void add_lease_contention_duration(TargetId ao, uint64_t ns) noexcept;
     void record_direct_timeout(TargetId ao) noexcept;
     void record_rtc_timeout(TargetId ao) noexcept;
     void record_rejection(TargetId ao, RejectReason reason) noexcept;
@@ -722,6 +758,16 @@ public:
     void heartbeat() noexcept;
     void record_platform_fault() noexcept;
 
+    // -- Trace forwarding (core-neutral; no-op until bound) --
+    void bind_trace(const TraceOps& ops) noexcept;
+    void trace_submit(uint16_t source_id, TargetId target, uint16_t signal,
+                      SubmitDisposition d, uint32_t reason,
+                      bool from_isr) noexcept;
+    void trace_dispatch(TargetId target, uint64_t elapsed_ns, uint8_t path,
+                        uint8_t timeout) noexcept;
+    void trace_lease_contention(TargetId target, uint8_t kind,
+                                uint64_t elapsed_ns) noexcept;
+
     // -- Queries --
     const AoCounters& ao(TargetId ao) const noexcept;
     const GlobalCounters& global() const noexcept;
@@ -733,6 +779,7 @@ private:
 
     AoCounters ao_[static_cast<size_t>(kMaxAo) + 1U];  // 1-based TargetId
     GlobalCounters global_;
+    TraceOps trace_{};  // null by default: zero-cost, no-op forwarding
 };
 
 template <typename Config>
@@ -775,6 +822,15 @@ inline void Monitor<Config>::add_dispatcher_duration(TargetId ao, uint64_t ns) n
         return;
     }
     s->dispatcher_duration_ns.fetch_add(ns, std::memory_order_relaxed);
+}
+
+template <typename Config>
+inline void Monitor<Config>::add_lease_contention_duration(TargetId ao, uint64_t ns) noexcept {
+    AoCounters* s = slot(ao);
+    if (nullptr == s) {
+        return;
+    }
+    s->lease_contention_duration_ns.fetch_add(ns, std::memory_order_relaxed);
 }
 
 template <typename Config>
@@ -891,6 +947,38 @@ inline void Monitor<Config>::heartbeat() noexcept {
 template <typename Config>
 inline void Monitor<Config>::record_platform_fault() noexcept {
     global_.platform_faults.fetch_add(1U, std::memory_order_relaxed);
+}
+
+template <typename Config>
+inline void Monitor<Config>::bind_trace(const TraceOps& ops) noexcept {
+    trace_ = ops;
+}
+
+template <typename Config>
+inline void Monitor<Config>::trace_submit(uint16_t source_id, TargetId target,
+                                          uint16_t signal, SubmitDisposition d,
+                                          uint32_t reason,
+                                          bool from_isr) noexcept {
+    if (nullptr != trace_.on_submit) {
+        trace_.on_submit(trace_.ctx, source_id, target, signal,
+                         static_cast<uint8_t>(d), reason, from_isr);
+    }
+}
+
+template <typename Config>
+inline void Monitor<Config>::trace_dispatch(TargetId target, uint64_t elapsed_ns,
+                                            uint8_t path, uint8_t timeout) noexcept {
+    if (nullptr != trace_.on_dispatch) {
+        trace_.on_dispatch(trace_.ctx, target, elapsed_ns, path, timeout);
+    }
+}
+
+template <typename Config>
+inline void Monitor<Config>::trace_lease_contention(TargetId target, uint8_t kind,
+                                                    uint64_t elapsed_ns) noexcept {
+    if (nullptr != trace_.on_lease_contention) {
+        trace_.on_lease_contention(trace_.ctx, target, kind, elapsed_ns);
+    }
 }
 
 template <typename Config>

@@ -124,12 +124,22 @@ private:
         /* --- C1: target must be bound ------------------------------------ */
         AoBase* ao = registry_.lookup(target);
         if (nullptr == ao) {
+            COACT_TRACE_POINT(const uint16_t signal = e->signal;
+                              monitor_.trace_submit(
+                                  0U, target, signal,
+                                  SubmitDisposition::RejectedState, 0U,
+                                  from_isr));
             event_gc(e);
             return {SubmitDisposition::RejectedState, 0U};
         }
 
         SubmissionLease lease(staging_, pal_, from_isr);
         if (!lease.admitted()) {
+            COACT_TRACE_POINT(const uint16_t signal = e->signal;
+                              monitor_.trace_submit(
+                                  0U, target, signal,
+                                  SubmitDisposition::RejectedState, 0U,
+                                  from_isr));
             event_gc(e);
             monitor_.record_disposition(SubmitDisposition::RejectedState);
             return {SubmitDisposition::RejectedState, 0U};
@@ -141,6 +151,11 @@ private:
         const BreakerLevel lvl = target_breaker.level();
         if (BreakerLevel::BrokenL2 <= lvl) {
             if (!qos.critical) {
+                COACT_TRACE_POINT(
+                    const uint16_t signal = e->signal;
+                    monitor_.trace_submit(
+                        0U, target, signal, SubmitDisposition::DroppedOverload,
+                        0U, from_isr));
                 monitor_.record_disposition(SubmitDisposition::DroppedOverload);
                 event_gc(e);
                 return {SubmitDisposition::DroppedOverload, 0U};
@@ -160,6 +175,10 @@ private:
                     (0U != pr.reason)
                         ? SubmitDisposition::DroppedRateLimit
                         : SubmitDisposition::DroppedPolicy;
+                COACT_TRACE_POINT(
+                    const uint16_t signal = e->signal;
+                    monitor_.trace_submit(0U, target, signal, disp, pr.reason,
+                                          from_isr));
                 monitor_.record_rejection(target, RejectReason::kC7Context);
                 monitor_.record_disposition(disp);
                 event_gc(e);
@@ -204,6 +223,11 @@ private:
                     } else {
                         target_breaker.on_rtc_ok();
                     }
+                    monitor_.add_direct_duration(target, elapsed);
+                    COACT_TRACE_POINT(
+                        monitor_.trace_dispatch(
+                            target, elapsed, 0U,
+                            (elapsed > ao->rtc_budget_ns()) ? 1U : 0U));
                     /* A queued event may already be retained by the Dispatcher
                        after losing this AO's lease. Publish the wake only after
                        dispatch_direct() released RunningDirect. The pending
@@ -214,6 +238,10 @@ private:
                         pal_.signal_dispatcher_from_task();
                     }
                     /* direct completed: consume the allocation reference */
+                    COACT_TRACE_POINT(
+                        monitor_.trace_submit(0U, target, e->signal,
+                                              SubmitDisposition::Direct, 0U,
+                                              false));
                     event_gc(e);
                     monitor_.record_dispatched(target);
                     monitor_.record_disposition(SubmitDisposition::Direct);
@@ -222,10 +250,15 @@ private:
                 /* Lost the direct race: transfer the allocation reference to
                    staging below. Do NOT reclaim the block. */
                 monitor_.record_lease_contention(target);
+                monitor_.add_lease_contention_duration(target, elapsed);
+                COACT_TRACE_POINT(
+                    monitor_.trace_lease_contention(target, 1U, elapsed));
             }
             else {
                 /* lease non-Idle: fall through to staging (no ref taken yet) */
                 monitor_.record_lease_contention(target);
+                COACT_TRACE_POINT(
+                    monitor_.trace_lease_contention(target, 0U, 0U));
             }
         }
 
@@ -237,8 +270,16 @@ private:
         }
         PendingCounter& pending = ao->pending();
         pending.increment();
+        /* Cache the signal BEFORE enqueue: ownership transfers to the staging
+           queue at this point, so the Dispatcher may dispatch and reclaim the
+           event concurrently with anything read below. */
+        const uint16_t staged_signal = e->signal;
         if (!staging_.enqueue(target, e, priority_class, now_ns)) {
             pending.decrement();
+            COACT_TRACE_POINT(
+                monitor_.trace_submit(0U, target, staged_signal,
+                                      SubmitDisposition::RejectedFull, 0U,
+                                      from_isr));
             /* The event is dropped: consume the allocation reference. */
             event_gc(e);
             monitor_.record_overflow();
@@ -260,6 +301,9 @@ private:
         }
         monitor_.record_disposition(SubmitDisposition::Queued);
         monitor_.record_pending(target, pending.load());
+        COACT_TRACE_POINT(
+            monitor_.trace_submit(0U, target, staged_signal,
+                                  SubmitDisposition::Queued, 0U, from_isr));
         return {SubmitDisposition::Queued, 0U};
     }
 

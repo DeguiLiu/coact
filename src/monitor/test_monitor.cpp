@@ -21,6 +21,7 @@ using coact::PriorityClass;
 using coact::RejectReason;
 using coact::SubmitDisposition;
 using coact::TargetId;
+using coact::TraceOps;
 
 constexpr TargetId kSlowAo(1U);
 constexpr TargetId kOtherAo(2U);
@@ -475,6 +476,136 @@ COACT_TEST(monitor_invalid_target_safely_ignored) {
     CHECK_EQ(coact_test::relaxed(m.ao(kInvalidTarget).direct_timeouts), 0U);
     CHECK_EQ(coact_test::relaxed(m.ao(kInvalidTarget).pending_max), 0U);
     CHECK_EQ(coact_test::relaxed(m.ao(kInvalidTarget).direct_duration_ns), 0ULL);
+}
+
+// ---------------------------------------------------------------------------
+// TraceOps forwarding (core-neutral trace boundary, design trace §2.1/§3.1)
+// ---------------------------------------------------------------------------
+
+struct CapturedTrace {
+    uint16_t last_source{0};
+    uint32_t last_target_raw{0};
+    uint16_t last_signal{0};
+    uint8_t last_disposition{0};
+    uint32_t last_reason{0};
+    uint64_t last_elapsed{0};
+    uint8_t last_path{0};
+    uint8_t last_timeout{0};
+    uint8_t last_kind{0};
+    bool last_from_isr{false};
+};
+
+static void capture_submit(void* ctx, uint16_t source_id, coact::TargetId target,
+                           uint16_t signal, uint8_t disposition,
+                           uint32_t reason, bool from_isr) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_source = source_id;
+    cap->last_target_raw = target.raw();
+    cap->last_signal = signal;
+    cap->last_disposition = disposition;
+    cap->last_reason = reason;
+    cap->last_from_isr = from_isr;
+}
+
+static void capture_dispatch(void* ctx, coact::TargetId target,
+                             uint64_t elapsed_ns, uint8_t path,
+                             uint8_t timeout) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_target_raw = target.raw();
+    cap->last_elapsed = elapsed_ns;
+    cap->last_path = path;
+    cap->last_timeout = timeout;
+}
+
+static void capture_lease(void* ctx, coact::TargetId target, uint8_t kind,
+                          uint64_t elapsed_ns) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_target_raw = target.raw();
+    cap->last_kind = kind;
+    cap->last_elapsed = elapsed_ns;
+}
+
+COACT_TEST(trace_ops_null_default_noop) {
+    Monitor<> m;
+    m.trace_submit(0U, kSlowAo, 1U, SubmitDisposition::Direct, 0U, false);
+    m.trace_submit(0U, kSlowAo, 1U, SubmitDisposition::Direct, 0U, true);
+    m.trace_dispatch(kSlowAo, 1000ULL, 1U, 0U);
+    m.trace_lease_contention(kSlowAo, 1U, 2000ULL);
+    CHECK_EQ(coact_test::relaxed(m.global().overflow), 0U);
+}
+
+COACT_TEST(trace_ops_forwards_submit) {
+    Monitor<> m;
+    CapturedTrace captured{};
+    TraceOps ops{};
+    ops.on_submit = &capture_submit;
+    ops.ctx = &captured;
+    m.bind_trace(ops);
+
+    m.trace_submit(3U, kOtherAo, 42U, SubmitDisposition::DroppedRateLimit, 7U,
+                   false);
+
+    CHECK_EQ(captured.last_source, 3U);
+    CHECK_EQ(captured.last_target_raw, 2U);
+    CHECK_EQ(captured.last_signal, 42U);
+    CHECK_EQ(captured.last_disposition,
+             static_cast<uint8_t>(SubmitDisposition::DroppedRateLimit));
+    CHECK_EQ(captured.last_reason, 7U);
+    CHECK(captured.last_from_isr == false);
+}
+
+// The ISR flag must reach the sink so the adapter can pick the ISR-safe
+// record entry (review P0-1: an ISR-context submit must never log through
+// the task-only entry).
+COACT_TEST(trace_ops_forwards_submit_isr_flag) {
+    Monitor<> m;
+    CapturedTrace captured{};
+    TraceOps ops{};
+    ops.on_submit = &capture_submit;
+    ops.ctx = &captured;
+    m.bind_trace(ops);
+
+    m.trace_submit(3U, kOtherAo, 42U, SubmitDisposition::Queued, 0U, true);
+
+    CHECK_EQ(captured.last_source, 3U);
+    CHECK_EQ(captured.last_signal, 42U);
+    CHECK_EQ(captured.last_disposition,
+             static_cast<uint8_t>(SubmitDisposition::Queued));
+    CHECK(captured.last_from_isr == true);
+}
+
+COACT_TEST(trace_ops_forwards_dispatch) {
+    Monitor<> m;
+    CapturedTrace captured{};
+    TraceOps ops{};
+    ops.on_dispatch = &capture_dispatch;
+    ops.ctx = &captured;
+    m.bind_trace(ops);
+
+    m.trace_dispatch(kSlowAo, 123456ULL, 1U, 0U);
+
+    CHECK_EQ(captured.last_target_raw, 1U);
+    CHECK_EQ(captured.last_elapsed, 123456ULL);
+    CHECK_EQ(captured.last_path, 1U);
+    CHECK_EQ(captured.last_timeout, 0U);
+}
+
+COACT_TEST(trace_ops_forwards_lease) {
+    Monitor<> m;
+    CapturedTrace captured{};
+    TraceOps ops{};
+    ops.on_lease_contention = &capture_lease;
+    ops.ctx = &captured;
+    m.bind_trace(ops);
+
+    m.trace_lease_contention(kOtherAo, 2U, 999ULL);
+
+    CHECK_EQ(captured.last_target_raw, 2U);
+    CHECK_EQ(captured.last_kind, 2U);
+    CHECK_EQ(captured.last_elapsed, 999ULL);
 }
 
 }  // namespace

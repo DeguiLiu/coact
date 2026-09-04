@@ -161,6 +161,29 @@ struct OtherDirectTraits {
 };
 using OtherDirectAo = coact::Ao<Ctx, DirectHsm, OtherDirectTraits>;
 
+/* AO that always loses the direct race: dispatch_direct() returns false while
+   the lease still reports Idle, so the coordinator measures the failed
+   acquisition window and must record the contention elapsed time. */
+struct ContentionAo final : coact::AoBase {
+    ContentionAo() noexcept : coact::AoBase(1000ULL) {}
+
+    void dispatch(const coact::Event&) noexcept override {}
+    bool try_dispatch_queued(const coact::Event&) noexcept override { return false; }
+    bool dispatch_direct(const coact::Event&) noexcept override { return false; }
+    coact::LogicalPrio logical_prio() const noexcept override { return 13U; }
+    coact::PriorityClass priority_class() const noexcept override
+    {
+        return coact::PriorityClass::Normal;
+    }
+    bool direct_eligible() const noexcept override { return true; }
+    bool isr_direct_safe() const noexcept override { return false; }
+    coact::ExecutionLease& lease() noexcept override { return lease_; }
+    coact::PendingCounter& pending() noexcept override { return pending_; }
+
+    coact::ExecutionLease lease_;
+    coact::PendingCounter pending_;
+};
+
 struct OverBudgetPal {
     int signals = 0;
     uint64_t now = 0;
@@ -224,6 +247,36 @@ COACT_TEST(coordinator_direct_over_budget_trips_breaker)
     }
     CHECK_EQ(static_cast<int>(coact::BreakerLevel::BrokenL1),
              static_cast<int>(breaker.level()));
+}
+
+COACT_TEST(coordinator_direct_contention_failure_records_elapsed)
+{
+    ContentionAo ao;
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    OverBudgetPal pal;
+    coact::DispatchCoordinator<StageT, OverBudgetPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+
+    coact::Event e{};
+    e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_from_task(coact::TargetId(1U), &e, qos);
+
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(coact_test::relaxed(
+                 monitor.ao(coact::TargetId(1U)).lease_contention), 1U);
+    CHECK_EQ(coact_test::relaxed(
+                 monitor.ao(coact::TargetId(1U)).lease_contention_duration_ns),
+             2000ULL);
 }
 
 COACT_TEST(coordinator_direct_depth_limit_forces_staging)
@@ -398,6 +451,210 @@ COACT_TEST(coordinator_submit_queued_from_task_bypasses_direct)
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
              static_cast<int>(r.disposition));
     CHECK_EQ(1, pal.signals);
+}
+
+// ---------------------------------------------------------------------------
+// TraceOps coordinator instrumentation (design trace §3.2)
+// ---------------------------------------------------------------------------
+
+struct CapturedTrace {
+    uint16_t last_source{0};
+    uint32_t last_target_raw{0};
+    uint16_t last_signal{0};
+    uint8_t last_disposition{0};
+    uint32_t last_reason{0};
+    uint64_t last_elapsed{0};
+    uint8_t last_path{0};
+    uint8_t last_timeout{0};
+    uint8_t last_kind{0};
+    bool last_from_isr{false};
+};
+
+static void capture_submit(void* ctx, uint16_t source_id, coact::TargetId target,
+                           uint16_t signal, uint8_t disposition,
+                           uint32_t reason, bool from_isr) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_source = source_id;
+    cap->last_target_raw = target.raw();
+    cap->last_signal = signal;
+    cap->last_disposition = disposition;
+    cap->last_reason = reason;
+    cap->last_from_isr = from_isr;
+}
+
+static void capture_dispatch(void* ctx, coact::TargetId target,
+                             uint64_t elapsed_ns, uint8_t path,
+                             uint8_t timeout) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_target_raw = target.raw();
+    cap->last_elapsed = elapsed_ns;
+    cap->last_path = path;
+    cap->last_timeout = timeout;
+}
+
+static void capture_lease(void* ctx, coact::TargetId target, uint8_t kind,
+                          uint64_t elapsed_ns) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_target_raw = target.raw();
+    cap->last_kind = kind;
+    cap->last_elapsed = elapsed_ns;
+}
+
+COACT_TEST(coordinator_trace_submit_records_disposition)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    CountingPal pal;
+    coact::DispatchCoordinator<StageT, CountingPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    CapturedTrace captured{};
+    coact::TraceOps ops{};
+    ops.on_submit = &capture_submit;
+    ops.ctx = &captured;
+    monitor.bind_trace(ops);
+
+    coact::Event e{};
+    e.signal = 7U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_from_task(coact::TargetId(1U), &e, qos);
+
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(captured.last_target_raw, 1U);
+    CHECK_EQ(captured.last_signal, 7U);
+    CHECK_EQ(captured.last_disposition,
+             static_cast<uint8_t>(coact::SubmitDisposition::Direct));
+    CHECK_EQ(captured.last_reason, 0U);
+}
+
+COACT_TEST(coordinator_trace_lease_contention_records_elapsed)
+{
+    ContentionAo ao;
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    OverBudgetPal pal;
+    coact::DispatchCoordinator<StageT, OverBudgetPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+
+    CapturedTrace captured{};
+    coact::TraceOps ops{};
+    ops.on_lease_contention = &capture_lease;
+    ops.ctx = &captured;
+    monitor.bind_trace(ops);
+
+    coact::Event e{};
+    e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_from_task(coact::TargetId(1U), &e, qos);
+
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(captured.last_target_raw, 1U);
+    CHECK_EQ(captured.last_kind, 1U);
+    CHECK_EQ(captured.last_elapsed, 2000ULL);
+}
+
+COACT_TEST(coordinator_trace_direct_success_records_dispatch)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    OverBudgetPal pal;
+    coact::DispatchCoordinator<StageT, OverBudgetPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    CapturedTrace captured{};
+    coact::TraceOps ops{};
+    ops.on_submit = &capture_submit;
+    ops.on_dispatch = &capture_dispatch;
+    ops.ctx = &captured;
+    monitor.bind_trace(ops);
+
+    coact::Event e{};
+    e.signal = 7U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.submit_from_task(coact::TargetId(1U), &e, qos);
+
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(captured.last_path, 0U);
+    CHECK_EQ(captured.last_target_raw, 1U);
+    /* OverBudgetPal advances 2000ns per sample, past the 1000ns RTC budget:
+       the direct dispatch must report timeout=1. */
+    CHECK_EQ(captured.last_timeout, 1U);
+    CHECK(coact_test::relaxed(
+              monitor.ao(coact::TargetId(1U)).direct_duration_ns) > 0U);
+}
+
+COACT_TEST(coordinator_trace_submit_from_isr_carries_isr_flag)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    CtxAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    OverBudgetPal pal;
+    coact::DispatchCoordinator<StageT, OverBudgetPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    CHECK(registry.bind(&ao, ao.logical_prio()));
+
+    CapturedTrace captured{};
+    coact::TraceOps ops{};
+    ops.on_submit = &capture_submit;
+    ops.ctx = &captured;
+    monitor.bind_trace(ops);
+
+    staging.arm_dispatcher_wait();
+    coact::Event e{};
+    e.signal = 7U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r =
+        coord.try_submit_from_isr(coact::TargetId(1U), &e, qos);
+
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+    CHECK_EQ(captured.last_signal, 7U);
+    CHECK_EQ(captured.last_disposition,
+             static_cast<uint8_t>(coact::SubmitDisposition::Queued));
+    CHECK(captured.last_from_isr == true);
 }
 
 }  // namespace

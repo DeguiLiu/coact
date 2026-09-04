@@ -20,6 +20,7 @@ coact_add_test(test_integration
     test_integration.cpp
     pal_posix.cpp)
 target_link_libraries(test_integration PRIVATE Threads::Threads)
+target_compile_definitions(test_integration PRIVATE COACT_TRACE=1)
 target_include_directories(test_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # RT-Thread PAL host test: RT-Thread API backed by pthreads via stub header.
@@ -59,6 +60,7 @@ target_include_directories(test_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..
 coact_add_test(test_coordinator
     test_coordinator.cpp)
 target_link_libraries(test_coordinator PRIVATE Threads::Threads)
+target_compile_definitions(test_coordinator PRIVATE COACT_TRACE=1)
 target_include_directories(test_coordinator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # TimerScheduler (event-source timer adapted from newosp osp::timer.hpp):

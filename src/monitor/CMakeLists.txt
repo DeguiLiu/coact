@@ -3,6 +3,7 @@
 coact_add_test(test_monitor test_monitor.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(test_monitor PRIVATE Threads::Threads)
+target_compile_definitions(test_monitor PRIVATE COACT_TRACE=1)
 # The skeleton's coact_test_harness exposes include/test as the include root,
 # so the contract-faithful "#include \"test/test_harness.hpp\"" needs the
 # repository root on the include path.

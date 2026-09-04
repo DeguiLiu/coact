@@ -25,6 +25,7 @@ namespace {
 /* Global counters incremented by AO actions (no context access needed). */
 static std::atomic<int> g_counter_a{0};
 static std::atomic<int> g_counter_b{0};
+static std::atomic<bool> g_trace_dispatch_captured{false};
 
 /* B-handler-run probe for the nested-serialization test (see below). */
 static std::atomic<int> g_nested_b_ran{0};
@@ -370,6 +371,90 @@ COACT_TEST(dispatcher_hang_is_externally_detectable)
     CHECK(pal.dispatcher_alive_within(200U));
 
     rt.stop();
+    CHECK_EQ(0U, pool.used());
+}
+
+/* =========================================================================
+ * TraceOps dispatcher instrumentation: a queued dispatch that actually runs
+ * the handler must record exactly one on_dispatch with path=1 and timeout
+ * matching the RTC budget comparison (design trace §3.2).
+ * ========================================================================= */
+struct CapturedTrace {
+    uint16_t last_source{0};
+    uint32_t last_target_raw{0};
+    uint16_t last_signal{0};
+    uint8_t last_disposition{0};
+    uint32_t last_reason{0};
+    uint64_t last_elapsed{0};
+    uint8_t last_path{0};
+    uint8_t last_timeout{0};
+    uint8_t last_kind{0};
+};
+
+static void capture_dispatch(void* ctx, coact::TargetId target,
+                             uint64_t elapsed_ns, uint8_t path,
+                             uint8_t timeout) noexcept
+{
+    CapturedTrace* cap = static_cast<CapturedTrace*>(ctx);
+    cap->last_target_raw = target.raw();
+    cap->last_elapsed = elapsed_ns;
+    cap->last_path = path;
+    cap->last_timeout = timeout;
+    g_trace_dispatch_captured.store(true, std::memory_order_release);
+}
+
+COACT_TEST(dispatcher_trace_dispatch_records)
+{
+    g_counter_a.store(0);
+    g_trace_dispatch_captured.store(false);
+
+    AoA ao_a(kStates, 2U, kTransA, 1U, 1, 4U);
+    coact::Event init_e;
+    init_e.signal  = 0U;
+    init_e.pool_id = 0U;
+    init_e.ref_ctr = 0U;
+    ao_a.init(init_e);
+
+    IntPool pool;
+    pool.init(g_pool_storage, sizeof(g_pool_storage), coact::detail::noop_cs());
+
+    coact::pal::Posix pal;
+    coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
+
+    CapturedTrace captured{};
+    coact::TraceOps ops{};
+    ops.on_dispatch = &capture_dispatch;
+    ops.ctx = &captured;
+    rt.monitor().bind_trace(ops);
+
+    CHECK(rt.bind(&ao_a));
+    CHECK(rt.initialize());
+    rt.start();
+
+    coact::Event* ea = pool.alloc(1U);
+    REQUIRE(ea != nullptr);
+    const coact::SubmitResult r =
+        rt.coordinator().submit_from_task(coact::TargetId(1U), ea,
+                                          coact::EventQos{false, false});
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+
+    /* Wait until the Dispatcher has recorded the trace (or 1 s deadline). */
+    for (int w = 0; w < 200; ++w) {
+        if (g_trace_dispatch_captured.load(std::memory_order_acquire)) {
+            break;
+        }
+        usleep(5000);
+    }
+    rt.stop();
+
+    CHECK(g_trace_dispatch_captured.load(std::memory_order_acquire));
+    CHECK_EQ(captured.last_target_raw, 1U);
+    CHECK_EQ(captured.last_path, 1U);
+    CHECK_EQ(captured.last_timeout, 0U);
+    CHECK(coact_test::relaxed(
+              rt.monitor().ao(coact::TargetId(1U)).dispatcher_duration_ns)
+              > 0ULL);
     CHECK_EQ(0U, pool.used());
 }
 

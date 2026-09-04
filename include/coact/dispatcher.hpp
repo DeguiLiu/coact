@@ -212,6 +212,11 @@ private:
             } else {
                 target_breaker.on_rtc_ok();
             }
+            COACT_TRACE_POINT(
+                monitor_.trace_dispatch(slot.target, elapsed, 1U,
+                                        (elapsed > ao->rtc_budget_ns()) ? 1U
+                                                                        : 0U));
+            monitor_.add_dispatcher_duration(slot.target, elapsed);
             ao->pending().decrement();
             monitor_.record_pending(slot.target, ao->pending().load());
             monitor_.record_dispatched(slot.target);
