@@ -22,6 +22,7 @@
 #include "coact/pal.hpp"
 #include "coact/pal_posix.hpp"
 #include "coact/pal_rtthread.hpp"
+#include "coact/spsc_ring.hpp"
 
 namespace {
 
@@ -447,6 +448,85 @@ COACT_TEST(posix_alive_windows_expire)
     /* Sleep past a 1 ms window: the same progress timestamp is now stale. */
     pal.sleep_us(3000U);
     CHECK(!pal.dispatcher_alive_within(1U));
+}
+
+/* ---- SPSC worker hand-off: SpscRing + PAL semaphore primitive mix ------- */
+
+/* The lock-free WorkerBase shape (design_isp_pipeline_optimization P2):
+   SpscRing<Job, Pow2> storage + one PAL semaphore wake. The producer is a
+   single thread (the Dispatcher analog); the consumer is the worker thread.
+   Exercises the exact primitive mix the rebuilt demo WorkerBase uses. */
+template <typename PalT>
+struct SpscWorkerProbe {
+    PalT* pal;
+    typename PalT::SemHandle wake;
+    typename PalT::ThreadHandle thread;
+    coact::SpscRing<int, 4U> ring;
+    std::atomic<uint32_t> executed{0U};
+    std::atomic<bool> running{false};
+    int last_job{-1};
+
+    bool start(PalT& p)
+    {
+        pal = &p;
+        if (!pal->sem_init(wake, 0U)) { return false; }
+        running.store(true, std::memory_order_release);
+        return pal->thread_create(thread, [](void* a) {
+            static_cast<SpscWorkerProbe*>(a)->run();
+        }, this);
+    }
+
+    /* Producer side: try_push rejects on a full ring, no lock anywhere. */
+    bool submit(int j)
+    {
+        return ring.try_push(std::move(j));
+    }
+
+    void stop()
+    {
+        running.store(false, std::memory_order_release);
+        pal->sem_release(wake);
+        pal->thread_join(thread);
+    }
+
+private:
+    void run()
+    {
+        for (;;) {
+            int j = 0;
+            while (ring.try_pop(j)) {
+                last_job = j;
+                executed.fetch_add(1U, std::memory_order_relaxed);
+            }
+            if (!running.load(std::memory_order_acquire)) { return; }
+            (void)pal->sem_take(wake, 100U);
+        }
+    }
+};
+
+COACT_TEST(posix_spsc_worker_handoff_probe)
+{
+    coact::pal::Posix pal;
+    SpscWorkerProbe<coact::pal::Posix> w;
+    CHECK(w.start(pal));
+
+    /* Depth-4 ring: the 5th submit rejects (full), no lock involved. */
+    CHECK(w.submit(1));
+    CHECK(w.submit(2));
+    CHECK(w.submit(3));
+    CHECK(w.submit(4));
+    CHECK(!w.submit(5));               /* full: honest busy reject */
+    w.pal->sem_release(w.wake);
+
+    /* Wait for the batch to drain, then one more round-trip. */
+    while (w.executed.load(std::memory_order_acquire) < 4U) { }
+    CHECK(w.submit(6));
+    w.pal->sem_release(w.wake);
+    while (w.executed.load(std::memory_order_acquire) < 5U) { }
+    CHECK_EQ(6, w.last_job);           /* FIFO order preserved */
+
+    w.stop();
+    CHECK_EQ(5U, w.executed.load());
 }
 
 }  // namespace

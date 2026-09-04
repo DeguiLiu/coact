@@ -52,6 +52,7 @@
 #include "coact/ao.hpp"
 #include "coact/hsm.hpp"
 #include "coact/runtime.hpp"
+#include "coact/spsc_ring.hpp"
 
 #include "common.hpp"
 
@@ -533,6 +534,16 @@ private:
 //     the same object-lifetime discipline DdrCtx::write/read use for the DDR
 //     FrameStamp.
 // ===========================================================================
+// SPSC REBUILD (design_isp_pipeline_optimization P2): the hand-off is a
+// lock-free coact::SpscRing + ONE PAL semaphore wake. Producer uniqueness is
+// verified at the call sites: every submit() runs inside an AO handler, i.e.
+// on the single Dispatcher thread (framework serialization layer 1); the
+// consumer is the worker thread itself. Completion paths (SoftIrq/ISR) post
+// EVENTS, they never touch the job ring. The ring capacity rounds kDepth up
+// to a power of two (SpscRing constraint; the nominal reject contract is
+// unchanged — demo scenarios never sit exactly on the ring boundary).
+// Coro mode: CoroPal::sem_take is overridden to yield instead of parking the
+// pump thread (the same discipline as its cond_wait override).
 template <typename Derived, typename Job, uint8_t kDepthV, typename PalT>
 class WorkerBase {
 public:
@@ -549,69 +560,42 @@ public:
     {
         pool = p;
         rt = r;
-        pal->mutex_init(mtx);
-        pal->cond_init(cond);
-        pal->cond_init(idle_cv);
-        running = true;
+        (void)pal->sem_init(wake, 0U);
+        running.store(true, std::memory_order_release);
         std::printf("[worker] %s started (depth=%u)\n",
-                    derived().name(), static_cast<unsigned>(kDepth));
+                    derived().name(), static_cast<unsigned>(kRingCap));
         pal->thread_create(thread_, &WorkerBase::tramp, this);
     }
 
-    // Drain-on-stop: request halt, wake, wait for queue-empty + idle, join.
-    // In-flight jobs are NOT discarded (unlike UsbDmaWorker): the completion
-    // events of everything accepted before stop() are guaranteed delivered.
+    // Drain-on-stop: request halt, wake, wait for the worker to finish the
+    // accepted jobs, join. In-flight jobs are NOT discarded (unlike
+    // UsbDmaWorker): the completion events of everything accepted before
+    // stop() are guaranteed delivered.
     void stop()
     {
-        uint8_t queued = 0U;
-        {
-            pal->mutex_lock(mtx);
-            queued = count;
-            pal->mutex_unlock(mtx);
-        }
-        // Print AFTER unlocking: std::printf may block on the console; never
-        // hold the hand-off mutex across it (3.3 "critical section only
-        // stores").
-        std::printf("[worker] %s draining (queued=%u)\n",
-                    derived().name(), static_cast<unsigned>(queued));
-        pal->mutex_lock(mtx);
-        running = false;
-        pal->cond_broadcast(cond);
-        pal->cond_wait(idle_cv, mtx, 0U);     // until head == tail && !busy
-        pal->mutex_unlock(mtx);
+        running.store(false, std::memory_order_release);
+        pal->sem_release(wake);          // wake the parked worker loop
         pal->thread_join(thread_);
         std::printf("[worker] %s exited (executed=%u, rejected=%u)\n",
                     derived().name(),
                     static_cast<unsigned>(executed.load(std::memory_order_relaxed)),
                     static_cast<unsigned>(rejected.load(std::memory_order_relaxed)));
-        pal->cond_deinit(idle_cv);
-        pal->cond_deinit(cond);
-        pal->mutex_deinit(mtx);
     }
 
-    // Producer side (Dispatcher thread). Returns false when the queue is
-    // full — the honest hardware condition of a DMA request slot being busy
-    // (single-slot channels: one in flight, the next submit is rejected).
+    // Producer side (Dispatcher thread). Returns false when the ring is
+    // full — the honest hardware condition of a busy channel. Lock-free:
+    // one acquire load + placement-new + one release store on success.
     bool submit(const Job& j)
     {
-        pal->mutex_lock(mtx);
-        bool ok = false;
-        if (count < kDepth) {             // free capacity
-            // Placement-new: begin the Job's lifetime in place in the slot
-            // (multi-field descriptor construction — the same in-place
-            // discipline as the pool payload and the DDR FrameStamp).
-            ::new (static_cast<void*>(&slots[head])) Job(j);
-            head = static_cast<uint8_t>((head + 1U) % kDepth);
-            ++count;
-            ok = true;
-        } else {
-            // Busy channel: count the drop. (Rejected submissions never
-            // touched this counter before — the caller-side WARN and the
-            // exit log both depend on it.)
+        const bool ok = ring_.try_push(Job(j));
+        if (ok) {
+            pal->sem_release(wake);
+        }
+        else {
+            // Busy channel: count the drop (the caller-side WARN and the
+            // exit log both depend on this counter).
             ++rejected;
         }
-        pal->cond_signal(cond);
-        pal->mutex_unlock(mtx);
         return ok;
     }
 
@@ -631,6 +615,18 @@ protected:
     std::atomic<uint32_t> rejected{0U};
 
 private:
+    // SpscRing needs a power-of-two capacity in [2, 0x7FFF]; round kDepth up.
+    static constexpr uint16_t pow2_capacity(uint8_t d) noexcept
+    {
+        uint16_t v = (d < 2U) ? 2U : static_cast<uint16_t>(d);
+        uint16_t p = 2U;
+        while (p < v) {
+            p = static_cast<uint16_t>(p << 1U);
+        }
+        return p;
+    }
+    static constexpr uint16_t kRingCap = pow2_capacity(kDepthV);
+
     static void tramp(void* arg)
     {
         static_cast<WorkerBase*>(arg)->run();
@@ -638,46 +634,26 @@ private:
     void run()
     {
         Job j{};
-        bool busy = false;
         for (;;) {
-            pal->mutex_lock(mtx);
-            while (running.load() && 0U == count) {
-                pal->cond_wait(cond, mtx, 0U);
+            // Drain everything currently visible before parking again.
+            while (ring_.try_pop(j)) {
+                derived().execute(j);                       // CRTP hook
+                executed.fetch_add(1U, std::memory_order_relaxed);
             }
-            if (0U != count) {
-                // Pop via launder: the slot was placement-new'd; launder
-                // re-establishes the pointer-to-object relationship before
-                // the copy (C++17 [ptr.launder], same as DdrCtx::read).
-                const Job& front = *std::launder(
-                    reinterpret_cast<const Job*>(&slots[tail]));
-                j = front;                                   // copy out
-                tail = static_cast<uint8_t>((tail + 1U) % kDepth);
-                --count;
-                busy = true;
-            } else {
-                busy = false;
+            if (!running.load(std::memory_order_acquire)) {
+                return;                    // drained and halted
             }
-            if (!busy && !running.load()) {
-                pal->cond_signal(idle_cv);
-                pal->mutex_unlock(mtx);
-                return;                     // drained and halted
-            }
-            pal->mutex_unlock(mtx);
-
-            derived().execute(j);                              // CRTP hook
-            executed.fetch_add(1U, std::memory_order_relaxed);
+            // Park until a submit releases the wake sem (or the bounded
+            // timeout re-checks running/stragglers). timeout > 0 keeps the
+            // coro-mode override and a lost-wake race honest.
+            (void)pal->sem_take(wake, 10U);
         }
     }
 
     PalT* pal{g_pal};                        // the demo's single PAL instance
     typename PalT::ThreadHandle thread_{};
-    typename PalT::MutexHandle  mtx{};
-    typename PalT::CondHandle   cond{};
-    typename PalT::CondHandle   idle_cv{};
-    Job slots[kDepth]{};
-    uint8_t head{0U};
-    uint8_t tail{0U};
-    uint8_t count{0U};     // live jobs (kDepth == capacity, not capacity-1)
+    typename PalT::SemHandle   wake{};
+    coact::SpscRing<Job, kRingCap> ring_{};
     std::atomic<bool> running{false};
 };
 

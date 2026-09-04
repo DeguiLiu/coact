@@ -127,6 +127,24 @@ public:
         coro_pal_sleep_us(coact::coro::posix::Coroutine::current(), us);
     }
 
+    // Cooperative sem_take (the SPSC WorkerBase wake): inside a coroutine on
+    // the pump thread, parking in the real semaphore would freeze every
+    // other coroutine (single-core rule: never park). Yield the timeout away
+    // instead - the worker loop re-checks its SpscRing after every take, so
+    // a missed count is corrected on the next pass. On any other thread this
+    // is a real (blocking) sem_take.
+    bool sem_take(SemHandle& s, uint32_t timeout_ms) noexcept
+    {
+        coact::coro::posix::Coroutine* current =
+            coact::coro::posix::Coroutine::current();
+        if ((nullptr != current) && is_on_pump_thread()) {
+            coro_sleep_us(*current, (timeout_ms > 0U) ? timeout_ms * 1000U
+                                                      : 200U);
+            return false;   // treated as a timeout; the caller re-polls
+        }
+        return coact::pal::Posix::sem_take(s, timeout_ms);
+    }
+
     // Cooperative cond_wait: when called from INSIDE a coroutine body, the
     // pump thread must never park in pthread_cond_wait (that would freeze
     // every other coroutine). Instead: unlock, yield one scheduling pass,
