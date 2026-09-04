@@ -432,6 +432,33 @@ using PoolT = coact::EventPool<static_cast<uint16_t>(sizeof(Layout)),
 using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal, DemoProfile>;
 
 // ---------------------------------------------------------------------------
+// Static resource budget (design_isp_pipeline_optimization P4). Single point
+// of reference for every fixed-capacity decision in the demo; each site
+// below keeps its own definition (they are DIFFERENT resources with
+// independently justified depths) but this table is where a reviewer starts.
+//
+//   Resource              Depth/Size  Where defined
+//   --------------------- ----------- -------------------------------------
+//   EventPool blocks      128         PoolT (this file)
+//   Staging High/Normal/Low 32/64/128 coact::DefaultConfig (config.hpp)
+//   DDR triple-buffer     3 per frame kTripleBufSize (this file, RS500 real)
+//   DDR slot ring         8           kDdrSlots (this file)
+//   ISP/SOUT parking ring 4           FusedNodeCtx::kParkDepth (isp_chain)
+//   MIPI TX park ring     2           SinkCtx::kTxParkDepth (output_itf)
+//   Worker job rings      2/2/2/3/4   WorkerBase kDepthV (per worker: the
+//                                     frame channels are near-single-slot,
+//                                     the vdcmd command channel is 4)
+//   RT-Thread resources   16K/8/8/4K  RtThreadResources (main.cpp: dispatcher
+//                                     stack / producer slots / worker slots
+//                                     / worker stack)
+//   Diag lanes            32/8        LogRtThreadBase (log_rtthread.hpp)
+//
+// Tuning rule: any depth change must re-justify its row here AND re-run the
+// demo's reject-path assertions (normal path stays zero-reject; injected
+// fault scenarios still exercise their intended drop counters).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // DDR image region. Mirrors isp_stream_dma (ISP domain) / stream_out_dma
 // (Video/SOUT domain): a fixed set of DMA triple-buffers in DDR. We model a
 // small 8x8 Y16-ish frame (128 bytes) so the data plane actually holds bytes,
