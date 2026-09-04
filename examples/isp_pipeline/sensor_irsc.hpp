@@ -556,26 +556,48 @@ public:
     [[nodiscard]] const Derived& derived() const noexcept
     { return *static_cast<const Derived*>(this); }
 
-    void start(PoolT* p, Rt* r)
+    // start() reports definite failure (review P1): a worker whose semaphore
+    // or thread could not be created NEVER reports running, and stop() is a
+    // no-op for it - so no uninitialized-semaphore release or join of a
+    // thread that was never created can happen on resource exhaustion.
+    bool start(PoolT* p, Rt* r)
     {
         pool = p;
         rt = r;
-        (void)pal->sem_init(wake, 0U);
+        if (!pal->sem_init(wake, 0U)) {
+            std::printf("[worker] %s FAILED to init wake semaphore\n",
+                        derived().name());
+            return false;
+        }
         running.store(true, std::memory_order_release);
+        if (!pal->thread_create(thread_, &WorkerBase::tramp, this)) {
+            running.store(false, std::memory_order_release);
+            pal->sem_deinit(wake);
+            std::printf("[worker] %s FAILED to create thread\n",
+                        derived().name());
+            return false;
+        }
+        started = true;
         std::printf("[worker] %s started (depth=%u)\n",
                     derived().name(), static_cast<unsigned>(kRingCap));
-        pal->thread_create(thread_, &WorkerBase::tramp, this);
+        return true;
     }
 
     // Drain-on-stop: request halt, wake, wait for the worker to finish the
-    // accepted jobs, join. In-flight jobs are NOT discarded (unlike
+    // accepted jobs, join, detach the static semaphore (PAL lifecycle
+    // contract, review fix). In-flight jobs are NOT discarded (unlike
     // UsbDmaWorker): the completion events of everything accepted before
     // stop() are guaranteed delivered.
     void stop()
     {
+        if (!started) {
+            return;                     // start() failed: nothing to stop
+        }
         running.store(false, std::memory_order_release);
         pal->sem_release(wake);          // wake the parked worker loop
         pal->thread_join(thread_);
+        pal->sem_deinit(wake);
+        started = false;
         std::printf("[worker] %s exited (executed=%u, rejected=%u)\n",
                     derived().name(),
                     static_cast<unsigned>(executed.load(std::memory_order_relaxed)),
@@ -655,6 +677,7 @@ private:
     typename PalT::SemHandle   wake{};
     coact::SpscRing<Job, kRingCap> ring_{};
     std::atomic<bool> running{false};
+    bool started{false};   // start() succeeded; gates stop()'s teardown
 };
 
 // Demo shorthand: every concrete worker binds the demo's PAL alias.
@@ -681,10 +704,10 @@ struct CmdDmaWorker : DemoWorkerBase<CmdDmaWorker, uint16_t, 4U> {
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "cmd_dma"; }
 
-    void start(PoolT* p, Rt* r, TargetId driver)
+    bool start(PoolT* p, Rt* r, TargetId driver)
     {
         reply_to = driver;
-        WorkerBase::start(p, r);
+        return WorkerBase::start(p, r);
     }
 
     void execute(const uint16_t& cmd_arg)

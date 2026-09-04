@@ -234,14 +234,17 @@ int main()
     // reclaim's next-field writes race a concurrent alloc's load_next on the
     // same free block, silently corrupting the free list. The spinlock is
     // held only across alloc/reclaim/splice - a few stores, never user code.
+    // Pool storage is STATIC (review P1/P4): ~16 KiB of Layout blocks must
+    // not sit on the board main-task stack (RT-Thread main stacks are KBs);
+    // it is a fixed resource and belongs in .bss with the rest of the
+    // static-resource budget table (common.hpp).
+    alignas(kPayloadAlign) static std::array<uint8_t, sizeof(Layout) * 128U + kPayloadAlign> storage{};
 #ifdef ISP_DEMO_USE_RTT
-    alignas(kPayloadAlign) std::array<uint8_t, sizeof(Layout) * 128U + kPayloadAlign> storage{};
     PoolT pool;
     pool.init(storage.data(), storage.size(),
               coact::make_critical_section(pal));
 #else
     coact::SpinCriticalSection pool_cs;
-    alignas(kPayloadAlign) std::array<uint8_t, sizeof(Layout) * 128U + kPayloadAlign> storage{};
     PoolT pool;
     pool.init(storage.data(), storage.size(),
               coact::make_spin_critical_section(pool_cs));
@@ -354,11 +357,15 @@ int main()
     IspIrqWorker isp_irq_tpd;    // TPD node-done line (ISP hw IRQ 1)
     SoutDmaWorker sout_dma;      // SOUT writeback (path id in the job)
     MipiIrqWorker mipi_irq;      // MIPI CSI TX completion
-    cmd_dma.start(&pool, &rt, kIrscId);
-    isp_irq_enh.start(&pool, &rt, kEnId);
-    isp_irq_tpd.start(&pool, &rt, kTpdId);
-    sout_dma.start(&pool, &rt, kPackVidId);
-    mipi_irq.start(&pool, &rt, kMipiId);
+    // Worker bring-up failures are fatal (review P1): a half-started
+    // channel would reject every submit and the scenario would misreport.
+    if (!cmd_dma.start(&pool, &rt, kIrscId)
+        || !isp_irq_enh.start(&pool, &rt, kEnId)
+        || !isp_irq_tpd.start(&pool, &rt, kTpdId)
+        || !sout_dma.start(&pool, &rt, kPackVidId)
+        || !mipi_irq.start(&pool, &rt, kMipiId)) {
+        return 1;
+    }
 
     irsc_drv.context().pool = &pool;
     irsc_drv.context().rt = &rt;
@@ -490,14 +497,24 @@ int main()
 
     rt.initialize();
 
-    // Bring up the coact::diag log channel BEFORE rt.start() (design P3.2
-    // fixed startup order: PAL/static -> diag/fault sink -> bind TraceOps/
-    // FaultReporter -> Runtime -> Dispatcher/workers -> first submit). The
-    // host stub renders to stdout; the RT-Thread build drives the static
-    // writer thread.
+    // Bring up the coact::diag log channel BEFORE rt.start() (design P3.2:
+    // the sink must be live before the Dispatcher can produce trace
+    // records). Startup order nuance (review): the 5 WorkerBase workers and
+    // usb_dma are created earlier in scenario setup and only BEGIN
+    // submitting once the runtime runs, so no record can precede this
+    // initialization. A failed log bring-up FAILS the demo (review P3): a
+    // silent dead sink would zero both accepted and drained and make the
+    // conservation assertion vacuously true.
     const coact::diag::LogRtError log_err = g_log.initialize();
+    bool diag_live = false;
     if (coact::diag::LogRtError::kOk == log_err) {
-        (void)g_log.start();
+        diag_live =
+            (coact::diag::LogRtError::kOk == g_log.start());
+    }
+    if (!diag_live) {
+        std::printf("[FATAL] diag log failed to start (err=%u) - aborting\n",
+                    static_cast<unsigned>(log_err));
+        return 1;
     }
     g_log.record_from_task<LogLevel::kInfo, kEvtBoot>(0U);
 

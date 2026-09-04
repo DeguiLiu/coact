@@ -82,15 +82,21 @@ flowchart LR
 
 ## 五、双后端验证矩阵（design_isp_pipeline_optimization P5）
 
-| 验证层 | host/POSIX（默认 + pthread 手工构建） | RT-Thread（ISP_DEMO_USE_RTT） |
+| 验证层 | host/POSIX（coro 默认 + pthread 手工构建） | RT-Thread（ISP_DEMO_USE_RTT） |
 |---|---|---|
-| 构建 | pthread/coro；`-fno-exceptions -fno-rtti` 全程 | RTT stub 编译门（ctest isp_pipeline_demo_rtt） |
-| Profile | HostSmpProfile（tagged-CAS 池 + 批量回收 + spin CS） | RttSingleCoreProfile（irq-mask 池 + 即时回收 + IRQ CS） |
+| 构建 | CMake 默认 target 固定 coro（ISP_DEMO_CORO）；pthread 完整 demo 需手工构建（去掉该宏，见下）；`-fno-exceptions -fno-rtti` 全程 | RTT stub 编译门（ctest isp_pipeline_demo_rtt） |
 | 队列 | SpscRing 顺序/压测（test_spsc_ring 24 用例含线程压测） | 同一 SpscRing（无平台分支） |
-| worker 交接 | 真阻塞 sem（pthread）/ 协作 yield（coro） | rt_sem（静态） |
+| worker 交接 | 真阻塞 sem（pthread 手工构建）/ 协作 yield（coro 默认） | rt_sem（静态） |
 | 日志 | raw-hex sink（stdout） | 静态 writer 线程 + record_from_isr |
 | 生命周期 | pool.used()==0 + diag 守恒断言 | 同左（编译级；真板待板级验证） |
 | 覆盖 | ctest 53/53（含本 demo 68+ 断言） | 编译门 + 板级待办清单见设计文档 §5 |
+
+pthread 完整 demo 手工构建（无独立 CMake target）：
+```sh
+g++ -std=c++17 -fno-exceptions -fno-rtti -DCOACT_RTT_STUB -DCOACT_TRACE=1 \
+    -I. -Iinclude -Iexamples examples/isp_pipeline/*.cpp \
+    src/core/pal_posix.cpp src/diag/log_rtthread.cpp -pthread -o isp_pthread
+```
 
 验收记录（2026-09 系列，分支 feature/isp-pipeline-demo）：
 - P0 Trace 修复（2baa919）、P1 Profile 统一（4376ef4）、P2 WorkerBase SPSC（dad821a）、P3 diag 启动顺序与守恒断言（db25075）、P4 静态资源预算表（cad9d8a）

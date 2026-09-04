@@ -440,14 +440,21 @@ using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal, DemoProfile>;
 //   Resource              Depth/Size  Where defined
 //   --------------------- ----------- -------------------------------------
 //   EventPool blocks      128         PoolT (this file)
+//   EventPool storage     ~16 KiB     static array (main.cpp; .bss, never
+//                                     on a task stack - review fix)
 //   Staging High/Normal/Low 32/64/128 coact::DefaultConfig (config.hpp)
 //   DDR triple-buffer     3 per frame kTripleBufSize (this file, RS500 real)
 //   DDR slot ring         8           kDdrSlots (this file)
 //   ISP/SOUT parking ring 4           FusedNodeCtx::kParkDepth (isp_chain)
+//   VideoPack park rings  4 + 4       VideoPackCtx::kParkDepth x2,
+//                                     pic_parked/temp_parked (video_stream)
 //   MIPI TX park ring     2           SinkCtx::kTxParkDepth (output_itf)
-//   Worker job rings      2/2/2/3/4   WorkerBase kDepthV (per worker: the
-//                                     frame channels are near-single-slot,
-//                                     the vdcmd command channel is 4)
+//   Worker job rings      2/2/2/4/4   WorkerBase kDepthV (per worker; the
+//                                     ring capacity is pow2(kDepthV), so
+//                                     SoutDma's nominal 3 rounds to 4 - the
+//                                     REJECT contract uses the nominal
+//                                     depth's caller semantics, the physical
+//                                     capacity is the rounded value)
 //   RT-Thread resources   16K/8/8/4K  RtThreadResources (main.cpp: dispatcher
 //                                     stack / producer slots / worker slots
 //                                     / worker stack)

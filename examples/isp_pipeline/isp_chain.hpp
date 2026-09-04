@@ -90,10 +90,10 @@ struct IspIrqWorker : DemoWorkerBase<IspIrqWorker, NodeIrqJob, 2U> {
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "isp_irq"; }
 
-    void start(PoolT* p, Rt* r, TargetId node_ao)
+    bool start(PoolT* p, Rt* r, TargetId node_ao)
     {
         reply_to = node_ao;
-        WorkerBase::start(p, r);
+        return WorkerBase::start(p, r);
     }
 
     void execute(const NodeIrqJob& j)
@@ -151,10 +151,10 @@ struct SoutDmaWorker : DemoWorkerBase<SoutDmaWorker, SoutJob, 3U> {
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "sout_dma"; }
 
-    void start(PoolT* p, Rt* r, TargetId pack_ao)
+    bool start(PoolT* p, Rt* r, TargetId pack_ao)
     {
         reply_to = pack_ao;
-        WorkerBase::start(p, r);
+        return WorkerBase::start(p, r);
     }
 
     void execute(const SoutJob& j)
@@ -187,10 +187,10 @@ struct MipiIrqWorker : DemoWorkerBase<MipiIrqWorker, uint16_t, 2U> {
     uint32_t completion_rejects{0U};
     static constexpr const char* name() noexcept { return "mipi_irq"; }
 
-    void start(PoolT* p, Rt* r, TargetId sink_ao)
+    bool start(PoolT* p, Rt* r, TargetId sink_ao)
     {
         reply_to = sink_ao;
-        WorkerBase::start(p, r);
+        return WorkerBase::start(p, r);
     }
 
     void execute(const uint16_t& frame_id)
