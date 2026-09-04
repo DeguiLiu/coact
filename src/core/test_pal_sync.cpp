@@ -307,9 +307,9 @@ struct PalWorkerProbe {
     typename PalT::MutexHandle mtx;
     typename PalT::CondHandle cond;
     typename PalT::ThreadHandle thread;
-    int job{0};
-    int executed{0};
-    bool running{false};
+    int job{0};                        /* guarded by mtx */
+    std::atomic<int> executed{0};      /* cross-thread read by the test loop */
+    bool running{false};               /* guarded by mtx */
 
     bool start(PalT& p)
     {
@@ -374,10 +374,32 @@ COACT_TEST(posix_worker_handoff_probe)
     CHECK(w.start(pal));
     CHECK(w.submit(1));
     CHECK(!w.submit(2));                /* single slot: busy reject */
-    while (w.executed < 1) { }
+    while (w.executed.load() < 1) { }
     CHECK(w.submit(3));
     w.stop();
-    CHECK_EQ(2, w.executed);
+    CHECK_EQ(2, w.executed.load());
+}
+
+
+COACT_TEST(rtthread_signal_before_wait_no_lost_wake)
+{
+    /* Regression (M-1 follow-up): a signal that fires AFTER the waiter
+       increments the counter but BEFORE it blocks must not be lost, and a
+       token released when the waiter is between loops must not break the
+       next blocking wait. Loops fast enough to hit the window under -O2. */
+    coact::pal::RtThread pal;
+    PalWorkerProbe<coact::pal::RtThread> w;
+    CHECK(w.start(pal));
+    /* Start at 1: job uses 0 as the empty-slot sentinel, so a submitted
+       value of 0 would look like an empty slot and the worker predicate
+       would never become true (a real deadlock, but of the test design,
+       not the PAL). */
+    for (int i = 1; i <= 200; ++i) {
+        CHECK(w.submit(i));
+        while (w.executed.load() < i) { }
+    }
+    w.stop();
+    CHECK_EQ(200, w.executed.load());
 }
 
 COACT_TEST(rtthread_worker_handoff_probe)
@@ -387,10 +409,10 @@ COACT_TEST(rtthread_worker_handoff_probe)
     CHECK(w.start(pal));
     CHECK(w.submit(1));
     CHECK(!w.submit(2));
-    while (w.executed < 1) { }
+    while (w.executed.load() < 1) { }
     CHECK(w.submit(3));
     w.stop();
-    CHECK_EQ(2, w.executed);
+    CHECK_EQ(2, w.executed.load());
 }
 
 }  // namespace

@@ -76,7 +76,7 @@ struct rt_semaphore {
     pthread_mutex_t mtx;
     pthread_cond_t  cond;
     uint32_t        count;
-    bool            init_done;   /* host-only: guard against double pthread init */
+    bool            init_done = false;   /* host-only: guard against double pthread init (NSDMI: stack garbage must never skip the real init) */
 };
 typedef struct rt_semaphore *rt_sem_t;
 
@@ -189,7 +189,7 @@ inline rt_err_t rt_sem_release(rt_sem_t s) noexcept
 /* --- Mutex (SemOps MutexOps support) ------------------------------------- */
 struct rt_mutex {
     pthread_mutex_t mtx;
-    bool            init_done;   /* host-only: guard against double pthread init */
+    bool            init_done = false;   /* host-only: guard against double pthread init (NSDMI: stack garbage must never skip the real init) */
 };
 typedef struct rt_mutex *rt_mutex_t;
 
