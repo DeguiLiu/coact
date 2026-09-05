@@ -525,20 +525,17 @@ inline void rcEnterCommit(RecfgAoCtx& ctx, const Event&)
 // HSM states: one state per reconfig stage. External transitions with NULL
 // entry/exit actions; the stage actions run in the transition actions and
 // the ctx.stage mirror (kept for the summary/recovery enumeration).
-enum : int8_t {
-    kRcRoot     = 0,
-    kRcIdle     = 1,   // waiting for a request
-    kRcPrecheck = 2,   // UNREACHABLE (historical): no arc ever enters this
-                       // state (precheck validation runs in the Idle->Quiescing
-                       // transition action). Kept as a table placeholder — the
-                       // kRecfgStates[] rows are index-addressed, so removing
-                       // this entry would shift every later state's index.
-    kRcQuiesce  = 3,   // SOUT_STOP issued, waiting frame-boundary IDLE
-    kRcApply    = 4,   // dependency-ordered register writes
-    kRcSync     = 5,   // FS_SYNC + layout version bump
-    kRcResume   = 6,   // SOUT_START, waiting first frame
-    kRcCommit   = 7,   // final submit / recover decision
-};
+inline constexpr int8_t kRcRoot     = 0;
+inline constexpr int8_t kRcIdle     = 1;   // waiting for a request
+inline constexpr int8_t kRcPrecheck = 2;   // UNREACHABLE (historical): no arc
+                                            // ever enters this state; kept as a
+                                            // table placeholder (rows are
+                                            // index-addressed).
+inline constexpr int8_t kRcQuiesce  = 3;   // SOUT_STOP issued, waiting frame-boundary IDLE
+inline constexpr int8_t kRcApply    = 4;   // dependency-ordered register writes
+inline constexpr int8_t kRcSync     = 5;   // FS_SYNC + layout version bump
+inline constexpr int8_t kRcResume   = 6;   // SOUT_START, waiting first frame
+inline constexpr int8_t kRcCommit   = 7;   // final submit / recover decision
 
 // Transition actions (one per arc; the advance() logic split per state).
 void rcEnterPrecheck(RecfgAoCtx& ctx, const Event& evt);

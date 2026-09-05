@@ -143,35 +143,36 @@ using LogLevel = coact::diag::LogLevel;
 inline coact::diag::LogRtThread<> g_log;
 inline std::atomic<uint32_t> g_isr_trace_submits{0U};
 
-enum LogEvt : uint16_t {
-    kEvtBoot         = 1U,
-    kEvtPhase1       = 2U,
-    kEvtPhase3       = 3U,
-    kEvtPhase4       = 4U,
-    kEvtIrscStep     = 5U,
-    kEvtIspNode      = 6U,
-    kEvtVideoCmd     = 7U,
-    kEvtFrameEmitted = 8U,
-    kEvtFrameDone    = 9U,
-    kEvtSinkFirst    = 10U,
-    kEvtStop         = 11U,
+// Log event catalog: fixed uint16_t ids (design_coact_trace §3.1). Kept as
+// constexpr constants (not an enum) so the ids pass directly as the LogEvent
+// template parameter and stay byte-stable across catalog growth.
+inline constexpr uint16_t kEvtBoot         = 1U;
+inline constexpr uint16_t kEvtPhase1       = 2U;
+inline constexpr uint16_t kEvtPhase3       = 3U;
+inline constexpr uint16_t kEvtPhase4       = 4U;
+inline constexpr uint16_t kEvtIrscStep     = 5U;
+inline constexpr uint16_t kEvtIspNode      = 6U;
+inline constexpr uint16_t kEvtVideoCmd     = 7U;
+inline constexpr uint16_t kEvtFrameEmitted = 8U;
+inline constexpr uint16_t kEvtFrameDone    = 9U;
+inline constexpr uint16_t kEvtSinkFirst    = 10U;
+inline constexpr uint16_t kEvtStop         = 11U;
     // Runtime-migration events (args are raw uint32_t; the writer renders
     // raw-hex "[cnt] e=... a0..a3"). String context (AO/state names) is not
     // carried by the record; the printf/hsm trace remains the readable view.
-    kEvtHsmTrace    = 12U,  // a0=ao_id a1=src a2=sig a3=dst (0x100|idx = reject)
-    kEvtRecfg       = 13U,  // a0=stage a1..a3 stage-specific
-    kEvtWorkerStat  = 14U,  // a0=worker_id a1=executed a2=rejected a3=extra
-    kEvtSession     = 15U,  // a0=prev a1=next (SessionState raw values)
-    kEvtVideoFsm    = 16U,  // a0=stream a1=cmd a2=fsm
+inline constexpr uint16_t kEvtHsmTrace    = 12U;  // a0=ao_id a1=src a2=sig a3=dst
+inline constexpr uint16_t kEvtRecfg       = 13U;  // a0=stage a1..a3 stage-specific
+inline constexpr uint16_t kEvtWorkerStat  = 14U;  // a0=worker_id a1=executed a2=rejected a3=extra
+inline constexpr uint16_t kEvtSession     = 15U;  // a0=prev a1=next (SessionState raw values)
+inline constexpr uint16_t kEvtVideoFsm    = 16U;  // a0=stream a1=cmd a2=fsm
     // Framework trace reserve block (design_coact_trace_zh §3.1): event ids
     // 0x0100+ keep core TraceOps records out of the 1..16 business catalog.
-    kEvtTraceSubmit   = 0x0100U,  // a0=dst a1=signal a2=disposition a3=reason
-    kEvtTraceDispatch = 0x0101U,  // a0=elapsed_lo a1=elapsed_hi a2=path a3=timeout
-    kEvtTraceLease    = 0x0102U,  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
-    kEvtWorkerExec    = 0x0103U,  // a0=worker_id a1=result a2=elapsed_lo
-    kEvtWorkerFault   = 0x0104U,  // a0=worker_id a1=result a2=rejects a3=priority
-    kEvtWatermarkFault = 0x0105U, // a0=0 a1=partition a2=pct a3=priority
-};
+inline constexpr uint16_t kEvtTraceSubmit   = 0x0100U;  // a0=dst a1=signal a2=disposition a3=reason
+inline constexpr uint16_t kEvtTraceDispatch = 0x0101U;  // a0=elapsed_lo a1=elapsed_hi a2=path a3=timeout
+inline constexpr uint16_t kEvtTraceLease    = 0x0102U;  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
+inline constexpr uint16_t kEvtWorkerExec    = 0x0103U;  // a0=worker_id a1=result a2=elapsed_lo
+inline constexpr uint16_t kEvtWorkerFault   = 0x0104U;  // a0=worker_id a1=result a2=rejects a3=priority
+inline constexpr uint16_t kEvtWatermarkFault = 0x0105U; // a0=0 a1=partition a2=pct a3=priority
 
 // ---------------------------------------------------------------------------
 // Mode table (mirror of RS500 app_fill_preview_cmd_by_mode).
@@ -531,7 +532,7 @@ struct DdrRegion {
     uint8_t* write(uint16_t slot) { return slots[slot].data(); }
 };
 
-enum DdrId : uint16_t {
+enum class DdrId : uint16_t {
     kDdrDn      = 0U,   // IRSC DN raw (ISP input)
     kDdrLowGain = 1U,   // low-gain chain output (pre-HL)
     kDdrHighGain= 2U,   // high-gain chain output (pre-HL)
@@ -539,8 +540,8 @@ enum DdrId : uint16_t {
     kDdrTemp    = 4U,   // TPD chain output (TEMP path)
     kDdrPicOut  = 5U,   // PIC stream_out (post Video)
     kDdrTempOut = 6U,   // TEMP stream_out (post Video)
-    kDdrCount   = 7U,
 };
+inline constexpr uint16_t kDdrCount = 7U;   // region count (also array size)
 
 static_assert(kDdrCount <= 7U, "DdrId range fits Payload::ddr_id");
 
@@ -668,7 +669,7 @@ struct DdrCtx {
     // older frame) instead of silently torn data.
     [[nodiscard]] uint16_t write(DdrId id, uint32_t frame_id, const uint8_t* src)
     {
-        DdrRegion& r = regions[id];
+        DdrRegion& r = regions[static_cast<uint16_t>(id)];
         const uint16_t slot = dn_slot_of(frame_id);
         if (SlotOwner::kReaderClaimed == r.owner[slot]) {
             ++ownership_skips;   // reader holds the slot: skip, do not write
@@ -708,7 +709,7 @@ struct DdrCtx {
     [[nodiscard]] bool read(DdrId id, uint16_t slot, uint32_t frame_id,
                             uint8_t* dst)
     {
-        DdrRegion& r = regions[id];
+        DdrRegion& r = regions[static_cast<uint16_t>(id)];
         // Double guard: the stamp's frame_id AND the region's slot_frame map
         // must both name the expected frame. Short-circuit order matters:
         // the laundered stamp is only safe to READ once the slot has been

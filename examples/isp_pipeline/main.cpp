@@ -494,9 +494,9 @@ int main()
     videofsm.context().node_names[4] = "OSD_1";
     videofsm.context().node_names[5] = "SOUT";
     videofsm.context().node_names[6] = "OUT";
-    videofsm.context().pic.kind = kPicStream;
+    videofsm.context().pic.kind = VideoStreamKind::kPicStream;
     videofsm.context().pic.node_count = 7U;
-    videofsm.context().temp.kind = kTempStream;
+    videofsm.context().temp.kind = VideoStreamKind::kTempStream;
     videofsm.context().temp.node_count = 4U;
 
     // Merged video pack: one ctx, two sinks, one SOUT channel.
@@ -676,10 +676,10 @@ int main()
 
     // Guard-reject exercise: START while still IDLE is illegal — the merged
     // HSM must refuse it (rejection arc) before the session opens RUNNING.
-    send_video(kVStart, false, "PIC");
+    send_video(VideoCmd::kVStart, false, "PIC");
 
-    send_video(kVInit, false, "PIC");
-    if (need_temp) { send_video(kVInit, true, "TEMP"); }
+    send_video(VideoCmd::kVInit, false, "PIC");
+    if (need_temp) { send_video(VideoCmd::kVInit, true, "TEMP"); }
 
     // KBC_OUTPUT_ENABLE then IRSC_OUTPUT_ENABLE (mirrors the critical order).
     std::printf("[orch] KBC_OUTPUT_ENABLE -> IRSC_OUTPUT_ENABLE\n");
@@ -688,8 +688,8 @@ int main()
     // enters RUNNING here — after this, the IrscDriver guard still accepts
     // (RUNNING is an open phase) but the video FSM rejects re-init.
     session_advance(SessionState::kRunning, "streams enabled");
-    send_video(kVStart, false, "PIC");
-    if (need_temp) { send_video(kVStart, true, "TEMP"); }
+    send_video(VideoCmd::kVStart, false, "PIC");
+    if (need_temp) { send_video(VideoCmd::kVStart, true, "TEMP"); }
 
     // ---- Start the IRSC producer pthread ----
     IrscWorker irsc;
@@ -867,7 +867,8 @@ int main()
         e->meta.payload_kind = 1U;
         Payload* p = reinterpret_cast<Payload*>(&e->payload[0]);
         p->control[0] = 'P'; p->control[1] = 'I'; p->control[2] = 'C';
-        p->ddr_slot = buf; p->ddr_id = DdrId::kDdrPicOut;
+        p->ddr_slot = buf;
+        p->ddr_id = static_cast<uint16_t>(DdrId::kDdrPicOut);
         rt.coordinator().submit_from_task(kWrapeId, &e->event, {false, false});
         ++t37_fid;
     };
@@ -1143,10 +1144,10 @@ int main()
     // guard now refuses further commands (its reject arc), proving the
     // master->child gating end to end.
     session_advance(SessionState::kDeinit, "STOP_PREVIEW");
-    if (need_temp) { send_video(kVStop, true, "TEMP"); }
-    send_video(kVStop, false, "PIC");
-    if (need_temp) { send_video(kVDeinit, true, "TEMP"); }
-    send_video(kVDeinit, false, "PIC");
+    if (need_temp) { send_video(VideoCmd::kVStop, true, "TEMP"); }
+    send_video(VideoCmd::kVStop, false, "PIC");
+    if (need_temp) { send_video(VideoCmd::kVDeinit, true, "TEMP"); }
+    send_video(VideoCmd::kVDeinit, false, "PIC");
     // Event-driven drain: wait until EVERY AO's queue is empty AND the video
     // FSMs reached IDLE — a fixed sleep races the Dispatcher under load
     // (observed once in stress: the stop cmds were still queued when the
@@ -1156,8 +1157,8 @@ int main()
         for (coact::AoBase* a : aos) {
             if (0U != a->pending().load()) { drained = false; }
         }
-        if (drained && videofsm.context().pic.fsm == kVideoIdle
-                   && videofsm.context().temp.fsm == kVideoIdle) {
+        if (drained && videofsm.context().pic.fsm == VideoFsmState::kVideoIdle
+                   && videofsm.context().temp.fsm == VideoFsmState::kVideoIdle) {
             break;
         }
         g_pal->sleep_us(1000U);
@@ -1379,15 +1380,15 @@ int main()
                                     + kT37Phase3Frames + kT37Phase4Rounds,
           "PIC sink (WRAPE) received all frames");
     check(mipi.context().frames_received == kFrameCount, "TEMP sink received all frames");
-    check(wrape.context().byte_mismatch == 0U, "PIC data plane byte-exact");
-    check(mipi.context().byte_mismatch == 0U, "TEMP data plane byte-exact");
-    check(wrape.context().tag_mismatch == 0U && mipi.context().tag_mismatch == 0U,
+    check(0U == wrape.context().byte_mismatch, "PIC data plane byte-exact");
+    check(0U == mipi.context().byte_mismatch, "TEMP data plane byte-exact");
+    check(0U == wrape.context().tag_mismatch && 0U == mipi.context().tag_mismatch,
           "route tags correct");
     // DDR ring integrity: the data plane promises ZERO slot overruns — every
     // consumer read the real bytes it was pointed at (a degraded fill_dn seed
     // would replay the seed formula downstream and could still pass the byte
     // check, so overrun==0 is the only guard that the check ran on real data).
-    check(ddr.overrun_drops == 0U, "DDR slot guard: zero overrun degradations");
+    check(0U == ddr.overrun_drops, "DDR slot guard: zero overrun degradations");
     check(diag_conservation_ok,
           "diag: lane conservation identity (drained+dropped==accepted)");
     check(isr_probe_accepted &&
@@ -1414,13 +1415,13 @@ int main()
     // should NEVER fire. A non-zero skip here is a protocol misjudgement
     // (bug), not a real load scenario: the claim window is a single memcpy
     // inside a Dispatcher action.
-    check(ddr.ownership_skips == 0U,
+    check(0U == ddr.ownership_skips,
           "DDR ownership protocol: writer never hit a reader-claimed slot");
     // Sink overrun counters must agree: the WRAPE counts a read miss as
     // byte_mismatch; the MIPI sink counts it as frame_overrun. Both must be
     // zero, and no frame may exit the byte verify via the overrun early-out.
-    check(wrape.context().byte_mismatch == 0U
-              && mipi.context().frame_overrun == 0U
+    check(0U == wrape.context().byte_mismatch
+              && 0U == mipi.context().frame_overrun
               && wrape.context().frames_framed == mipi.context().frames_received + kT37Phase2Frames + kT37Phase3Frames + kT37Phase4Rounds,
           "data plane: every frame byte-verified (no overrun early-outs)");
     // T37 UVC: premature-EOF reproduced in phase 2, fixed from phase 3 on.
@@ -1435,7 +1436,7 @@ int main()
               == baseline_host + kT37Phase2Frames + kT37Phase3Frames
                                + kT37Phase4Rounds,
           "T37: Windows host received every frame EOF");
-    check(winhost.context().frame_gaps == 0U, "T37: no frame gaps on the host");
+    check(0U == winhost.context().frame_gaps, "T37: no frame gaps on the host");
     check(winhost.context().min_payload == kX1FrameBytes,
           "T37: truncated payload is the stale X1 length");
     check(winhost.context().max_payload == kOutFrameBytes,
@@ -1443,28 +1444,28 @@ int main()
     check(g_hw_bb.zoom.active, "T37: zoom block never turned off");
     check(g_hw_bb.sel.stream_vld_num == kStreamVldNum,
           "T37: Stream SEL valid-pixel count constant (frame-length authority)");
-    check(wrape.context().zoom_geometry_mismatch == 0U,
+    check(0U == wrape.context().zoom_geometry_mismatch,
           "T37: zoom step consistent with frame geometry throughout");
     check(g_hw_bb.wrape.configured_frame_bytes == kOutFrameBytes,
           "T37: downstream geometry constant across X1<->X2 rounds");
     // Event pool: full reclaim (zero leak).
-    check(pool.used() == 0U, "event pool fully reclaimed");
+    check(0U == pool.used(), "event pool fully reclaimed");
     // Boot orchestration: all command acks collected.
     check(irsc_drv.context().step_count == 4U, "IRSC 4-step command sequence");
     check(orch.context().isp_ready == 8U, "ISP 8-node init acks");
     check(orch.context().pic_video_ready == 1U && orch.context().temp_video_ready == 1U,
           "video FSM init acks (PIC + TEMP)");
     // Video FSM: full IDLE -> READY -> RUNNING -> READY -> IDLE cycle.
-    check(videofsm.context().pic.fsm == kVideoIdle
-              && videofsm.context().temp.fsm == kVideoIdle,
+    check(videofsm.context().pic.fsm == VideoFsmState::kVideoIdle
+              && videofsm.context().temp.fsm == VideoFsmState::kVideoIdle,
           "video FSMs back to IDLE after reverse deinit");
     check(videofsm.context().pic.rejected_cmds == 1U
-              && videofsm.context().temp.rejected_cmds == 0U,
+              && 0U == videofsm.context().temp.rejected_cmds,
           "video FSM: illegal START-in-IDLE rejected by guard arc");
     // Session gating: the master session reached its terminal state and the
     // driver refused the post-deinit command (child guard observed it).
     check(g_session == SessionState::kStopped, "session reached STOPPED");
-    check(irsc_drv.context().channel_rejects == 0U
+    check(0U == irsc_drv.context().channel_rejects
               && irsc_drv.context().dma_done_count == 4U,
           "IRSC async channel: 4 register writes, 4 completions, 0 rejects");
     // Non-AO worker invariants: channel counters vs AO-side observations.
@@ -1477,20 +1478,20 @@ int main()
     check(tpd.context().irq_done_count == tpd.context().frames_handled
               && tpd.context().irq_subs == tpd.context().irq_done_count,
           "IspIrqWorker(tpd): requests == completions == frames");
-    check(enhance.context().irq_rejects == 0U && tpd.context().irq_rejects == 0U,
+    check(0U == enhance.context().irq_rejects && 0U == tpd.context().irq_rejects,
           "IspIrqWorker: zero queue-full rejects");
-    check(isp_irq_enh.completion_rejects == 0U
-              && isp_irq_tpd.completion_rejects == 0U
-              && sout_dma.completion_rejects == 0U
-              && mipi_irq.completion_rejects == 0U
-              && cmd_dma.completion_rejects == 0U
-              && usb_dma.completion_rejects == 0U,
+    check(0U == isp_irq_enh.completion_rejects
+              && 0U == isp_irq_tpd.completion_rejects
+              && 0U == sout_dma.completion_rejects
+              && 0U == mipi_irq.completion_rejects
+              && 0U == cmd_dma.completion_rejects
+              && 0U == usb_dma.completion_rejects,
           "IRQ/DMA completion events: zero pool-allocation rejects");
     check(packvid.context().pic_sout_done == packvid.context().pic_frames
               && packvid.context().temp_sout_done == packvid.context().temp_frames,
           "SoutDmaWorker: writebacks == packed frames (PIC and TEMP)");
-    check(packvid.context().pic_sout_rejects == 0U
-              && packvid.context().temp_sout_rejects == 0U,
+    check(0U == packvid.context().pic_sout_rejects
+              && 0U == packvid.context().temp_sout_rejects,
           "SoutDmaWorker: zero queue-full rejects");
     check(mipi.context().tx_done_count == mipi.context().frames_received
               && mipi_irq.executed_count() == kFrameCount,
@@ -1498,7 +1499,7 @@ int main()
     // Error-signal contracts: ZERO on the normal path (the 30 streamed frames
     // never tripped one); exactly the injected count after the injection
     // block (each error landed once, counted once, degraded not crashed).
-    check(tpd.context().fifo_ovf == 0U,
+    check(0U == tpd.context().fifo_ovf,
           "IspIrqWorker: TPD chain never hit a FIFO_OVERFLOW (normal run)");
     check(enhance.context().fifo_ovf == 1U,
           "IspIrqWorker: injected FIFO_OVERFLOW counted once (frame dropped)");
@@ -1554,7 +1555,7 @@ int main()
     check(drift_before_fix > 0U,
           "scenario B env: bare-bypass drift was observed (cumulative)");
     // Fix: the paired guard resynced, so NO new drift was introduced.
-    check(drift_after_fix - drift_before_fix == 0U,
+    check(0U == drift_after_fix - drift_before_fix,
           "scenario B fix: paired bypass introduces zero new drift");
     // …and the paired guard restored agreement.
     {
@@ -1599,10 +1600,10 @@ int main()
           "mode/enable lanes preserved across transactions");
     // Display anomalies: symptom reproduced AND fix verified.
     check(garbled_pairs > 0U, "garbled: width mismatch corrupts pixels");
-    check(garbled_fixed == 0U, "garbled: shared width authority is lossless");
-    check(drops_normal == 0U, "dropped: steady latency never drops");
+    check(0U == garbled_fixed, "garbled: shared width authority is lossless");
+    check(0U == drops_normal, "dropped: steady latency never drops");
     check(drops_spike > 0U, "dropped: latency spike breaks the window");
-    check(drops_deep == 0U, "dropped (fix): deep window never drops");
+    check(0U == drops_deep, "dropped (fix): deep window never drops");
     check(raced_bytes != target_bytes,
           "flicker: un-quiesced restart carries old geometry");
     check(clean_bytes == target_bytes,

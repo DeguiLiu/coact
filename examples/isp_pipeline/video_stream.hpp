@@ -16,14 +16,14 @@
  *   与 SOUT writeback 路径。
  *
  * 与其他文件的关系
- *   - 上游：main/orchestrator 发 kVideoCmd（kVInit/kVStart/kVStop/kVDeinit）；
+ *   - 上游：main/orchestrator 发 kVideoCmd（VideoCmd::kVInit/VideoCmd::kVStart/VideoCmd::kVStop/VideoCmd::kVDeinit）；
  *     [isp_chain] 发 kEnhanceDonePic/kEnhanceDoneTemp → pack；SoutDmaWorker
  *     的 kSoutDone 回到 pack。include common.hpp + isp_chain.hpp（事件/类型
  *     一致性；本文件独立编译，isp_chain.hpp 仅为类型面引用）。
  *   - 下游：kPicPacked 送 [output_itf] WrapeAo；kTempPacked 送 MipiSinkAo；
- *     kVideoReady 汇到 OrchestratorAo；kSoutIdle 给 RecfgOrchestrator 收敛
+ *     VideoFsmState::kVideoReady 汇到 OrchestratorAo；kSoutIdle 给 RecfgOrchestrator 收敛
  *     重配事务的 quiesce 阶段。
- *   - 依赖：VideoFsmTrait（3ms RTC budget）；kVStart 后 FSM 切到 RUNNING 才
+ *   - 依赖：VideoFsmTrait（3ms RTC budget）；VideoCmd::kVStart 后 FSM 切到 RUNNING 才
  *     接受产帧事件，与 session gate（kRunning 之内）配合。
  *
  * 文字图（视频流视角）
@@ -63,20 +63,20 @@ namespace isp_demo {
 // Init forward (nodes[i].init -> stream.init_drv), deinit reverse, FSM
 // IDLE -> READY -> RUNNING. PIC and TEMP both go through this template.
 // ---------------------------------------------------------------------------
-enum VideoFsmState : uint8_t { kVideoIdle = 0U, kVideoReady = 1U, kVideoRunning = 2U };
-enum VideoCmd : uint8_t { kVInit = 0U, kVStart = 1U, kVStop = 2U, kVDeinit = 3U };
-enum VideoStreamKind : uint8_t { kPicStream = 0U, kTempStream = 1U };
+enum class VideoFsmState : uint8_t { kVideoIdle = 0U, kVideoReady = 1U, kVideoRunning = 2U };
+enum class VideoCmd : uint8_t { kVInit = 0U, kVStart = 1U, kVStop = 2U, kVDeinit = 3U };
+enum class VideoStreamKind : uint8_t { kPicStream = 0U, kTempStream = 1U };
 
 // Merged Video FSM context: ONE AO, TWO per-path mirrors (PIC + TEMP). The
 // two streams ran structurally identical FSMs in two AOs; the merge moves the
 // stream distinction into the HSM states (PIC_*/TEMP_* subtrees) while the
 // context keeps one mirror struct per path, selected by the event's kind bit.
 struct VideoPathMirror {
-    VideoFsmState fsm{kVideoIdle};
+    VideoFsmState fsm{VideoFsmState::kVideoIdle};
     uint32_t init_step{0U};
     uint32_t deinit_step{0U};
     uint8_t node_count{0U};
-    VideoStreamKind kind{kPicStream};
+    VideoStreamKind kind{VideoStreamKind::kPicStream};
     uint32_t rejected_cmds{0U};
 };
 
@@ -100,7 +100,7 @@ struct VideoCtx {
 
     [[nodiscard]] VideoPathMirror& mirror_of(VideoStreamKind k) noexcept
     {
-        return (kPicStream == k) ? pic : temp;
+        return (VideoStreamKind::kPicStream == k) ? pic : temp;
     }
 };
 static_assert(std::is_standard_layout<VideoPathMirror>::value,
@@ -115,9 +115,9 @@ static_assert(std::is_trivially_copyable<VideoCtx>::value,
 inline const char* video_state_name(VideoFsmState s)
 {
     switch (s) {
-        case kVideoIdle: return "IDLE";
-        case kVideoReady: return "READY";
-        case kVideoRunning: return "RUNNING";
+        case VideoFsmState::kVideoIdle: return "IDLE";
+        case VideoFsmState::kVideoReady: return "READY";
+        case VideoFsmState::kVideoRunning: return "RUNNING";
     }
     return "?";
 }
@@ -213,7 +213,7 @@ struct VideoFsmNode {
         return Derived::mirror_of(ctx);
     }
 
-    // kVInit: IDLE -> READY (guarded arc — the transition table only accepts
+    // VideoCmd::kVInit: IDLE -> READY (guarded arc — the transition table only accepts
     // it from the path's IDLE state; a re-init lands on the reject arc).
     static void on_init(VideoCtx& ctx, const Event&)
     {
@@ -223,54 +223,57 @@ struct VideoFsmNode {
            断言依赖真实时间流逝，真睡只占住 Dispatcher 拖慢所有 AO 派发。
            kRtcBudgetNs 的预算语义见 VideoFsmTrait 注释（保留为契约文档） */
         m.init_step += 1U + m.node_count + 1U;
-        m.fsm = kVideoReady;
+        m.fsm = VideoFsmState::kVideoReady;
         Derived::ack(ctx);
         std::printf("[video/%s] IDLE -> READY (%u nodes)\n",
                     Derived::label(), m.node_count);
         HsmTrace::transition("video_fsm",
-                             (kPicStream == m.kind) ? "PIC_I" : "TEMP_I",
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_I" : "TEMP_I",
                              static_cast<uint16_t>(Sig::kVideoCmd),
-                             (kPicStream == m.kind) ? "PIC_R" : "TEMP_R");
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_R" : "TEMP_R");
         g_log.record_from_task<LogLevel::kInfo, kEvtVideoCmd>(
-            Derived::kind_value(), kVInit, m.node_count);
+            static_cast<uint32_t>(Derived::kind_value()),
+            static_cast<uint32_t>(VideoCmd::kVInit), m.node_count);
     }
 
-    // kVStart: READY -> RUNNING (guarded: only from READY).
+    // VideoCmd::kVStart: READY -> RUNNING (guarded: only from READY).
     static void on_start(VideoCtx& ctx, const Event&)
     {
         VideoPathMirror& m = mirror(ctx);
         /* 阻塞记账（原真睡 300us）：DEV_ISP_STREAM_CTRL_STREAM_ENABLE 的
            流控寄存器写耗时。无断言依赖，改记账不睡眠（同 on_init 理由） */
-        m.fsm = kVideoRunning;
+        m.fsm = VideoFsmState::kVideoRunning;
         std::printf("[video/%s] READY -> RUNNING\n", Derived::label());
         HsmTrace::transition("video_fsm",
-                             (kPicStream == m.kind) ? "PIC_R" : "TEMP_R",
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_R" : "TEMP_R",
                              static_cast<uint16_t>(Sig::kVideoCmd),
-                             (kPicStream == m.kind) ? "PIC_G" : "TEMP_G");
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_G" : "TEMP_G");
         g_log.record_from_task<LogLevel::kInfo, kEvtVideoCmd>(
-            Derived::kind_value(), kVStart, m.fsm);
+            static_cast<uint32_t>(Derived::kind_value()),
+            static_cast<uint32_t>(VideoCmd::kVStart),
+            static_cast<uint32_t>(m.fsm));
     }
 
-    // kVStop: RUNNING -> READY (guarded: only from RUNNING).
+    // VideoCmd::kVStop: RUNNING -> READY (guarded: only from RUNNING).
     static void on_stop(VideoCtx& ctx, const Event&)
     {
         VideoPathMirror& m = mirror(ctx);
         /* 阻塞记账（原真睡 200us）：video FSM stop 的流控驱动同步耗时。
            无断言依赖，改记账不睡眠（同 on_init 理由） */
-        m.fsm = kVideoReady;
+        m.fsm = VideoFsmState::kVideoReady;
         std::printf("[video/%s] RUNNING -> READY\n", Derived::label());
         HsmTrace::transition("video_fsm",
-                             (kPicStream == m.kind) ? "PIC_G" : "TEMP_G",
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_G" : "TEMP_G",
                              static_cast<uint16_t>(Sig::kVideoCmd),
-                             (kPicStream == m.kind) ? "PIC_R" : "TEMP_R");
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_R" : "TEMP_R");
     }
 
-    // kVDeinit: READY -> IDLE with the quiesce-confirmation narrative.
+    // VideoCmd::kVDeinit: READY -> IDLE with the quiesce-confirmation narrative.
     static void on_deinit(VideoCtx& ctx, const Event&)
     {
         VideoPathMirror& m = mirror(ctx);
         // PIC-only: the two quiesce mechanisms comparison (Change16517).
-        if (kPicStream == m.kind) {
+        if (VideoStreamKind::kPicStream == m.kind) {
             ctx.sout_quiesce_us =
                 SoutQuiesce::quiesce(kSoutStopLatencyUs, ctx.sout_ioctls);
             ctx.fmt_quiesce_us =
@@ -292,21 +295,22 @@ struct VideoFsmNode {
         /* 阻塞记账（原真睡 80*n+150us）：各节点逆序 node.deinit_drv +
            stream.deinit_drv 驱动同步耗时。无断言依赖，改记账不睡眠 */
         m.deinit_step += m.node_count + 1U;
-        m.fsm = kVideoIdle;
+        m.fsm = VideoFsmState::kVideoIdle;
         std::printf("[video/%s] READY -> IDLE (deinit reverse)\n",
                     Derived::label());
         HsmTrace::transition("video_fsm",
-                             (kPicStream == m.kind) ? "PIC_R" : "TEMP_R",
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_R" : "TEMP_R",
                              static_cast<uint16_t>(Sig::kVideoCmd),
-                             (kPicStream == m.kind) ? "PIC_I" : "TEMP_I");
+                             (VideoStreamKind::kPicStream == m.kind) ? "PIC_I" : "TEMP_I");
         g_log.record_from_task<LogLevel::kInfo, kEvtVideoCmd>(
-            Derived::kind_value(), kVDeinit, m.deinit_step);
+            static_cast<uint32_t>(Derived::kind_value()),
+            static_cast<uint32_t>(VideoCmd::kVDeinit), m.deinit_step);
     }
 };
 
 // ---- derived: PIC stream ---------------------------------------------------
 struct PicFsmNode : VideoFsmNode<PicFsmNode> {
-    static constexpr VideoStreamKind kind_value() noexcept { return kPicStream; }
+    static constexpr VideoStreamKind kind_value() noexcept { return VideoStreamKind::kPicStream; }
     static constexpr const char* label() noexcept { return "PIC"; }
     static VideoPathMirror& mirror_of(VideoCtx& ctx) noexcept { return ctx.pic; }
     static void ack(VideoCtx& ctx)
@@ -314,7 +318,7 @@ struct PicFsmNode : VideoFsmNode<PicFsmNode> {
         Layout* ack = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(
             static_cast<uint16_t>(Sig::kVideoReady));
         if (nullptr == ack) { return; }
-        ack->meta.cmd_arg = kVInit;
+        ack->meta.cmd_arg = static_cast<uint16_t>(VideoCmd::kVInit);
         ack->meta.reply_to = ctx.orchestrator;
         ack->meta.payload_kind = 0U;   // PIC
         Payload* p = reinterpret_cast<Payload*>(&ack->payload[0]);
@@ -325,7 +329,7 @@ struct PicFsmNode : VideoFsmNode<PicFsmNode> {
 
 // ---- derived: TEMP stream --------------------------------------------------
 struct TempFsmNode : VideoFsmNode<TempFsmNode> {
-    static constexpr VideoStreamKind kind_value() noexcept { return kTempStream; }
+    static constexpr VideoStreamKind kind_value() noexcept { return VideoStreamKind::kTempStream; }
     static constexpr const char* label() noexcept { return "TEMP"; }
     static VideoPathMirror& mirror_of(VideoCtx& ctx) noexcept { return ctx.temp; }
     static void ack(VideoCtx& ctx)
@@ -333,7 +337,7 @@ struct TempFsmNode : VideoFsmNode<TempFsmNode> {
         Layout* ack = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(
             static_cast<uint16_t>(Sig::kVideoReady));
         if (nullptr == ack) { return; }
-        ack->meta.cmd_arg = kVInit;
+        ack->meta.cmd_arg = static_cast<uint16_t>(VideoCmd::kVInit);
         ack->meta.reply_to = ctx.orchestrator;
         ack->meta.payload_kind = 1U;   // TEMP
         Payload* p = reinterpret_cast<Payload*>(&ack->payload[0]);
@@ -350,18 +354,16 @@ struct TempFsmNode : VideoFsmNode<TempFsmNode> {
 // names encode (PIC phase, TEMP phase): first letter PIC, second TEMP,
 // I=IDLE R=READY G=RUNNING. This is the "real HSM" form of the merge: the
 // transition table is the complete, closed set of legal state pairs.
-enum : int8_t {
-    kVfRoot = 0,
-    kVfII = 1,   // PIC IDLE,     TEMP IDLE
-    kVfRI = 2,   // PIC READY,    TEMP IDLE
-    kVfGI = 3,   // PIC RUNNING,  TEMP IDLE
-    kVfIR = 4,   // PIC IDLE,     TEMP READY
-    kVfRR = 5,   // PIC READY,    TEMP READY
-    kVfGR = 6,   // PIC RUNNING,  TEMP READY
-    kVfIT = 7,   // PIC IDLE,     TEMP RUNNING
-    kVfRT = 8,   // PIC READY,    TEMP RUNNING
-    kVfGT = 9,   // PIC RUNNING,  TEMP RUNNING
-};
+inline constexpr int8_t kVfRoot = 0;
+inline constexpr int8_t kVfII = 1;   // PIC IDLE,     TEMP IDLE
+inline constexpr int8_t kVfRI = 2;   // PIC READY,    TEMP IDLE
+inline constexpr int8_t kVfGI = 3;   // PIC RUNNING,  TEMP IDLE
+inline constexpr int8_t kVfIR = 4;   // PIC IDLE,     TEMP READY
+inline constexpr int8_t kVfRR = 5;   // PIC READY,    TEMP READY
+inline constexpr int8_t kVfGR = 6;   // PIC RUNNING,  TEMP READY
+inline constexpr int8_t kVfIT = 7;   // PIC IDLE,     TEMP RUNNING
+inline constexpr int8_t kVfRT = 8;   // PIC READY,    TEMP RUNNING
+inline constexpr int8_t kVfGT = 9;   // PIC RUNNING,  TEMP RUNNING
 
 inline const StateDef<VideoCtx> kVideoStates[] = {
     { -1,       nullptr, nullptr, "Root" },
@@ -380,21 +382,23 @@ inline void onVideoCmd(VideoCtx& ctx, const Event& evt)
 {
     const Layout& e = *reinterpret_cast<const Layout*>(&evt);
     const VideoStreamKind stream =
-        (0U != (e.meta.flags & 0x1U)) ? kTempStream : kPicStream;
+        (0U != (e.meta.flags & 0x1U)) ? VideoStreamKind::kTempStream : VideoStreamKind::kPicStream;
     const VideoCmd cmd = static_cast<VideoCmd>(e.meta.cmd_arg);
-    if (kPicStream == stream) {
+    if (VideoStreamKind::kPicStream == stream) {
         switch (cmd) {
-            case kVInit:   PicFsmNode::on_init(ctx, evt);   break;
-            case kVStart:  PicFsmNode::on_start(ctx, evt);  break;
-            case kVStop:   PicFsmNode::on_stop(ctx, evt);   break;
-            case kVDeinit: PicFsmNode::on_deinit(ctx, evt); break;
+            case VideoCmd::kVInit:   PicFsmNode::on_init(ctx, evt);   break;
+            case VideoCmd::kVStart:  PicFsmNode::on_start(ctx, evt);  break;
+            case VideoCmd::kVStop:   PicFsmNode::on_stop(ctx, evt);   break;
+            case VideoCmd::kVDeinit: PicFsmNode::on_deinit(ctx, evt); break;
+            default: break;   // illegal cmd is routed to the reject arc
         }
     } else {
         switch (cmd) {
-            case kVInit:   TempFsmNode::on_init(ctx, evt);   break;
-            case kVStart:  TempFsmNode::on_start(ctx, evt);  break;
-            case kVStop:   TempFsmNode::on_stop(ctx, evt);   break;
-            case kVDeinit: TempFsmNode::on_deinit(ctx, evt); break;
+            case VideoCmd::kVInit:   TempFsmNode::on_init(ctx, evt);   break;
+            case VideoCmd::kVStart:  TempFsmNode::on_start(ctx, evt);  break;
+            case VideoCmd::kVStop:   TempFsmNode::on_stop(ctx, evt);   break;
+            case VideoCmd::kVDeinit: TempFsmNode::on_deinit(ctx, evt); break;
+            default: break;   // illegal cmd is routed to the reject arc
         }
     }
 }
@@ -406,11 +410,11 @@ inline void onVideoCmdRejected(VideoCtx& ctx, const Event& evt)
 {
     const Layout& e = *reinterpret_cast<const Layout*>(&evt);
     const VideoStreamKind stream =
-        (0U != (e.meta.flags & 0x1U)) ? kTempStream : kPicStream;
+        (0U != (e.meta.flags & 0x1U)) ? VideoStreamKind::kTempStream : VideoStreamKind::kPicStream;
     VideoPathMirror& m = ctx.mirror_of(stream);
     ++m.rejected_cmds;
     HsmTrace::rejection("video_fsm",
-                        (kPicStream == stream) ? "PIC" : "TEMP",
+                        (VideoStreamKind::kPicStream == stream) ? "PIC" : "TEMP",
                         static_cast<uint16_t>(Sig::kVideoCmd),
                         "illegal cmd in current state");
 }
@@ -427,13 +431,13 @@ inline void onVideoCmdRejected(VideoCtx& ctx, const Event& evt)
     return 0U == (e.meta.flags & 0x1U);
 }
 [[nodiscard]] inline bool cmd_is_init(const Event& evt) noexcept
-{ return kVInit == video_cmd_of(evt); }
+{ return VideoCmd::kVInit == video_cmd_of(evt); }
 [[nodiscard]] inline bool cmd_is_start(const Event& evt) noexcept
-{ return kVStart == video_cmd_of(evt); }
+{ return VideoCmd::kVStart == video_cmd_of(evt); }
 [[nodiscard]] inline bool cmd_is_stop(const Event& evt) noexcept
-{ return kVStop == video_cmd_of(evt); }
+{ return VideoCmd::kVStop == video_cmd_of(evt); }
 [[nodiscard]] inline bool cmd_is_deinit(const Event& evt) noexcept
-{ return kVDeinit == video_cmd_of(evt); }
+{ return VideoCmd::kVDeinit == video_cmd_of(evt); }
 [[nodiscard]] inline bool pic_and_init(const VideoCtx&, const Event& e) noexcept
 { return cmd_is_pic(e) && cmd_is_init(e); }
 [[nodiscard]] inline bool pic_and_start(const VideoCtx&, const Event& e) noexcept
@@ -673,16 +677,11 @@ struct PicPackNode : VideoPackNode<PicPackNode> {
     static constexpr uint32_t pack_latency_us() noexcept { return kLat.pic_video_us; }
 
     // ISP_CUT_ZOOM -> VIDEO_CUT_ZOOM -> PSD -> OSD_0 -> OSD_1 -> SOUT -> OUT:
-    // byte-preserving SOUT repack + OSD stamp (2x YUV422 expansion is a
-    // local buffer op; pixels stay in DDR, only the descriptor moves).
-    static void pack(uint8_t* in)
-    {
-        std::array<uint8_t, 2U * kSlotPayloadBytes> sout{};
-        for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
-            sout[2U * i]      = in[i];                            // Y
-            sout[2U * i + 1U] = static_cast<uint8_t>(in[i] >> 4); // Cb/Cr proxy
-        }
-    }
+    // the SOUT 2x YUV422 expansion happens in hardware (a local buffer op);
+    // pixels stay in DDR and only the descriptor advances, so the software
+    // pack step is a deliberate no-op (byte-exactness is verified on the sink
+    // by recomputing the chain math, not by a software-side repacked buffer).
+    static void pack(uint8_t*) noexcept {}
     static void account(VideoPackCtx& ctx, uint32_t us)
     {
         ctx.pic_last_pack_us = us;
@@ -725,7 +724,8 @@ struct PicPackNode : VideoPackNode<PicPackNode> {
         Payload* p = reinterpret_cast<Payload*>(&out->payload[0]);
         p->control[0] = 'P'; p->control[1] = 'I'; p->control[2] = 'C';
         p->control[3] = static_cast<uint8_t>(0xA0U + (out->meta.frame_id & 0x0FU));
-        p->ddr_slot = out->meta.buffer_idx; p->ddr_id = DdrId::kDdrPicOut;
+        p->ddr_slot = out->meta.buffer_idx;
+        p->ddr_id = static_cast<uint16_t>(DdrId::kDdrPicOut);
         if (ctx.pic_in_flight > 0U) { --ctx.pic_in_flight; }
         ++ctx.pic_sout_done;
         ctx.rt->coordinator().submit_from_task(ctx.pic_sink, &out->event, {false, false});
@@ -781,7 +781,8 @@ struct TempPackNode : VideoPackNode<TempPackNode> {
         out->meta.payload_kind = 2U;
         Payload* p = reinterpret_cast<Payload*>(&out->payload[0]);
         p->control[0] = 'T'; p->control[1] = 'E'; p->control[2] = 'M'; p->control[3] = 'P';
-        p->ddr_slot = out->meta.buffer_idx; p->ddr_id = DdrId::kDdrTemp;
+        p->ddr_slot = out->meta.buffer_idx;
+        p->ddr_id = static_cast<uint16_t>(DdrId::kDdrTemp);
         if (ctx.temp_in_flight > 0U) { --ctx.temp_in_flight; }
         ++ctx.temp_sout_done;
         ctx.rt->coordinator().submit_from_task(ctx.temp_sink, &out->event, {false, false});
@@ -795,13 +796,11 @@ struct TempPackNode : VideoPackNode<TempPackNode> {
 // PS/TS = one stream parked in its SOUT writeback window; BS = both parked.
 // Every (state, event) pair is covered by an explicit arc — there is no
 // silent-drop window even when both streams park simultaneously.
-enum : int8_t {
-    kPackRoot = 0,
-    kPackBA = 1,   // PIC ACTIVE,    TEMP ACTIVE
-    kPackPS = 2,   // PIC SOUT_PEND, TEMP ACTIVE
-    kPackTS = 3,   // PIC ACTIVE,    TEMP SOUT_PEND
-    kPackBS = 4,   // PIC SOUT_PEND, TEMP SOUT_PEND
-};
+inline constexpr int8_t kPackRoot = 0;
+inline constexpr int8_t kPackBA = 1;   // PIC ACTIVE,    TEMP ACTIVE
+inline constexpr int8_t kPackPS = 2;   // PIC SOUT_PEND, TEMP ACTIVE
+inline constexpr int8_t kPackTS = 3;   // PIC ACTIVE,    TEMP SOUT_PEND
+inline constexpr int8_t kPackBS = 4;   // PIC SOUT_PEND, TEMP SOUT_PEND
 
 inline const StateDef<VideoPackCtx> kPackStates[] = {
     { -1,          nullptr, nullptr, "Root" },

@@ -312,7 +312,7 @@ struct GainNodeBase {
         done->meta.buffer_idx = slot;
         Payload* p = reinterpret_cast<Payload*>(&done->payload[0]);
         p->ddr_slot = slot;
-        p->ddr_id = ctx.out_region;
+        p->ddr_id = static_cast<uint16_t>(ctx.out_region);
         ctx.rt->coordinator().submit_from_task(ctx.owner_target, &done->event, {false, false});
         return true;
     }
@@ -411,7 +411,8 @@ inline void HlCtx::maybe_fuse()
         e1->meta.buffer_idx = fused_slot;
         Payload* p = reinterpret_cast<Payload*>(&e1->payload[0]);
         p->control[0] = 'H'; p->control[1] = 'L'; p->control[2] = 'P';
-        p->ddr_slot = fused_slot; p->ddr_id = DdrId::kDdrFused;
+        p->ddr_slot = fused_slot;
+        p->ddr_id = static_cast<uint16_t>(DdrId::kDdrFused);
         rt->coordinator().submit_from_task(enhance_target, &e1->event,
                                            {false, false});
     }
@@ -424,7 +425,8 @@ inline void HlCtx::maybe_fuse()
         e2->meta.buffer_idx = fused_slot;
         Payload* p = reinterpret_cast<Payload*>(&e2->payload[0]);
         p->control[0] = 'H'; p->control[1] = 'L'; p->control[2] = 'T';
-        p->ddr_slot = fused_slot; p->ddr_id = DdrId::kDdrFused;
+        p->ddr_slot = fused_slot;
+        p->ddr_id = static_cast<uint16_t>(DdrId::kDdrFused);
         rt->coordinator().submit_from_task(tpd_target, &e2->event,
                                            {false, false});
     }
@@ -594,7 +596,8 @@ struct FusedNodeBase {
         done->meta = std::exchange(*hit, IoMeta{});
         done->meta.payload_kind = ctx.payload_kind;
         Payload* p = reinterpret_cast<Payload*>(&done->payload[0]);
-        p->ddr_slot = done->meta.buffer_idx; p->ddr_id = ctx.out_region;
+        p->ddr_slot = done->meta.buffer_idx;
+        p->ddr_id = static_cast<uint16_t>(ctx.out_region);
         ctx.rt->coordinator().submit_from_task(ctx.downstream, &done->event,
                                                {false, false});
         if (ctx.in_flight > 0U) { --ctx.in_flight; }
@@ -642,7 +645,9 @@ using TempNode    = FusedNodeBase<TempPolicy>;
 // IRQ_PENDING (data done, waiting for the node-done interrupt). The state
 // transition IS the documentation of the async split — the AO is literally
 // in "waiting for hardware" between submit and complete.
-enum : int8_t { kFusedRoot = 0, kFusedActive = 1, kFusedIrqPending = 2 };
+inline constexpr int8_t kFusedRoot = 0;
+inline constexpr int8_t kFusedActive = 1;
+inline constexpr int8_t kFusedIrqPending = 2;
 
 inline const StateDef<FusedNodeCtx> kFusedStates[] = {
     { -1,               nullptr, nullptr,              "Root" },

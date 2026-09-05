@@ -321,7 +321,8 @@ struct IrscWorker : PeriodicProducerBase<IrscWorker> {
                                                 kPayloadAlign>(
                 static_cast<uint16_t>(Sig::kFrameIrscOut));
             if (nullptr == event) {
-                break;
+                continue;   // low/high targets are independent: one failed
+                            // alloc must not strand the other channel
             }
             event->meta.frame_id = frame;
             event->meta.timestamp_ns =
@@ -332,7 +333,7 @@ struct IrscWorker : PeriodicProducerBase<IrscWorker> {
             payload->control[1] = 'N';
             payload->control[2] = static_cast<uint8_t>((frame >> 8U) & 0xFFU);
             payload->control[3] = static_cast<uint8_t>(frame & 0xFFU);
-            payload->ddr_id = DdrId::kDdrDn;
+            payload->ddr_id = static_cast<uint16_t>(DdrId::kDdrDn);
             const TargetId target = (channel == 0U) ? low_target : high_target;
             runtime()->coordinator().submit_from_task(target, &event->event,
                                                       {false, false});
@@ -1082,13 +1083,13 @@ protected:
             switch (r.disposition) {
                 case coact::SubmitDisposition::Direct:
                 case coact::SubmitDisposition::Queued:
+                case coact::SubmitDisposition::Merged:
                     break;
                 case coact::SubmitDisposition::RejectedFull:
                 case coact::SubmitDisposition::RejectedState:
                 case coact::SubmitDisposition::DroppedOverload:
                 case coact::SubmitDisposition::DroppedRateLimit:
                 case coact::SubmitDisposition::DroppedPolicy:
-                case coact::SubmitDisposition::Merged:
                     ++static_cast<Derived*>(this)->completion_rejects;
                     break;
                 default:
@@ -1158,7 +1159,7 @@ struct CmdDmaWorker : CompletionWorkerBase<CmdDmaWorker, uint16_t, 4U> {
 // Handles kIrscCmd in 4 steps (init / start / ctrl / output_enable).
 // Each step allocates and submits a kIrscReady ack to the orchestrator.
 // ---------------------------------------------------------------------------
-enum IrscStep : uint8_t { kIrscInit = 0U, kIrscStart = 1U, kIrscCtrl = 2U, kIrscOutputEnable = 3U };
+enum class IrscStep : uint8_t { kIrscInit = 0U, kIrscStart = 1U, kIrscCtrl = 2U, kIrscOutputEnable = 3U };
 
 // ---------------------------------------------------------------------------
 // Command pattern: IRSC driver sub-commands.
@@ -1169,7 +1170,7 @@ enum IrscStep : uint8_t { kIrscInit = 0U, kIrscStart = 1U, kIrscCtrl = 2U, kIrsc
 // dispatches into the driver.
 // ---------------------------------------------------------------------------
 struct IrscCmd {
-    IrscStep    step{kIrscInit};
+    IrscStep    step{IrscStep::kIrscInit};
     const char* tag{""};
 
     // Stamp the command identity into the event block (command -> event meta).
@@ -1191,19 +1192,19 @@ struct IrscCmd {
 inline const char* irsc_step_name(IrscStep s)
 {
     switch (s) {
-        case kIrscInit: return "init";
-        case kIrscStart: return "start";
-        case kIrscCtrl: return "ctrl";
-        case kIrscOutputEnable: return "output_enable";
+        case IrscStep::kIrscInit: return "init";
+        case IrscStep::kIrscStart: return "start";
+        case IrscStep::kIrscCtrl: return "ctrl";
+        case IrscStep::kIrscOutputEnable: return "output_enable";
     }
     return "?";
 }
 
 inline constexpr IrscCmd kIrscCmdSequence[] = {
-    { kIrscInit,         "IRSCI" },
-    { kIrscStart,        "IRSCS" },
-    { kIrscCtrl,         "IRSCC" },
-    { kIrscOutputEnable, "IRSCE" },
+    { IrscStep::kIrscInit,         "IRSCI" },
+    { IrscStep::kIrscStart,        "IRSCS" },
+    { IrscStep::kIrscCtrl,         "IRSCC" },
+    { IrscStep::kIrscOutputEnable, "IRSCE" },
 };
 
 // ---------------------------------------------------------------------------
@@ -1212,7 +1213,7 @@ inline constexpr IrscCmd kIrscCmdSequence[] = {
 // the IRSC bring-up; every other step merely acknowledges. The table IS the
 // driver's command semantics — adding a step means adding one row.
 // ---------------------------------------------------------------------------
-enum IrscDoneAction : uint8_t { kAck = 0U, kAckAndReady = 1U };
+enum class IrscDoneAction : uint8_t { kAck = 0U, kAckAndReady = 1U };
 
 struct IrscDoneStep {
     IrscStep       step;
@@ -1220,10 +1221,10 @@ struct IrscDoneStep {
 };
 
 inline constexpr IrscDoneStep kIrscDoneTable[] = {
-    { kIrscInit,         kAck },
-    { kIrscStart,        kAck },
-    { kIrscCtrl,         kAck },
-    { kIrscOutputEnable, kAckAndReady },
+    { IrscStep::kIrscInit,         IrscDoneAction::kAck },
+    { IrscStep::kIrscStart,        IrscDoneAction::kAck },
+    { IrscStep::kIrscCtrl,         IrscDoneAction::kAck },
+    { IrscStep::kIrscOutputEnable, IrscDoneAction::kAckAndReady },
 };
 
 constexpr IrscDoneAction irsc_done_action_of(IrscStep s) noexcept
@@ -1231,7 +1232,7 @@ constexpr IrscDoneAction irsc_done_action_of(IrscStep s) noexcept
     for (const IrscDoneStep& row : kIrscDoneTable) {
         if (row.step == s) { return row.action; }
     }
-    return kAck;
+    return IrscDoneAction::kAck;
 }
 
 struct IrscCtx {
@@ -1294,7 +1295,7 @@ inline void onIrscDmaDone(IrscCtx& ctx, const Event& evt)
     ++ctx.dma_done_count;
 
     // Command-pattern posture: the table row decides readiness.
-    if (kAckAndReady == irsc_done_action_of(step)) { ctx.ready = true; }
+    if (IrscDoneAction::kAckAndReady == irsc_done_action_of(step)) { ctx.ready = true; }
 }
 
 // Reject arc: a command while DEINIT/STOPPED must not reach the hardware —
@@ -1311,7 +1312,8 @@ inline void onIrscCmdRejected(IrscCtx& ctx, const Event&)
 // is in INIT/RUNNING; the guarded arc falls through to the self-transition
 // that records the rejection — the HSM's own guard-ordering (first match
 // wins, failed guard scans on) provides the reject path for free.
-enum : int8_t { kIrscRoot = 0, kIrscActive = 1 };
+inline constexpr int8_t kIrscRoot = 0;
+inline constexpr int8_t kIrscActive = 1;
 
 inline const StateDef<IrscCtx> kIrscStates[] = {
     { -1, nullptr, nullptr, "Root" },

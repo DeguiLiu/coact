@@ -12,7 +12,7 @@
  *     UsbDmaWorker（来自 sensor_irsc.hpp）搬运。
  *   - WinHostAo：Windows 主机观察者（LowAoTrait），接收 kFrameEof + 计数
  *     kUsbErrInt，纯被动（不驱动状态机）。
- *   - OrchestratorAo：收集 kIrscReady / kIspReady / kVideoReady ack，对应
+ *   - OrchestratorAo：收集 kIrscReady / kIspReady / VideoFsmState::kVideoReady ack，对应
  *     RS500 的 execute_config_phases_ex() + rte_call_sync 响应合并建模。
  *   - HwStateBlackboard：硬件状态黑板（ZoomBlock / StreamSelBlock /
  *     WrapeBlock 四要素），生产者写一次 / 消费者读多次；WrapeAo 落帧前
@@ -22,7 +22,7 @@
  *
  * 与其他文件的关系
  *   - 上游：[video_stream] VideoPackAo 发 kPicPacked → WrapeAo；kTempPacked
- *     → MipiSinkAo；kVideoReady → OrchestratorAo；[sensor_irsc] UsbDmaWorker
+ *     → MipiSinkAo；VideoFsmState::kVideoReady → OrchestratorAo；[sensor_irsc] UsbDmaWorker
  *     搬完发 kFrameEof / kUsbErrInt → WinHostAo；[isp_chain] MipiIrqWorker
  *     发 kMipiTxDone / kMipiStreamErr → MipiSinkAo。include common.hpp +
  *     isp_chain.hpp（事件/FrameStamp 类型一致）。
@@ -266,7 +266,9 @@ inline void onMipiStreamErr(SinkCtx& ctx, const Event& evt)
 
 // MIPI sink HSM: ACTIVE --(kTempPacked)--> TX_PENDING (frame on the lane);
 // TX_PENDING --(kMipiTxDone)--> ACTIVE (completion interrupt observed).
-enum : int8_t { kMipiRoot = 0, kMipiActive = 1, kMipiTxPending = 2 };
+inline constexpr int8_t kMipiRoot = 0;
+inline constexpr int8_t kMipiActive = 1;
+inline constexpr int8_t kMipiTxPending = 2;
 
 inline const StateDef<SinkCtx> kMipiStates[] = {
     { -1,              nullptr, nullptr, "Root" },
@@ -563,7 +565,7 @@ inline const TransitionDef<WinHostCtx> kWinHostTransitions[] = {
 };
 
 // ---------------------------------------------------------------------------
-// OrchestratorAO: collects kIrscReady / kIspReady / kVideoReady acks. In
+// OrchestratorAO: collects kIrscReady / kIspReady / VideoFsmState::kVideoReady acks. In
 // RS500 this role is split between execute_config_phases_ex() and the
 // rte_call_sync response — modeled here as a single in-process AO.
 // ---------------------------------------------------------------------------
@@ -609,4 +611,3 @@ using OrchestratorAo = coact::Ao<OrchCtx, Hsm<OrchCtx>, HighAoTrait>;
 
 
 }  // namespace isp_demo
-
