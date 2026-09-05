@@ -56,7 +56,7 @@ static_assert(AsyncConfig::kDefaultGroupCapacity <= 32U,
 static_assert(coact::coro::detail::FixedStorageContract<uint64_t>::value,
               "FixedStorage accepts uint64_t");
 static_assert(
-    !coact::coro::detail::FixedStorageContract<std::vector<int>>::value,
+    !coact::coro::detail::FixedStorageContract<std::vector<int32_t>>::value,
     "FixedStorage must reject non-trivial types");
 
 static_assert(std::is_standard_layout<coact::coro::CompletionPayload>::value,
@@ -157,7 +157,7 @@ struct Rig {
        the expected number of completion events. */
     void drain(unsigned expected_events)
     {
-        for (int spin = 0; spin < 20000; ++spin) {
+        for (int32_t spin = 0; spin < 20000; ++spin) {
             if (ao.context().completed_events >= expected_events) {
                 break;
             }
@@ -434,7 +434,7 @@ COACT_TEST(task_fail_path_error_propagation)
 COACT_TEST(task_slot_recycle_clean_state)
 {
     Rig rig;
-    for (int i = 0; i < 4; ++i) {
+    for (int32_t i = 0; i < 4; ++i) {
     auto pair_exp = rig.reg.create(coact::kInvalidTarget, 0U, coact::EventQos{false, false});
     REQUIRE(static_cast<bool>(pair_exp));
     auto pair = std::move(pair_exp.value());

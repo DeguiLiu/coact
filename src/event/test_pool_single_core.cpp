@@ -29,7 +29,7 @@ constexpr std::uint16_t kBlock = 32U;
 // Counts every enter/leave so tests can assert pool ops are CS-guarded and
 // balanced (no leaked irq-mask hold).
 struct MockIrqMask {
-    std::atomic<int> depth{0};
+    std::atomic<int32_t> depth{0};
     std::atomic<std::uint64_t> save_count{0};
     std::atomic<std::uint64_t> restore_count{0};
 
@@ -53,8 +53,8 @@ struct MockIrqMask {
 
     void check_balanced() const noexcept
     {
-        CHECK_EQ(static_cast<long>(save_count.load(std::memory_order_relaxed)),
-                 static_cast<long>(restore_count.load(std::memory_order_relaxed)));
+        CHECK_EQ(static_cast<int64_t>(save_count.load(std::memory_order_relaxed)),
+                 static_cast<int64_t>(restore_count.load(std::memory_order_relaxed)));
         CHECK_EQ(depth.load(std::memory_order_relaxed), 0);
     }
 };

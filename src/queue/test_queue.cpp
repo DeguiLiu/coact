@@ -16,10 +16,10 @@ namespace {
 // wraps every push/pop/size in a balanced save/restore pair with no nesting.
 // ---------------------------------------------------------------------------
 struct CsCounters {
-    int saves = 0;
-    int restores = 0;
-    int depth = 0;
-    int max_depth = 0;
+    int32_t saves = 0;
+    int32_t restores = 0;
+    int32_t depth = 0;
+    int32_t max_depth = 0;
 };
 
 CsCounters g_cs;
@@ -54,8 +54,8 @@ void reset_counters() {
 
 // Non-default-constructible, move-only payload type.
 struct MoveOnly {
-    int value;
-    explicit MoveOnly(int v) : value(v) {}
+    int32_t value;
+    explicit MoveOnly(int32_t v) : value(v) {}
     MoveOnly(const MoveOnly&) = delete;
     MoveOnly& operator=(const MoveOnly&) = delete;
     MoveOnly(MoveOnly&&) = default;
@@ -63,11 +63,11 @@ struct MoveOnly {
 };
 
 struct LifetimeProbe {
-    static int active;
+    static int32_t active;
 
-    int value;
+    int32_t value;
 
-    explicit LifetimeProbe(int v) noexcept : value(v) {
+    explicit LifetimeProbe(int32_t v) noexcept : value(v) {
         ++active;
     }
 
@@ -90,7 +90,7 @@ struct LifetimeProbe {
     }
 };
 
-int LifetimeProbe::active = 0;
+int32_t LifetimeProbe::active = 0;
 
 // Move-only handle that visibly invalidates the source on move, so a failed
 // push can prove the incoming object was NOT consumed while a successful push
@@ -118,11 +118,11 @@ std::atomic<bool> g_blocking_move_entered{false};
 std::atomic<bool> g_blocking_move_release{false};
 
 struct BlockingMove {
-    int value = 0;
+    int32_t value = 0;
     bool block_on_move = false;
 
     BlockingMove() noexcept = default;
-    explicit BlockingMove(int v, bool block) noexcept
+    explicit BlockingMove(int32_t v, bool block) noexcept
         : value(v), block_on_move(block) {}
     BlockingMove(const BlockingMove&) = delete;
     BlockingMove& operator=(const BlockingMove&) = delete;
@@ -154,18 +154,18 @@ struct BlockingMove {
 // once (no loss, no duplication, no out-of-range payload).
 // ---------------------------------------------------------------------------
 template <uint16_t Capacity>
-void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
-    const int total = producer_count * items_per_producer;
-    for (int r = 0; r < rounds; ++r) {
-        coact::BoundedMpscQueue<int, Capacity> q;
-        std::atomic<int> producers_done{0};
+void run_mpsc_stress(int32_t producer_count, int32_t items_per_producer, int32_t rounds) {
+    const int32_t total = producer_count * items_per_producer;
+    for (int32_t r = 0; r < rounds; ++r) {
+        coact::BoundedMpscQueue<int32_t, Capacity> q;
+        std::atomic<int32_t> producers_done{0};
         std::vector<std::thread> producers;
         producers.reserve(static_cast<size_t>(producer_count));
 
-        for (int p = 0; p < producer_count; ++p) {
+        for (int32_t p = 0; p < producer_count; ++p) {
             producers.emplace_back([p, items_per_producer, &q, &producers_done]() {
-                const int base = p * items_per_producer;
-                for (int i = 0; i < items_per_producer; ++i) {
+                const int32_t base = p * items_per_producer;
+                for (int32_t i = 0; i < items_per_producer; ++i) {
                     while (!q.try_push(base + i)) {
                         std::this_thread::yield();
                     }
@@ -175,11 +175,11 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
         }
 
         std::vector<unsigned char> seen(static_cast<size_t>(total), 0);
-        int popped = 0;
-        int violations = 0;
+        int32_t popped = 0;
+        int32_t violations = 0;
 
         for (;;) {
-            int v = 0;
+            int32_t v = 0;
             if (q.try_pop(v)) {
                 ++popped;
                 if (v < 0 || v >= total || seen[static_cast<size_t>(v)] != 0U) {
@@ -196,7 +196,7 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
             }
         }
 
-        int v = 0;
+        int32_t v = 0;
         while (q.try_pop(v)) {
             ++popped;
             if (v < 0 || v >= total || seen[static_cast<size_t>(v)] != 0U) {
@@ -213,8 +213,8 @@ void run_mpsc_stress(int producer_count, int items_per_producer, int rounds) {
         CHECK_EQ(popped, total);
         CHECK_EQ(violations, 0);
         CHECK_EQ(q.size(), 0);
-        int missing = 0;
-        for (int i = 0; i < total; ++i) {
+        int32_t missing = 0;
+        for (int32_t i = 0; i < total; ++i) {
             if (seen[static_cast<size_t>(i)] == 0U) {
                 ++missing;
             }
@@ -238,23 +238,23 @@ COACT_TEST(mpsc_accepts_unified_critical_section_constructor) {
 }
 
 COACT_TEST(mpsc_fifo_single_thread) {
-    coact::BoundedMpscQueue<int, 8> q;
+    coact::BoundedMpscQueue<int32_t, 8> q;
     REQUIRE_EQ(q.capacity(), 8);
     REQUIRE_EQ(q.size(), 0);
 
-    for (int i = 0; i < 8; ++i) {
+    for (int32_t i = 0; i < 8; ++i) {
         CHECK(q.try_push(i));
     }
     CHECK_EQ(q.size(), 8);
     CHECK(!q.try_push(99));   // full
 
-    for (int i = 0; i < 8; ++i) {
-        int v = -1;
+    for (int32_t i = 0; i < 8; ++i) {
+        int32_t v = -1;
         CHECK(q.try_pop(v));
         CHECK_EQ(v, i);
     }
     CHECK_EQ(q.size(), 0);
-    int v = -1;
+    int32_t v = -1;
     CHECK(!q.try_pop(v));   // empty
 
     // refill after full drain
@@ -268,7 +268,7 @@ COACT_TEST(mpsc_fifo_single_thread) {
 // BoundedMpscQueue: capacity-1 boundary.
 // ---------------------------------------------------------------------------
 COACT_TEST(mpsc_capacity_one) {
-    coact::BoundedMpscQueue<int, 1> q;
+    coact::BoundedMpscQueue<int32_t, 1> q;
     REQUIRE_EQ(q.capacity(), 1);
     REQUIRE_EQ(q.size(), 0);
 
@@ -276,7 +276,7 @@ COACT_TEST(mpsc_capacity_one) {
     CHECK_EQ(q.size(), 1);
     CHECK(!q.try_push(12));   // full
 
-    int v = 0;
+    int32_t v = 0;
     CHECK(q.try_pop(v));
     CHECK_EQ(v, 11);
     CHECK_EQ(q.size(), 0);
@@ -292,23 +292,23 @@ COACT_TEST(mpsc_capacity_one) {
 // BoundedMpscQueue: power-of-two capacities.
 // ---------------------------------------------------------------------------
 COACT_TEST(mpsc_power_of_two) {
-    coact::BoundedMpscQueue<int, 16> q;
-    for (int i = 0; i < 16; ++i) {
+    coact::BoundedMpscQueue<int32_t, 16> q;
+    for (int32_t i = 0; i < 16; ++i) {
         CHECK(q.try_push(i));
     }
     CHECK(!q.try_push(16));
-    for (int i = 0; i < 16; ++i) {
-        int v = 0;
+    for (int32_t i = 0; i < 16; ++i) {
+        int32_t v = 0;
         CHECK(q.try_pop(v));
         CHECK_EQ(v, i);
     }
     CHECK_EQ(q.size(), 0);
 
-    coact::BoundedMpscQueue<int, 2> q2;
+    coact::BoundedMpscQueue<int32_t, 2> q2;
     CHECK(q2.try_push(1));
     CHECK(q2.try_push(2));
     CHECK(!q2.try_push(3));
-    int v = 0;
+    int32_t v = 0;
     CHECK(q2.try_pop(v));
     CHECK_EQ(v, 1);
     CHECK(q2.try_push(3));   // a slot was freed
@@ -335,9 +335,9 @@ COACT_TEST(mpsc_move_only) {
 }
 
 COACT_TEST(mpsc_front_observes_without_consuming) {
-    coact::BoundedMpscQueue<int, 2> q;
-    int front = 0;
-    int popped = 0;
+    coact::BoundedMpscQueue<int32_t, 2> q;
+    int32_t front = 0;
+    int32_t popped = 0;
 
     CHECK(!q.front(front));
     CHECK(q.try_push(11));
@@ -456,20 +456,20 @@ COACT_TEST(mpsc_concurrent_stress) {
 // ---------------------------------------------------------------------------
 COACT_TEST(ring_fifo_and_lock_counting) {
     reset_counters();
-    coact::SingleCoreCriticalRing<int, 4> q(counting_cs());
+    coact::SingleCoreCriticalRing<int32_t, 4> q(counting_cs());
 
-    for (int i = 0; i < 4; ++i) {
-        CHECK(q.try_push(int(i)));
+    for (int32_t i = 0; i < 4; ++i) {
+        CHECK(q.try_push(int32_t(i)));
     }
     CHECK(!q.try_push(99));   // full
     CHECK_EQ(q.size(), 4);
 
-    for (int i = 0; i < 4; ++i) {
-        int v = -1;
+    for (int32_t i = 0; i < 4; ++i) {
+        int32_t v = -1;
         CHECK(q.try_pop(v));
         CHECK_EQ(v, i);
     }
-    int v = -1;
+    int32_t v = -1;
     CHECK(!q.try_pop(v));   // empty
     CHECK_EQ(q.size(), 0);
 
@@ -485,11 +485,11 @@ COACT_TEST(ring_fifo_and_lock_counting) {
 // ---------------------------------------------------------------------------
 COACT_TEST(ring_capacity_one) {
     reset_counters();
-    coact::SingleCoreCriticalRing<int, 1> q(counting_cs());
+    coact::SingleCoreCriticalRing<int32_t, 1> q(counting_cs());
 
     CHECK(q.try_push(7));
     CHECK(!q.try_push(8));   // full
-    int v = 0;
+    int32_t v = 0;
     CHECK(q.try_pop(v));
     CHECK_EQ(v, 7);
     CHECK(q.try_push(9));    // reuse
@@ -512,9 +512,9 @@ COACT_TEST(ring_move_only) {
 }
 
 COACT_TEST(ring_front_observes_without_consuming) {
-    coact::SingleCoreCriticalRing<int, 2> q(counting_cs());
-    int front = 0;
-    int popped = 0;
+    coact::SingleCoreCriticalRing<int32_t, 2> q(counting_cs());
+    int32_t front = 0;
+    int32_t popped = 0;
 
     CHECK(!q.front(front));
     CHECK(q.try_push(21));
@@ -546,7 +546,7 @@ COACT_TEST(ring_destroys_unconsumed_payloads) {
 // ---------------------------------------------------------------------------
 COACT_TEST(ring_try_push_observed_basic) {
     reset_counters();
-    coact::SingleCoreCriticalRing<int, 4> q(counting_cs());
+    coact::SingleCoreCriticalRing<int32_t, 4> q(counting_cs());
 
     coact::QueueResult r = q.try_push_observed(10);
     CHECK(r.success);
@@ -569,7 +569,7 @@ COACT_TEST(ring_try_push_observed_basic) {
     CHECK(!r.success);
     CHECK_EQ(r.size_after, 4U);
 
-    int v = 0;
+    int32_t v = 0;
     REQUIRE(q.try_pop(v));
     CHECK_EQ(v, 10);
     r = q.try_push_observed(20);
@@ -584,7 +584,7 @@ COACT_TEST(ring_try_push_observed_basic) {
 // ---------------------------------------------------------------------------
 COACT_TEST(ring_try_push_observed_single_critical_section) {
     reset_counters();
-    coact::SingleCoreCriticalRing<int, 2> q(counting_cs());
+    coact::SingleCoreCriticalRing<int32_t, 2> q(counting_cs());
 
     coact::QueueResult r = q.try_push_observed(1);
     CHECK(r.success);
@@ -659,7 +659,7 @@ COACT_TEST(ring_try_push_observed_failed_push_keeps_input) {
 // ---------------------------------------------------------------------------
 COACT_TEST(ring_try_push_observed_capacity_one) {
     reset_counters();
-    coact::SingleCoreCriticalRing<int, 1> q(counting_cs());
+    coact::SingleCoreCriticalRing<int32_t, 1> q(counting_cs());
 
     coact::QueueResult r = q.try_push_observed(7);
     CHECK(r.success);
@@ -669,7 +669,7 @@ COACT_TEST(ring_try_push_observed_capacity_one) {
     CHECK(!r.success);
     CHECK_EQ(r.size_after, 1U);
 
-    int v = 0;
+    int32_t v = 0;
     REQUIRE(q.try_pop(v));
     CHECK_EQ(v, 7);
 
@@ -685,7 +685,7 @@ COACT_TEST(ring_try_push_observed_capacity_one) {
 // ---------------------------------------------------------------------------
 COACT_TEST(ring_try_push_observed_matches_plain_push) {
     reset_counters();
-    coact::SingleCoreCriticalRing<int, 4> q(counting_cs());
+    coact::SingleCoreCriticalRing<int32_t, 4> q(counting_cs());
 
     CHECK(q.try_push(1));
     coact::QueueResult r = q.try_push_observed(2);
@@ -694,7 +694,7 @@ COACT_TEST(ring_try_push_observed_matches_plain_push) {
     CHECK(q.try_push(3));
     CHECK_EQ(q.size(), 3);
 
-    int v = 0;
+    int32_t v = 0;
     REQUIRE(q.try_pop(v));
     CHECK_EQ(v, 1);
     CHECK_EQ(q.size(), 2);

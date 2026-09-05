@@ -105,8 +105,8 @@ COACT_TEST(rtthread_pal_current_context_task)
     /* Not inside the dispatcher thread; rt_thread_self() == nullptr on host
        unless registered. Context should be Task with prio_valid==false. */
     coact::ExecutionContext ctx = pal.current_context();
-    CHECK_EQ(static_cast<int>(coact::ContextKind::Task),
-             static_cast<int>(ctx.kind));
+    CHECK_EQ(static_cast<int32_t>(coact::ContextKind::Task),
+             static_cast<int32_t>(ctx.kind));
 }
 
 COACT_TEST(rtthread_pal_register_current_task)
@@ -131,7 +131,7 @@ COACT_TEST(rtthread_pal_signal_wait_dispatcher)
 COACT_TEST(rtthread_pal_start_join_dispatcher)
 {
     coact::pal::RtThread pal;
-    struct Flag { std::atomic<int> done{0}; };
+    struct Flag { std::atomic<int32_t> done{0}; };
     Flag flag;
     pal.start_dispatcher([](void* ctx) {
         static_cast<Flag*>(ctx)->done.store(1, std::memory_order_relaxed);
@@ -142,7 +142,7 @@ COACT_TEST(rtthread_pal_start_join_dispatcher)
 
 /* ---- End-to-end with RT-Thread PAL ---------------------------------------- */
 
-static std::atomic<int> g_rtt_counter{0};
+static std::atomic<int32_t> g_rtt_counter{0};
 
 struct RttCtx {};
 static void rtt_noop_entry(RttCtx&) {}
@@ -199,14 +199,14 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
     rt.start();
 
     coact::EventQos qos{false, false};
-    static constexpr int kN = 20;
-    for (int i = 0; i < kN; ++i) {
+    static constexpr int32_t kN = 20;
+    for (int32_t i = 0; i < kN; ++i) {
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
         rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
 
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_rtt_counter.load() >= kN) { break; }
         usleep(5000);
     }
@@ -220,7 +220,7 @@ COACT_TEST(rtthread_pal_integration_ao_dispatch)
 
 /* A pool wired to a counting CriticalSection must guard allocation, event
    reference updates, and reclaim with O(1) irq-mask sections. */
-struct PoolCsCounters { int saves = 0; int restores = 0; };
+struct PoolCsCounters { int32_t saves = 0; int32_t restores = 0; };
 PoolCsCounters g_pool_cs;
 uintptr_t pool_cs_save(void*) { ++g_pool_cs.saves; return 0xABABABABu; }
 void pool_cs_restore(void*, uintptr_t) { ++g_pool_cs.restores; }
@@ -256,12 +256,12 @@ COACT_TEST(rtthread_pal_current_context_isr)
     coact::pal::RtThread pal;
     stub_set_isr_nest(1U);
     coact::ExecutionContext isr_ctx = pal.current_context();
-    CHECK_EQ(static_cast<int>(coact::ContextKind::Isr),
-             static_cast<int>(isr_ctx.kind));
+    CHECK_EQ(static_cast<int32_t>(coact::ContextKind::Isr),
+             static_cast<int32_t>(isr_ctx.kind));
     stub_set_isr_nest(0U);
     coact::ExecutionContext task_ctx = pal.current_context();
-    CHECK_NE(static_cast<int>(coact::ContextKind::Isr),
-             static_cast<int>(task_ctx.kind));
+    CHECK_NE(static_cast<int32_t>(coact::ContextKind::Isr),
+             static_cast<int32_t>(task_ctx.kind));
 }
 
 /* ISR-path submit end-to-end: try_submit_from_isr must stage + wake the
@@ -286,15 +286,15 @@ COACT_TEST(rtthread_pal_isr_submit_end_to_end)
     rt.start();
 
     coact::EventQos qos{false, false};
-    static constexpr int kN = 10;
-    for (int i = 0; i < kN; ++i) {
+    static constexpr int32_t kN = 10;
+    for (int32_t i = 0; i < kN; ++i) {
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
         coact::SubmitResult r = rt.coordinator().try_submit_from_isr(coact::TargetId(1U), e, qos);
         CHECK(coact::SubmitDisposition::RejectedFull != r.disposition);
     }
 
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_rtt_counter.load() >= kN) { break; }
         usleep(5000);
     }

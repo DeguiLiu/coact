@@ -364,8 +364,8 @@ COACT_TEST(policy_mergecell_merge_gated_by_qos)
 // ---------------------------------------------------------------------------
 COACT_TEST(policy_mergecell_concurrent_producers)
 {
-    constexpr int kProducers = 6;
-    constexpr int kAttempts = 2000;
+    constexpr int32_t kProducers = 6;
+    constexpr int32_t kAttempts = 2000;
 
     MergeCell cell;
     cell.init(TargetId(9U), 0x900U);
@@ -373,15 +373,15 @@ COACT_TEST(policy_mergecell_concurrent_producers)
     // the cell owns this single test event; ref_ctr lives on the test only
     Event owned_event = make_static(0x900U);
 
-    std::atomic<int> published{0};
-    std::atomic<int> consumed{0};
-    std::atomic<int> merge_wins{0};
+    std::atomic<int32_t> published{0};
+    std::atomic<int32_t> consumed{0};
+    std::atomic<int32_t> merge_wins{0};
 
     std::vector<std::thread> threads;
     threads.reserve(static_cast<std::size_t>(kProducers));
-    for (int t = 0; t < kProducers; ++t) {
+    for (int32_t t = 0; t < kProducers; ++t) {
         threads.emplace_back([&]() {
-            for (int i = 0; i < kAttempts; ++i) {
+            for (int32_t i = 0; i < kAttempts; ++i) {
                 // Producer A) race to occupy the empty cell.
                 if (cell.try_publish(&owned_event)) {
                     published.fetch_add(1, std::memory_order_relaxed);
@@ -433,13 +433,13 @@ COACT_TEST(policy_mergecell_concurrent_producers)
 
 COACT_TEST(policy_mergecell_published_event_is_visible_to_consumer)
 {
-    constexpr int kRounds = 100000;
+    constexpr int32_t kRounds = 100000;
 
     MergeCell cell;
     cell.init(TargetId(11U), 0xB00U);
     Event owned_event = make_static(0xB00U);
     std::atomic<bool> producer_done{false};
-    std::atomic<int> invalid_take{0};
+    std::atomic<int32_t> invalid_take{0};
 
     std::thread consumer([&]() {
         while (!producer_done.load(std::memory_order_acquire)
@@ -457,7 +457,7 @@ COACT_TEST(policy_mergecell_published_event_is_visible_to_consumer)
         }
     });
 
-    for (int round = 0; round < kRounds; ++round) {
+    for (int32_t round = 0; round < kRounds; ++round) {
         while (!cell.try_publish(&owned_event)) {
             std::this_thread::yield();
         }

@@ -35,7 +35,7 @@ static bool expect_abort(Fn&& fn)
     if (pid < 0) {
         return false;   // fork failed: nothing to observe
     }
-    int status = 0;
+    int32_t status = 0;
     waitpid(pid, &status, 0);
     if (WIFSIGNALED(status)) {
         return (SIGABRT == WTERMSIG(status));
@@ -138,8 +138,8 @@ COACT_TEST(pending_decrement_below_zero_is_abort)
 // Minimal HSM shared by the Ao suites.
 // ---------------------------------------------------------------------------
 struct AoCtx {
-    int ticks;
-    int rec_calls;
+    int32_t ticks;
+    int32_t rec_calls;
 };
 
 enum : uint16_t {

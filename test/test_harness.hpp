@@ -20,8 +20,8 @@ inline T relaxed(const std::atomic<T>& a) noexcept
 }
 
 struct Stats {
-    int passed = 0;
-    int failed = 0;
+    int32_t passed = 0;
+    int32_t failed = 0;
 };
 
 inline Stats& stats() noexcept {
@@ -45,21 +45,21 @@ struct Register {
     }
 };
 
-inline void report_fail(const char* file, int line, const char* expr) {
+inline void report_fail(const char* file, int32_t line, const char* expr) {
     stats().failed++;
     std::printf("FAIL %s:%d: %s\n", file, line, expr);
 }
 
-inline void report_require(const char* file, int line, const char* expr) {
+inline void report_require(const char* file, int32_t line, const char* expr) {
     stats().failed++;
     std::printf("FATAL %s:%d: REQUIRE(%s)\n", file, line, expr);
 }
 
-inline int run_all() {
-    int total = 0;
+inline int32_t run_all() {
+    int32_t total = 0;
     for (const TestCase& tc : registry()) {
         total++;
-        const int before = stats().failed;
+        const int32_t before = stats().failed;
         tc.fn();
         if (stats().failed == before) {
             std::printf("[PASS] %s\n", tc.name);

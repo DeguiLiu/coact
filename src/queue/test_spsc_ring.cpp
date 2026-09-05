@@ -51,7 +51,7 @@ struct ThrowingMove {
 // Payload that is NOT nothrow-default-constructible: must be rejected.
 struct NoDefault {
     NoDefault() = delete;
-    explicit NoDefault(int) {}
+    explicit NoDefault(int32_t) {}
     NoDefault(NoDefault&&) noexcept = default;
     NoDefault& operator=(NoDefault&&) noexcept = default;
 };

@@ -17,7 +17,7 @@
 
 namespace {
 
-static std::atomic<int> g_fired{0};
+static std::atomic<int32_t> g_fired{0};
 
 struct Ctx {};
 static void noop_entry(Ctx&) {}
@@ -55,9 +55,9 @@ using Facade = coact::coro::TimerFacade<PoolT, Rt::CoordinatorType, 4U,
 
 alignas(16) static unsigned char g_storage[16U * 64U + 16U];
 
-static void drain(int expected)
+static void drain(int32_t expected)
 {
-    for (int w = 0; w < 2000; ++w) {
+    for (int32_t w = 0; w < 2000; ++w) {
         if (g_fired.load(std::memory_order_relaxed) >= expected) {
             break;
         }
@@ -124,7 +124,7 @@ COACT_TEST(facade_periodic_five_ticks)
     auto id = rig.sched.schedule_periodic(coact::TargetId(1U), 1U, 10U, qos);
     REQUIRE(static_cast<bool>(id));
 
-    for (int i = 0; i < 5; ++i) {
+    for (int32_t i = 0; i < 5; ++i) {
         rig.clock.advance(10U);
         rig.sched.poll();
         drain(i + 1);
@@ -159,7 +159,7 @@ COACT_TEST(facade_slots_full_then_reuse)
     Rig rig;
     coact::EventQos qos{false, false};
     coact::TimerTaskId last = coact::kInvalidTimerTaskId;
-    for (int i = 0; i < 4; ++i) {
+    for (int32_t i = 0; i < 4; ++i) {
         auto id = rig.sched.schedule_once(coact::TargetId(1U), 1U, 100U, qos);
         REQUIRE(static_cast<bool>(id));
         last = id.value();

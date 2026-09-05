@@ -40,14 +40,14 @@ static_assert(sizeof(Breaker<>) <= 8U,
 
 // Drive a breaker into Recovering via the L1 -> cooldown -> low-water path.
 void drive_to_recovering(Breaker<>& b, const DefaultConfig& cfg) {
-    for (int i = 0; i < static_cast<int>(Breaker<>::kDirectTimeoutThreshold); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(Breaker<>::kDirectTimeoutThreshold); ++i) {
         b.on_direct_timeout();
     }
     REQUIRE_EQ(b.level(), BreakerLevel::BrokenL1);
-    for (int i = 0; i < static_cast<int>(cfg.kCooldownCycles); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(cfg.kCooldownCycles); ++i) {
         b.on_dispatch_cycle();
     }
-    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
     REQUIRE_EQ(b.level(), BreakerLevel::Recovering);
@@ -154,13 +154,13 @@ COACT_TEST(breaker_safe_external_restore_to_recovering) {
 
     // Still needs cooldown + sustained low watermark + consecutive healthy
     // probe windows before the breaker returns to Normal.
-    for (int i = 0; i < static_cast<int>(cfg.kCooldownCycles); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(cfg.kCooldownCycles); ++i) {
         b.on_dispatch_cycle();
     }
-    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
-    for (int i = 0; i < static_cast<int>(Breaker<>::kHealthyWindowsRequired); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(Breaker<>::kHealthyWindowsRequired); ++i) {
         b.on_probe_success();
         b.on_dispatch_cycle();
     }
@@ -230,13 +230,13 @@ COACT_TEST(breaker_cooldown_not_done_blocks_recovery) {
     REQUIRE_EQ(b.level(), BreakerLevel::BrokenL1);
 
     // Sustained low watermark while the cooldown is incomplete: no recovery.
-    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
     CHECK_EQ(b.level(), BreakerLevel::BrokenL1);
 
     // One cooldown cycle short is still not enough.
-    for (int i = 0; i < static_cast<int>(cfg.kCooldownCycles) - 1; ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(cfg.kCooldownCycles) - 1; ++i) {
         b.on_dispatch_cycle();
     }
     b.on_watermark(45U);
@@ -265,12 +265,12 @@ COACT_TEST(breaker_rtc_ok_clears_timeout_count_but_not_cooldown) {
 
     // The qualifying call must not skip the cooldown window.
     b.on_rtc_ok();
-    for (int i = 0; i < static_cast<int>(Breaker<>::kLowWatermarkPersist); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(Breaker<>::kLowWatermarkPersist); ++i) {
         b.on_watermark(45U);
     }
     CHECK_EQ(b.level(), BreakerLevel::BrokenL1);  // cooldown still running
 
-    for (int i = 0; i < static_cast<int>(cfg.kCooldownCycles); ++i) {
+    for (int32_t i = 0; i < static_cast<int32_t>(cfg.kCooldownCycles); ++i) {
         b.on_dispatch_cycle();
     }
     b.on_watermark(45U);

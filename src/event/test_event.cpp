@@ -400,14 +400,14 @@ COACT_TEST(event_pool_mp_alloc_sc_reclaim_lockfree)
     pool.init(storage.data, sizeof(storage.data),
               coact::make_spin_critical_section(spin));
 
-    constexpr int kThreads = 8;
-    constexpr int kRounds = 5000;
+    constexpr int32_t kThreads = 8;
+    constexpr int32_t kRounds = 5000;
     std::atomic<bool> go{false};
     std::vector<std::thread> th;
-    for (int t = 0; t < kThreads; ++t) {
+    for (int32_t t = 0; t < kThreads; ++t) {
         th.emplace_back([&]() {
             while (!go.load(std::memory_order_acquire)) { }
-            int disp = 0;
+            int32_t disp = 0;
             while (disp < kRounds) {
                 coact::Event* e = pool.alloc(1U);
                 if (nullptr == e) {

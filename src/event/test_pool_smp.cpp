@@ -132,7 +132,7 @@ COACT_TEST(smp_margin_admission_is_atomic_across_producers)
 {
     constexpr std::uint16_t kMarginCap = 4U;
     constexpr std::uint16_t kMargin = 2U;
-    constexpr int kProducers = 8;
+    constexpr int32_t kProducers = 8;
 
     PoolStorage<kBlock, kMarginCap> storage;
     coact::SpinCriticalSection spin;
@@ -176,8 +176,8 @@ COACT_TEST(smp_margin_admission_is_atomic_across_producers)
 
 COACT_TEST(smp_mp_alloc_single_reclaimer_stress)
 {
-    constexpr int kProducers = 4;
-    constexpr int kRounds = 4000;
+    constexpr int32_t kProducers = 4;
+    constexpr int32_t kRounds = 4000;
 
     PoolStorage<kBlock, kCap> storage;
     coact::SpinCriticalSection spin;
@@ -189,15 +189,15 @@ COACT_TEST(smp_mp_alloc_single_reclaimer_stress)
     std::atomic<bool> go{false};
     std::atomic<bool> producers_done{false};
     std::atomic<std::uint32_t> next_serial{1U};
-    std::atomic<int> failures{0};
+    std::atomic<int32_t> failures{0};
 
     // Multi-producer: alloc, stamp a unique probe, inc ref, hand to reclaimer.
     std::vector<std::thread> producers;
-    for (int t = 0; t < kProducers; ++t) {
+    for (int32_t t = 0; t < kProducers; ++t) {
         producers.emplace_back([&]() {
             while (!go.load(std::memory_order_acquire)) {
             }
-            for (int i = 0; i < kRounds; ++i) {
+            for (int32_t i = 0; i < kRounds; ++i) {
                 coact::Event* e = pool.alloc(0x5000U);
                 if (nullptr == e) {
                     std::this_thread::yield();   // transiently exhausted
@@ -254,7 +254,7 @@ COACT_TEST(smp_mp_alloc_single_reclaimer_stress)
     reclaimer.join();
 
     CHECK_EQ(failures.load(std::memory_order_relaxed), 0);
-    CHECK_EQ(static_cast<long>(inbox.outstanding.size()), 0L);   // nothing left in flight
+    CHECK_EQ(static_cast<int64_t>(inbox.outstanding.size()), 0L);   // nothing left in flight
     CHECK_EQ(pool.used(), 0U);                                   // every block returned
 }
 
@@ -262,8 +262,8 @@ COACT_TEST(smp_reclaim_all_after_stress)
 {
     // After the storm, the free list must still be intact: a full re-alloc
     // succeeds (nothing lost) and drains again (nothing duplicated).
-    constexpr int kProducers = 2;
-    constexpr int kRounds = 2000;
+    constexpr int32_t kProducers = 2;
+    constexpr int32_t kRounds = 2000;
 
     PoolStorage<kBlock, kCap> storage;
     coact::SpinCriticalSection spin;
@@ -277,11 +277,11 @@ COACT_TEST(smp_reclaim_all_after_stress)
     std::atomic<std::uint32_t> next_serial{1000U};
 
     std::vector<std::thread> producers;
-    for (int t = 0; t < kProducers; ++t) {
+    for (int32_t t = 0; t < kProducers; ++t) {
         producers.emplace_back([&]() {
             while (!go.load(std::memory_order_acquire)) {
             }
-            for (int i = 0; i < kRounds; ++i) {
+            for (int32_t i = 0; i < kRounds; ++i) {
                 coact::Event* e = pool.alloc(1U);
                 if (nullptr == e) {
                     std::this_thread::yield();

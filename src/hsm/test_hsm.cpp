@@ -28,7 +28,7 @@ static bool expect_abort(Fn&& fn)
     if (pid < 0) {
         return false;
     }
-    int status = 0;
+    int32_t status = 0;
     waitpid(pid, &status, 0);
     return WIFSIGNALED(status) && (SIGABRT == WTERMSIG(status));
 }

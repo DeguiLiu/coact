@@ -99,13 +99,13 @@ COACT_TEST(posix_mutex_serializes_two_threads)
     coact::pal::Posix pal;
     PosixMutexHandle m;
     CHECK(pal.mutex_init(m));
-    std::atomic<int> counter{0};
-    std::atomic<int> max_overlap{0};
+    std::atomic<int32_t> counter{0};
+    std::atomic<int32_t> max_overlap{0};
     std::atomic<bool> go{false};
 
     struct Ctx {
-        std::atomic<int>* counter;
-        std::atomic<int>* max_overlap;
+        std::atomic<int32_t>* counter;
+        std::atomic<int32_t>* max_overlap;
         std::atomic<bool>* go;
         PosixMutexHandle* m;
     } ctx{&counter, &max_overlap, &go, &m};
@@ -117,7 +117,7 @@ COACT_TEST(posix_mutex_serializes_two_threads)
         Ctx* c = static_cast<Ctx*>(a);
         while (!c->go->load(std::memory_order_relaxed)) { }
         c->m->pal->mutex_lock(*c->m);
-        const int inside = ++*c->counter;
+        const int32_t inside = ++*c->counter;
         /* If another thread ever overlapped, counter would exceed the max
            single-section overlap we allow (2). */
         if (inside > *c->max_overlap) { *c->max_overlap = inside; }
@@ -128,7 +128,7 @@ COACT_TEST(posix_mutex_serializes_two_threads)
         Ctx* c = static_cast<Ctx*>(a);
         while (!c->go->load(std::memory_order_relaxed)) { }
         c->m->pal->mutex_lock(*c->m);
-        const int inside = ++*c->counter;
+        const int32_t inside = ++*c->counter;
         if (inside > *c->max_overlap) { *c->max_overlap = inside; }
         --*c->counter;
         c->m->pal->mutex_unlock(*c->m);
@@ -181,10 +181,10 @@ COACT_TEST(posix_cond_handoff)
 COACT_TEST(posix_thread_create_join)
 {
     coact::pal::Posix pal;
-    std::atomic<int> ran{0};
+    std::atomic<int32_t> ran{0};
     PosixThreadHandle t{};
     CHECK(pal.thread_create(t, [](void* a) {
-        static_cast<std::atomic<int>*>(a)->store(1, std::memory_order_release);
+        static_cast<std::atomic<int32_t>*>(a)->store(1, std::memory_order_release);
     }, &ran));
     pal.thread_join(t);
     CHECK_EQ(1, ran.load(std::memory_order_acquire));
@@ -288,10 +288,10 @@ COACT_TEST(rtthread_cond_handoff)
 COACT_TEST(rtthread_thread_create_join)
 {
     coact::pal::RtThread pal;
-    std::atomic<int> ran{0};
+    std::atomic<int32_t> ran{0};
     RtThreadThreadHandle t{};
     CHECK(pal.thread_create(t, [](void* a) {
-        static_cast<std::atomic<int>*>(a)->store(1, std::memory_order_release);
+        static_cast<std::atomic<int32_t>*>(a)->store(1, std::memory_order_release);
     }, &ran));
     pal.thread_join(t);
     CHECK_EQ(1, ran.load(std::memory_order_acquire));
@@ -308,8 +308,8 @@ struct PalWorkerProbe {
     typename PalT::MutexHandle mtx;
     typename PalT::CondHandle cond;
     typename PalT::ThreadHandle thread;
-    int job{0};                        /* guarded by mtx */
-    std::atomic<int> executed{0};      /* cross-thread read by the test loop */
+    int32_t job{0};                        /* guarded by mtx */
+    std::atomic<int32_t> executed{0};      /* cross-thread read by the test loop */
     bool running{false};               /* guarded by mtx */
 
     bool start(PalT& p)
@@ -326,7 +326,7 @@ struct PalWorkerProbe {
     }
 
     /* Producer side (Dispatcher thread): reject when busy. */
-    bool submit(int j)
+    bool submit(int32_t j)
     {
         pal->mutex_lock(mtx);
         bool ok = false;
@@ -358,7 +358,7 @@ private:
             while (running && 0 == job) {
                 cond.pal->cond_wait(cond, mtx, 0U);
             }
-            const int j = job;
+            const int32_t j = job;
             job = 0;
             const bool alive = running;
             pal->mutex_unlock(mtx);
@@ -395,7 +395,7 @@ COACT_TEST(rtthread_signal_before_wait_no_lost_wake)
        value of 0 would look like an empty slot and the worker predicate
        would never become true (a real deadlock, but of the test design,
        not the PAL). */
-    for (int i = 1; i <= 200; ++i) {
+    for (int32_t i = 1; i <= 200; ++i) {
         CHECK(w.submit(i));
         while (w.executed.load() < i) { }
     }
@@ -461,10 +461,10 @@ struct SpscWorkerProbe {
     PalT* pal;
     typename PalT::SemHandle wake;
     typename PalT::ThreadHandle thread;
-    coact::SpscRing<int, 4U> ring;
+    coact::SpscRing<int32_t, 4U> ring;
     std::atomic<uint32_t> executed{0U};
     std::atomic<bool> running{false};
-    int last_job{-1};
+    int32_t last_job{-1};
 
     bool start(PalT& p)
     {
@@ -477,7 +477,7 @@ struct SpscWorkerProbe {
     }
 
     /* Producer side: try_push rejects on a full ring, no lock anywhere. */
-    bool submit(int j)
+    bool submit(int32_t j)
     {
         return ring.try_push(std::move(j));
     }
@@ -493,7 +493,7 @@ private:
     void run()
     {
         for (;;) {
-            int j = 0;
+            int32_t j = 0;
             while (ring.try_pop(j)) {
                 last_job = j;
                 executed.fetch_add(1U, std::memory_order_relaxed);

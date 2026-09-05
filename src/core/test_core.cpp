@@ -23,7 +23,7 @@
 /* =========================================================================
  * Shared HSM fixtures (file scope so all tests share them).
  * ========================================================================= */
-struct Ctx { int dispatch_count; };
+struct Ctx { int32_t dispatch_count; };
 
 static void s0_entry(Ctx&) {}
 static void s0_exit(Ctx&)  {}
@@ -140,8 +140,8 @@ COACT_TEST(coordinator_unknown_target_rejected)
     coact::Event e = static_evt(1U);
     coact::EventQos qos{false, false};
     coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::RejectedState),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::RejectedState),
+             static_cast<int32_t>(r.disposition));
 }
 
 /* =========================================================================
@@ -172,8 +172,8 @@ COACT_TEST(coordinator_normal_submit_queued)
 
     coact::EventQos qos{false, false};
     coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(1U, static_cast<unsigned>(e->ref_ctr));
 }
 
@@ -199,10 +199,10 @@ COACT_TEST(coordinator_direct_dispatch)
     coact::Event e = static_evt(1U);
     coact::EventQos qos{false, false};
     coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(r.disposition));
-    CHECK_EQ(static_cast<int>(coact::AoRunState::Idle),
-             static_cast<int>(ao.lease().state()));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::AoRunState::Idle),
+             static_cast<int32_t>(ao.lease().state()));
 }
 
 COACT_TEST(coordinator_dynamic_unknown_and_direct_consume_allocated_reference)
@@ -224,8 +224,8 @@ COACT_TEST(coordinator_dynamic_unknown_and_direct_consume_allocated_reference)
     CHECK_EQ(rejected->ref_ctr, 1U);
     const coact::SubmitResult rejected_result = coord.submit_from_task(
         coact::TargetId(1U), rejected, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::RejectedState),
-             static_cast<int>(rejected_result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::RejectedState),
+             static_cast<int32_t>(rejected_result.disposition));
     CHECK_EQ(pool.used(), 0U);
 
     AoDirect ao(kStates, 3U, kTrans, 2U, 1, 4U);
@@ -237,8 +237,8 @@ COACT_TEST(coordinator_dynamic_unknown_and_direct_consume_allocated_reference)
     CHECK_EQ(direct->ref_ctr, 1U);
     const coact::SubmitResult direct_result = coord.submit_from_task(
         coact::TargetId(1U), direct, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(direct_result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(direct_result.disposition));
     CHECK_EQ(pool.used(), 0U);
 }
 
@@ -302,8 +302,8 @@ COACT_TEST(runtime_bind_at_keeps_static_target_before_initialization)
     coact::Event event = static_evt(1U);
     const coact::SubmitResult result = rt.coordinator().submit_from_task(
         kControlTarget, &event, coact::EventQos{false, false});
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(result.disposition));
 }
 
 /* =========================================================================
@@ -329,8 +329,8 @@ COACT_TEST(coordinator_breaker_l2_drops_noncritical)
     coact::Event e = static_evt(1U);
     coact::EventQos qos{false, false};
     coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::DroppedOverload),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::DroppedOverload),
+             static_cast<int32_t>(r.disposition));
 }
 
 }  // namespace

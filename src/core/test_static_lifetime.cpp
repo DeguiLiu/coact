@@ -59,7 +59,7 @@ struct BoardCfg {
 
 /* Static fixture: the AO, PAL, pool and Runtime are globals (the .bss
    deployment pattern recommended for RT-Thread; never a task-stack auto). */
-static std::atomic<int> g_counter{0};
+static std::atomic<int32_t> g_counter{0};
 
 struct StaticCtx {};
 static void st_noop_entry(StaticCtx&) {}
@@ -121,13 +121,13 @@ COACT_TEST(static_runtime_end_to_end)
 
     coact::EventQos qos{false, false};
     /* <= Normal capacity (16): a larger burst would be RejectedFull. */
-    static constexpr int kN = 12;
-    for (int i = 0; i < kN; ++i) {
+    static constexpr int32_t kN = 12;
+    for (int32_t i = 0; i < kN; ++i) {
         coact::Event* e = g_pool.alloc(1U);
         REQUIRE(e != nullptr);
         g_rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_counter.load() >= kN) { break; }
         usleep(5000);
     }

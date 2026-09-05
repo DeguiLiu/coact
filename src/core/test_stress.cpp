@@ -32,8 +32,8 @@
  * declared inside a namespace). Counts allocations so we can assert the hot
  * path (submit / dispatcher / gc) performs no heap allocation after setup.
  * ------------------------------------------------------------------------- */
-static std::atomic<long> g_alloc_count{0};
-static std::atomic<long> g_live_allocs{0};
+static std::atomic<int64_t> g_alloc_count{0};
+static std::atomic<int64_t> g_live_allocs{0};
 
 void* operator new(std::size_t n)
 {
@@ -59,7 +59,7 @@ namespace {
 /* ---------------------------------------------------------------------------
  * AO HSM fixture: single state, signal 1 counts, signal 2 re-enters same.
  * ------------------------------------------------------------------------- */
-struct StressCtx { std::atomic<long>* count; };
+struct StressCtx { std::atomic<int64_t>* count; };
 static void s_noop_entry(StressCtx&) {}
 static void s_noop_exit(StressCtx&)  {}
 static void s_count(StressCtx& c, const coact::Event&)
@@ -100,7 +100,7 @@ COACT_TEST(stress_multiproducer_concurrent)
     g_alloc_count.store(0L);
     g_live_allocs.store(0L);
 
-    std::atomic<long> counter{0};
+    std::atomic<int64_t> counter{0};
     StressAo ao(sStates, 2U, sTrans, 1U, 1, 4U);
     ao.context() = StressCtx{&counter};
 
@@ -117,14 +117,14 @@ COACT_TEST(stress_multiproducer_concurrent)
     CHECK(rt.initialize());
     rt.start();
 
-    constexpr int kProducers = 4;
-    constexpr int kPerProducer = 200;   /* 800 total > capacity: stresses refill */
+    constexpr int32_t kProducers = 4;
+    constexpr int32_t kPerProducer = 200;   /* 800 total > capacity: stresses refill */
     coact::EventQos qos{false, false};
 
     std::vector<std::thread> threads;
-    for (int p = 0; p < kProducers; ++p) {
+    for (int32_t p = 0; p < kProducers; ++p) {
         threads.emplace_back([&rt, &pool, &qos]() {
-            for (int i = 0; i < kPerProducer; ++i) {
+            for (int32_t i = 0; i < kPerProducer; ++i) {
                 coact::Event* e = pool.alloc(1U);
                 if (nullptr == e) {
                     /* Pool temporarily exhausted during dispatcher drain;
@@ -143,8 +143,8 @@ COACT_TEST(stress_multiproducer_concurrent)
     for (auto& t : threads) { t.join(); }
 
     /* Wait for drain. */
-    const long expect = static_cast<long>(kProducers * kPerProducer);
-    for (int w = 0; w < 500; ++w) {
+    const int64_t expect = static_cast<int64_t>(kProducers * kPerProducer);
+    for (int32_t w = 0; w < 500; ++w) {
         if (counter.load() >= expect) { break; }
         usleep(5000);
     }
@@ -196,8 +196,8 @@ COACT_TEST(stress_overload_drops_noncritical)
     e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
     coact::EventQos qos{false, false};
     coact::SubmitResult r = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::DroppedOverload),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::DroppedOverload),
+             static_cast<int32_t>(r.disposition));
 }
 
 /* =========================================================================
@@ -219,7 +219,7 @@ COACT_TEST(stress_zero_heap_hot_path)
     g_alloc_count.store(0L);
     g_live_allocs.store(0L);
 
-    std::atomic<long> counter{0};
+    std::atomic<int64_t> counter{0};
     DirectAo ao(sStates, 2U, sTrans, 1U, 1, 4U);
     ao.context() = StressCtx{&counter};
 
@@ -238,15 +238,15 @@ COACT_TEST(stress_zero_heap_hot_path)
 
     /* Direct path: submit signals 1..N, each dispatched in-line. */
     coact::EventQos qos{false, false};
-    constexpr int kIters = 1000;
-    for (int i = 0; i < kIters; ++i) {
+    constexpr int32_t kIters = 1000;
+    for (int32_t i = 0; i < kIters; ++i) {
         coact::Event* e = pool.alloc(1U);
         REQUIRE(e != nullptr);
         rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
     }
     rt.stop();
 
-    CHECK_EQ(kIters, static_cast<int>(counter.load()));
+    CHECK_EQ(kIters, static_cast<int32_t>(counter.load()));
     /* Runtime/coordinator/dispatcher construction + pool init all happened
        before this loop; the hot path (submit/direct/gc) must not allocate
        beyond the trivial baseline. Assert no live allocations were created. */

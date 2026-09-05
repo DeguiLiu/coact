@@ -115,7 +115,7 @@ struct Rig {
 
     void drain_pending()
     {
-        for (int w = 0; w < 2000; ++w) {
+        for (int32_t w = 0; w < 2000; ++w) {
             if (0U == ao.pending().load()) {
                 break;
             }

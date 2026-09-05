@@ -97,7 +97,7 @@ struct Rig {
     /* Event-count-based drain (no fixed sleeps). */
     void drain(unsigned expected_events)
     {
-        for (int spin = 0; spin < 20000; ++spin) {
+        for (int32_t spin = 0; spin < 20000; ++spin) {
             if (ao.context().group_events >= expected_events) {
                 break;
             }

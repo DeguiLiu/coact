@@ -23,12 +23,12 @@
 namespace {
 
 /* Global counters incremented by AO actions (no context access needed). */
-static std::atomic<int> g_counter_a{0};
-static std::atomic<int> g_counter_b{0};
+static std::atomic<int32_t> g_counter_a{0};
+static std::atomic<int32_t> g_counter_b{0};
 static std::atomic<bool> g_trace_dispatch_captured{false};
 
 /* B-handler-run probe for the nested-serialization test (see below). */
-static std::atomic<int> g_nested_b_ran{0};
+static std::atomic<int32_t> g_nested_b_ran{0};
 template <typename AoT>
 static bool g_counter_probe(AoT*)
 {
@@ -120,8 +120,8 @@ COACT_TEST(integration_two_ao_fifty_events_each)
     rt.start();
 
     coact::EventQos qos{false, false};
-    static constexpr int kN = 25;  /* 25 × 2 AOs = 50 events < kCAP=64 */
-    for (int i = 0; i < kN; ++i) {
+    static constexpr int32_t kN = 25;  /* 25 × 2 AOs = 50 events < kCAP=64 */
+    for (int32_t i = 0; i < kN; ++i) {
         coact::Event* ea = pool.alloc(1U);
         REQUIRE(ea != nullptr);
         rt.coordinator().submit_from_task(coact::TargetId(1U), ea, qos);
@@ -132,7 +132,7 @@ COACT_TEST(integration_two_ao_fifty_events_each)
     }
 
     /* Wait up to 1 s for dispatcher to drain. */
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_counter_a.load() >= kN && g_counter_b.load() >= kN) {
             break;
         }
@@ -251,11 +251,11 @@ COACT_TEST(nested_submit_from_handler_serializes)
     const coact::SubmitResult r =
         rt.coordinator().submit_from_task(coact::TargetId(1U), ea,
                                           coact::EventQos{false, false});
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
 
     /* Wait until B's handler ran (or 1 s deadline). */
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_counter_probe(&ao_b)) {
             break;
         }
@@ -349,7 +349,7 @@ COACT_TEST(dispatcher_hang_is_externally_detectable)
                                       coact::EventQos{false, false});
 
     /* Wait until the handler is inside its spin (1 s deadline). */
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_hang_entered.load(std::memory_order_acquire)) {
             break;
         }
@@ -436,11 +436,11 @@ COACT_TEST(dispatcher_trace_dispatch_records)
     const coact::SubmitResult r =
         rt.coordinator().submit_from_task(coact::TargetId(1U), ea,
                                           coact::EventQos{false, false});
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
 
     /* Wait until the Dispatcher has recorded the trace (or 1 s deadline). */
-    for (int w = 0; w < 200; ++w) {
+    for (int32_t w = 0; w < 200; ++w) {
         if (g_trace_dispatch_captured.load(std::memory_order_acquire)) {
             break;
         }
@@ -492,16 +492,16 @@ COACT_TEST(dispatcher_samples_partition_watermarks)
        The Dispatcher's batch-8 drain is slower than the alloc+submit burst,
        so the backlog builds past 80% within a few rounds. */
     bool crossed = false;
-    int submitted = 0;
-    for (int round = 0; round < 200; ++round) {
+    int32_t submitted = 0;
+    for (int32_t round = 0; round < 200; ++round) {
         while (pool.used() < 60U) {
             coact::Event* ev = pool.alloc(1U);
             REQUIRE(ev != nullptr);
             const coact::SubmitResult rr =
                 rt.coordinator().submit_from_task(
                     coact::TargetId(1U), ev, coact::EventQos{false, false});
-            REQUIRE_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-                       static_cast<int>(rr.disposition));
+            REQUIRE_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+                       static_cast<int32_t>(rr.disposition));
             ++submitted;
         }
         if (coact_test::relaxed(

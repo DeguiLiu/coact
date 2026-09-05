@@ -86,7 +86,7 @@ COACT_TEST(worker_aop_alloc_reject_fires_fault)
     w.bind_fault(probe.ops());
     REQUIRE(w.start(&pool, &rt));
     REQUIRE(w.submit(1U));
-    for (int i = 0; i < 100; ++i) {
+    for (int32_t i = 0; i < 100; ++i) {
         if (w.executed_count() >= 1U) { break; }
         pal.sleep_us(1000);
     }
@@ -118,7 +118,7 @@ COACT_TEST(worker_aop_dropped_completion_fires_fault)
     w.bind_fault(probe.ops());
     REQUIRE(w.start(&pool, &rt));
     REQUIRE(w.submit(1U));
-    for (int i = 0; i < 100; ++i) {
+    for (int32_t i = 0; i < 100; ++i) {
         if (w.executed_count() >= 1U) { break; }
         pal.sleep_us(1000);
     }

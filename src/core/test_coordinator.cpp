@@ -46,7 +46,7 @@ struct SmallCfg {
    in_thread drives the dispatcher-context answer: the coordinator must never
    take the direct path from the Dispatcher thread (nested RTC guard). */
 struct CountingPal {
-    int signals = 0;
+    int32_t signals = 0;
     bool in_thread = false;
     uint64_t monotonic_ns() const noexcept { return 0ULL; }
     coact::ExecutionContext current_context() const noexcept
@@ -61,7 +61,7 @@ struct CountingPal {
 };
 
 /* Minimal staged-only AO (never direct, so the coordinator always enqueues). */
-struct Ctx { int dummy; };
+struct Ctx { int32_t dummy; };
 static void c_noop_entry(Ctx&) {}
 static void c_noop_exit(Ctx&)  {}
 static bool c_ok(const Ctx&, const coact::Event&) { return true; }
@@ -121,20 +121,20 @@ COACT_TEST(coordinator_coalesces_wake_after_dispatcher_arms_wait)
 
     /* Dispatcher mid-batch: the set latch suppresses redundant wakeups. */
     coact::SubmitResult r1 = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r1.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r1.disposition));
     CHECK_EQ(0, pal.signals);
 
     /* Arming the wait clears the latch; exactly the first producer signals. */
     staging.arm_dispatcher_wait();
     coact::SubmitResult r2 = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r2.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r2.disposition));
     CHECK_EQ(1, pal.signals);
 
     coact::SubmitResult r3 = coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r3.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r3.disposition));
     CHECK_EQ(1, pal.signals);
 }
 
@@ -185,7 +185,7 @@ struct ContentionAo final : coact::AoBase {
 };
 
 struct OverBudgetPal {
-    int signals = 0;
+    int32_t signals = 0;
     uint64_t now = 0;
     uint64_t monotonic_ns() noexcept
     {
@@ -205,7 +205,7 @@ struct OverBudgetPal {
 };
 
 struct MaxDirectDepthPal {
-    int signals = 0;
+    int32_t signals = 0;
     uint64_t monotonic_ns() const noexcept { return 0ULL; }
     coact::ExecutionContext current_context() const noexcept
     {
@@ -236,17 +236,17 @@ COACT_TEST(coordinator_direct_over_budget_trips_breaker)
         staging, registry, monitor, breaker, pal);
     CHECK(registry.bind(&ao, ao.logical_prio()));
 
-    for (int i = 0; i < 3; ++i) {
+    for (int32_t i = 0; i < 3; ++i) {
         coact::Event e{};
         e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
         const coact::EventQos qos{false, false};
         const coact::SubmitResult r =
             coord.submit_from_task(coact::TargetId(1U), &e, qos);
-        CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-                 static_cast<int>(r.disposition));
+        CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+                 static_cast<int32_t>(r.disposition));
     }
-    CHECK_EQ(static_cast<int>(coact::BreakerLevel::BrokenL1),
-             static_cast<int>(breaker.level()));
+    CHECK_EQ(static_cast<int32_t>(coact::BreakerLevel::BrokenL1),
+             static_cast<int32_t>(breaker.level()));
 }
 
 COACT_TEST(coordinator_direct_contention_failure_records_elapsed)
@@ -270,8 +270,8 @@ COACT_TEST(coordinator_direct_contention_failure_records_elapsed)
     const coact::SubmitResult r =
         coord.submit_from_task(coact::TargetId(1U), &e, qos);
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(coact_test::relaxed(
                  monitor.ao(coact::TargetId(1U)).lease_contention), 1U);
     CHECK_EQ(coact_test::relaxed(
@@ -302,8 +302,8 @@ COACT_TEST(coordinator_direct_depth_limit_forces_staging)
     const coact::SubmitResult result =
         coord.submit_from_task(coact::TargetId(1U), &e,
                                coact::EventQos{false, false});
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(result.disposition));
     CHECK_EQ(1, pal.signals);
 }
 
@@ -327,7 +327,7 @@ COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
     REQUIRE(registry.bind_at(coact::TargetId(2U), other, other.logical_prio()));
 
     const coact::EventQos qos{false, false};
-    for (int i = 0; i < 3; ++i) {
+    for (int32_t i = 0; i < 3; ++i) {
         coact::Event event{};
         event.signal = 1U;
         const coact::SubmitResult result =
@@ -353,7 +353,7 @@ COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
  * bypassing serialization. The coordinator consults PalT::in_dispatcher_thread.
  * ========================================================================= */
 struct DispatcherContextPal {
-    int signals = 0;
+    int32_t signals = 0;
     uint64_t monotonic_ns() const noexcept { return 0ULL; }
     coact::ExecutionContext current_context() const noexcept
     {
@@ -392,8 +392,8 @@ COACT_TEST(coordinator_dispatcher_context_forces_staging)
     const coact::EventQos qos{false, false};
     const coact::SubmitResult r =
         coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(1, pal.signals);
 }
 
@@ -420,8 +420,8 @@ COACT_TEST(coordinator_task_context_keeps_direct)
     const coact::EventQos qos{false, false};
     const coact::SubmitResult r =
         coord.submit_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(r.disposition));
 }
 
 COACT_TEST(coordinator_submit_queued_from_task_bypasses_direct)
@@ -448,8 +448,8 @@ COACT_TEST(coordinator_submit_queued_from_task_bypasses_direct)
     const coact::EventQos qos{false, false};
     const coact::SubmitResult r =
         coord.submit_queued_from_task(coact::TargetId(1U), &e, qos);
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(1, pal.signals);
 }
 
@@ -533,8 +533,8 @@ COACT_TEST(coordinator_trace_submit_records_disposition)
     const coact::SubmitResult r =
         coord.submit_from_task(coact::TargetId(1U), &e, qos);
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(captured.last_target_raw, 1U);
     CHECK_EQ(captured.last_signal, 7U);
     CHECK_EQ(captured.last_disposition,
@@ -569,8 +569,8 @@ COACT_TEST(coordinator_trace_lease_contention_records_elapsed)
     const coact::SubmitResult r =
         coord.submit_from_task(coact::TargetId(1U), &e, qos);
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(captured.last_target_raw, 1U);
     CHECK_EQ(captured.last_kind, 1U);
     CHECK_EQ(captured.last_elapsed, 2000ULL);
@@ -607,8 +607,8 @@ COACT_TEST(coordinator_trace_direct_success_records_dispatch)
     const coact::SubmitResult r =
         coord.submit_from_task(coact::TargetId(1U), &e, qos);
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(captured.last_path, 0U);
     CHECK_EQ(captured.last_target_raw, 1U);
     /* OverBudgetPal advances 2000ns per sample, past the 1000ns RTC budget:
@@ -649,8 +649,8 @@ COACT_TEST(coordinator_trace_submit_from_isr_carries_isr_flag)
     const coact::SubmitResult r =
         coord.try_submit_from_isr(coact::TargetId(1U), &e, qos);
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(r.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(r.disposition));
     CHECK_EQ(captured.last_signal, 7U);
     CHECK_EQ(captured.last_disposition,
              static_cast<uint8_t>(coact::SubmitDisposition::Queued));

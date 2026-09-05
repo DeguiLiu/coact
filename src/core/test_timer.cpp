@@ -25,7 +25,7 @@
 
 namespace {
 
-static std::atomic<int> g_timer_fired{0};
+static std::atomic<int32_t> g_timer_fired{0};
 
 struct TimerCtx {};
 
@@ -63,9 +63,9 @@ using Sched =
 
 alignas(16) static unsigned char g_storage[16U * 64U + 16U];
 
-static void drain(int expected, Rt& rt)
+static void drain(int32_t expected, Rt& rt)
 {
-    for (int w = 0; w < 2000; ++w) {
+    for (int32_t w = 0; w < 2000; ++w) {
         if (g_timer_fired.load() >= expected) {
             break;
         }
@@ -116,7 +116,7 @@ COACT_TEST(timer_periodic_manual_tick)
     REQUIRE(static_cast<bool>(id));
     CHECK_EQ(1U, rig.sched.task_count());
 
-    for (int i = 0; i < 4; ++i) {
+    for (int32_t i = 0; i < 4; ++i) {
         rig.clock.advance(10U);   // exactly one period per step
         rig.sched.poll();
     }
@@ -128,7 +128,7 @@ COACT_TEST(timer_periodic_manual_tick)
     CHECK_EQ(0U, rig.pool.used());   /* all events gc'd back */
 }
 
-/* Periodic long stall: 10 ms period, advance 45 ms in ONE step -> still
+/* Periodic int64_t stall: 10 ms period, advance 45 ms in ONE step -> still
    exactly one event (missed periods are collapsed, no burst). */
 COACT_TEST(timer_periodic_catchup_no_burst)
 {
@@ -207,7 +207,7 @@ COACT_TEST(timer_error_paths_and_slot_reuse)
           bad.error());
 
     auto last_id = coact::kInvalidTimerTaskId;
-    for (int i = 0; i < 4; ++i) {   /* capacity is 4 slots */
+    for (int32_t i = 0; i < 4; ++i) {   /* capacity is 4 slots */
         auto id = rig.sched.schedule_once(coact::TargetId(1U), 1U, 100U, qos);
         REQUIRE(static_cast<bool>(id));
         last_id = id.value();

@@ -137,7 +137,7 @@ COACT_TEST(stackful_coroutine_past_deadline_wakes)
     Coroutine* c = exec.arm(&body_fast, &st, ResumeArg{});
     REQUIRE(nullptr != c);
 
-    for (int pass = 0; pass < 8; ++pass) {
+    for (int32_t pass = 0; pass < 8; ++pass) {
         const uint16_t live = exec.run_once();
         if (0U == live) {
             break;

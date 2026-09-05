@@ -82,7 +82,7 @@ COACT_TEST(expected_is_available_from_vocabulary)
 /* ---------------------------------------------------------------------- */
 COACT_TEST(scope_guard_fires_on_destruction)
 {
-    int fired = 0;
+    int32_t fired = 0;
     {
         coact::ScopeGuard guard([&fired]() { fired++; });
         CHECK(fired == 0);
@@ -92,7 +92,7 @@ COACT_TEST(scope_guard_fires_on_destruction)
 
 COACT_TEST(scope_guard_dismiss_suppresses_action)
 {
-    int fired = 0;
+    int32_t fired = 0;
     {
         coact::ScopeGuard guard([&fired]() { fired++; });
         guard.dismiss();
@@ -102,7 +102,7 @@ COACT_TEST(scope_guard_dismiss_suppresses_action)
 
 COACT_TEST(scope_guard_move_transfers_armed_state)
 {
-    int fired = 0;
+    int32_t fired = 0;
     {
         coact::ScopeGuard first([&fired]() { fired++; });
         coact::ScopeGuard second(std::move(first));
@@ -117,7 +117,7 @@ COACT_TEST(scope_guard_move_transfers_armed_state)
 namespace {
 
 struct MoveOnly {
-    static int destructed;
+    static int32_t destructed;
     uint32_t value = 0U;
 
     explicit MoveOnly(uint32_t v) noexcept : value(v) {}
@@ -135,10 +135,10 @@ struct MoveOnly {
     MoveOnly& operator=(const MoveOnly&) = delete;
     ~MoveOnly() { destructed++; }
 };
-int MoveOnly::destructed = 0;
+int32_t MoveOnly::destructed = 0;
 
 uint32_t dbl(uint32_t x) { return x * 2U; }
-int add_one(int x) { return x + 1; }
+int32_t add_one(int32_t x) { return x + 1; }
 
 }  // namespace
 
@@ -185,7 +185,7 @@ COACT_TEST(optional_empty_and_value_or)
 COACT_TEST(fixed_function_erases_and_invokes)
 {
     uint32_t captured = 0U;
-    int addition = 3;
+    int32_t addition = 3;
     coact::FixedFunction<uint32_t(uint32_t)> fn([&captured, addition](uint32_t x) {
         captured = x + static_cast<uint32_t>(addition);
         return captured;
@@ -197,7 +197,7 @@ COACT_TEST(fixed_function_erases_and_invokes)
 
 COACT_TEST(fixed_function_move_transfers_callable)
 {
-    int counter = 0;
+    int32_t counter = 0;
     coact::FixedFunction<void()> src([&counter]() { counter++; });
     coact::FixedFunction<void()> dst(std::move(src));
     dst();
@@ -216,11 +216,11 @@ COACT_TEST(fixed_function_accepts_plain_function_pointer)
 /* ---------------------------------------------------------------------- */
 COACT_TEST(function_ref_views_lambda_and_function)
 {
-    int scale = 2;
-    const auto lambda = [&scale](int x) { return x * scale; };
-    const coact::function_ref<int(int)> as_view(lambda);
+    int32_t scale = 2;
+    const auto lambda = [&scale](int32_t x) { return x * scale; };
+    const coact::function_ref<int32_t(int32_t)> as_view(lambda);
     CHECK(as_view(5) == 10);
-    const coact::function_ref<int(int)> fn_view(add_one);
+    const coact::function_ref<int32_t(int32_t)> fn_view(add_one);
     CHECK(fn_view(5) == 6);
     scale = 3;
     CHECK(as_view(5) == 15);   /* the view observes the live capture */
@@ -277,14 +277,14 @@ COACT_TEST(fixed_string_truncate_constructor)
 /* ---------------------------------------------------------------------- */
 COACT_TEST(fixed_vector_push_back_and_iteration)
 {
-    coact::FixedVector<int, 4> v;
+    coact::FixedVector<int32_t, 4> v;
     CHECK(v.empty());
     CHECK(v.push_back(1));
     CHECK(v.push_back(2));
     CHECK(v.push_back(3));
     CHECK(v.size() == 3U);
-    int sum = 0;
-    for (int e : v) {
+    int32_t sum = 0;
+    for (int32_t e : v) {
         sum += e;
     }
     CHECK(sum == 6);
@@ -296,7 +296,7 @@ COACT_TEST(fixed_vector_push_back_and_iteration)
 
 COACT_TEST(fixed_vector_capacity_exhaustion_rejects)
 {
-    coact::FixedVector<int, 2> v;
+    coact::FixedVector<int32_t, 2> v;
     CHECK(v.push_back(1));
     CHECK(v.push_back(2));
     CHECK(v.full());
