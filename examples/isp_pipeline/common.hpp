@@ -172,7 +172,7 @@ inline constexpr uint16_t kEvtTraceDispatch = 0x0101U;  // a0=elapsed_lo a1=elap
 inline constexpr uint16_t kEvtTraceLease    = 0x0102U;  // a0=kind a1=elapsed_lo a2=elapsed_hi a3=0
 inline constexpr uint16_t kEvtWorkerExec    = 0x0103U;  // a0=worker_id a1=result a2=elapsed_lo
 inline constexpr uint16_t kEvtWorkerFault   = 0x0104U;  // a0=worker_id a1=result a2=rejects a3=priority
-inline constexpr uint16_t kEvtWatermarkFault = 0x0105U; // a0=0 a1=partition a2=pct a3=priority
+inline constexpr uint16_t kEvtWatermarkFault = 0x0105U; // a0=partition a1=pct a2=priority
 
 // ---------------------------------------------------------------------------
 // Mode table (mirror of RS500 app_fill_preview_cmd_by_mode).
