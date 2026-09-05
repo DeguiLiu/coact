@@ -53,7 +53,7 @@ struct SlowBatchConfig : Config {
 using SlowStagingT = coact::Staging<SlowBatchConfig, coact::pal::Posix::QueueBackend>;
 
 struct Ctx {
-    std::atomic<int> count{0};
+    std::atomic<int32_t> count{0};
 };
 
 static void on_evt(Ctx& c, const coact::Event&) noexcept
@@ -94,8 +94,8 @@ struct DirectTraits {
 using DirectTestAo = coact::Ao<Ctx, coact::Hsm<Ctx>, DirectTraits>;
 
 struct ContendedCtx {
-    std::atomic<int> direct_count{0};
-    std::atomic<int> queued_count{0};
+    std::atomic<int32_t> direct_count{0};
+    std::atomic<int32_t> queued_count{0};
     std::atomic<bool> direct_entered{false};
     std::atomic<bool> release_direct{false};
 };
@@ -369,7 +369,7 @@ static bool contention_child_succeeds(bool stop_with_deferred) noexcept
     if (pid < 0) {
         return false;
     }
-    int status = 0;
+    int32_t status = 0;
     waitpid(pid, &status, 0);
     return WIFEXITED(status) && (0 == WEXITSTATUS(status));
 }
@@ -398,8 +398,6 @@ struct ReservedFrontStaging {
     // Dispatcher per-batch watermark sampling (production wiring): this mock
     // serves a single synthetic slot, so every partition reports empty.
     uint8_t watermark(coact::Partition) const noexcept { return 0U; }
-    uint16_t size(coact::Partition) const noexcept { return 0U; }
-    uint16_t capacity(coact::Partition) const noexcept { return 0U; }
 
 private:
     coact::Event event_{1U, 0U, 0U};
@@ -423,7 +421,7 @@ struct ReservedFrontPal {
     void signal_dispatcher_from_task() noexcept {}
     void signal_dispatcher_from_isr() noexcept {}
 
-    int wait_count = 0;
+    int32_t wait_count = 0;
 
 private:
     ReservedFrontStaging& staging_;
@@ -449,8 +447,8 @@ COACT_TEST(dispatcher_normal_dispatch_releases_exactly_once)
 
     fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
 
-    constexpr int kN = 20;   // 2.5 batches of kBatchSizeMax=8
-    for (int i = 0; i < kN; ++i) {
+    constexpr int32_t kN = 20;   // 2.5 batches of kBatchSizeMax=8
+    for (int32_t i = 0; i < kN; ++i) {
         coact::Event* e = g_pool.alloc(1U);
         REQUIRE(e != nullptr);
         coact::EventQos qos{false, false};
@@ -458,7 +456,7 @@ COACT_TEST(dispatcher_normal_dispatch_releases_exactly_once)
         REQUIRE(r.disposition == coact::SubmitDisposition::Queued);
     }
 
-    for (int w = 0; w < 400; ++w) {
+    for (int32_t w = 0; w < 400; ++w) {
         if (ao.context().count.load(std::memory_order_relaxed) >= kN) {
             break;
         }
@@ -562,7 +560,7 @@ COACT_TEST(dispatcher_thread_identity_is_real_and_non_forgeable)
     REQUIRE(r.disposition == coact::SubmitDisposition::Queued);
 
     fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
-    for (int w = 0; w < 400; ++w) {
+    for (int32_t w = 0; w < 400; ++w) {
         if (seen.load(std::memory_order_relaxed)) {
             break;
         }
@@ -595,8 +593,8 @@ COACT_TEST(dispatcher_stop_drains_queued_releases_each_once)
                 coact::make_spin_critical_section(g_spin));
 
     // Five batches' worth, all queued before the dispatcher starts.
-    constexpr int kN = 40;
-    for (int i = 0; i < kN; ++i) {
+    constexpr int32_t kN = 40;
+    for (int32_t i = 0; i < kN; ++i) {
         coact::Event* e = g_pool.alloc(1U);
         REQUIRE(e != nullptr);
         coact::EventQos qos{false, false};
@@ -640,8 +638,8 @@ COACT_TEST(dispatcher_stop_rejects_late_submission_without_pool_leak)
     const coact::SubmitResult result =
         fx.coordinator.submit_from_task(target, late, qos);
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::RejectedState),
-             static_cast<int>(result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::RejectedState),
+             static_cast<int32_t>(result.disposition));
     CHECK_EQ(g_pool.used(), 0U);
     CHECK_EQ(ao.pending().load(), 0U);
 }
@@ -694,8 +692,8 @@ COACT_TEST(dispatcher_stop_drains_submission_admitted_before_close)
     producer.join();
     joiner.join();
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
-             static_cast<int>(result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Queued),
+             static_cast<int32_t>(result.disposition));
     CHECK_EQ(g_pool.used(), 0U);
     CHECK_EQ(ao.pending().load(), 0U);
 }
@@ -762,8 +760,8 @@ COACT_TEST(dispatcher_stop_last_admission_lease_wakes_direct_submit)
     joiner.join();
     const auto wake_latency = std::chrono::steady_clock::now() - release_time;
 
-    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct),
-             static_cast<int>(result.disposition));
+    CHECK_EQ(static_cast<int32_t>(coact::SubmitDisposition::Direct),
+             static_cast<int32_t>(result.disposition));
     CHECK(wake_latency < std::chrono::milliseconds(250));
     CHECK_EQ(ao.context().count.load(), 1);
     CHECK_EQ(g_pool.used(), 0U);

@@ -26,8 +26,8 @@ struct staging_has_watermark_metrics : std::false_type {};
 
 template <typename StagingT>
 struct staging_has_watermark_metrics<StagingT, std::void_t<
-    decltype(std::declval<const StagingT&>().size(Partition::High)),
-    decltype(std::declval<const StagingT&>().capacity(Partition::High))>>
+    decltype(std::declval<const StagingT&>().watermark_snapshot(
+        Partition::High))>>
     : std::true_type {};
 
 }  // namespace detail
@@ -218,18 +218,15 @@ private:
     void sample_watermarks() noexcept
     {
         if constexpr (detail::staging_has_watermark_metrics<StagingT>::value) {
+            const auto high = staging_.watermark_snapshot(Partition::High);
             monitor_.sample_watermark(
-                PriorityClass::High, staging_.watermark(Partition::High),
-                staging_.size(Partition::High),
-                staging_.capacity(Partition::High));
+                PriorityClass::High, high.pct, high.used, high.capacity);
+            const auto normal = staging_.watermark_snapshot(Partition::Normal);
             monitor_.sample_watermark(
-                PriorityClass::Normal, staging_.watermark(Partition::Normal),
-                staging_.size(Partition::Normal),
-                staging_.capacity(Partition::Normal));
+                PriorityClass::Normal, normal.pct, normal.used, normal.capacity);
+            const auto low = staging_.watermark_snapshot(Partition::Low);
             monitor_.sample_watermark(
-                PriorityClass::Low, staging_.watermark(Partition::Low),
-                staging_.size(Partition::Low),
-                staging_.capacity(Partition::Low));
+                PriorityClass::Low, low.pct, low.used, low.capacity);
         }
         else {
             monitor_.sample_watermark(

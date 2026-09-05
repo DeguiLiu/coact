@@ -219,8 +219,8 @@ using PublishedLowGapStaging = coact::Staging<PublishedLowGapCfg, PublishedLowGa
 
 // Counting critical-section pair used to drive the single-core ring backend.
 struct CsCounters {
-    int saves = 0;
-    int restores = 0;
+    int32_t saves = 0;
+    int32_t restores = 0;
 };
 CsCounters g_cs;
 
@@ -262,11 +262,11 @@ coact::Event* seq_event(uint8_t seq)
 // queue backend.
 // ---------------------------------------------------------------------------
 template <typename S>
-int drain_all(S& s, std::vector<coact::StagingSlot>& out)
+int32_t drain_all(S& s, std::vector<coact::StagingSlot>& out)
 {
     out.clear();
     coact::StagingSlot slot{};
-    int n = 0;
+    int32_t n = 0;
     s.begin_batch();
     while (s.dequeue_one(slot)) {
         out.push_back(slot);
@@ -330,7 +330,7 @@ COACT_TEST(staging_full_returns_false)
     // still all servable after the rejected enqueue
     std::vector<coact::StagingSlot> out;
     REQUIRE_EQ(drain_all(s, out),
-               static_cast<int>(TestConfig::kNormalCapacity));
+               static_cast<int32_t>(TestConfig::kNormalCapacity));
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +539,26 @@ COACT_TEST(staging_watermark_bands)
     CHECK_EQ(s.watermark(coact::Partition::Low), 0U);
 }
 
+// Watermark snapshot: one pass returns pct + used + capacity so the Dispatcher
+// does not scan the same partition twice (watermark() internally calls size(),
+// and the Dispatcher used to call size() again for the telemetry snapshot).
+COACT_TEST(staging_watermark_snapshot_matches_parts)
+{
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(0),
+                    coact::PriorityClass::Normal, 0U));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(1),
+                    coact::PriorityClass::Normal, 0U));
+
+    const auto snap = s.watermark_snapshot(coact::Partition::Normal);
+    CHECK_EQ(snap.pct, s.watermark(coact::Partition::Normal));
+    CHECK_EQ(snap.used, s.size(coact::Partition::Normal));
+    CHECK_EQ(snap.capacity, s.capacity(coact::Partition::Normal));
+    CHECK_EQ(snap.pct, 50U);
+    CHECK_EQ(snap.used, 2U);
+    CHECK_EQ(snap.capacity, TestConfig::kNormalCapacity);
+}
+
 // ---------------------------------------------------------------------------
 // Non-full load that cannot change the reference count: staging stores the
 // pointer as-is (ref_ctr stays whatever the producer left), and a consumer
@@ -612,7 +632,7 @@ COACT_TEST(staging_ring_backend)
 
     std::vector<coact::StagingSlot> out;
     REQUIRE_EQ(drain_all(s, out),
-               static_cast<int>(TestConfig::kLowCapacity));
+               static_cast<int32_t>(TestConfig::kLowCapacity));
     for (uint16_t i = 0U; i < TestConfig::kLowCapacity; ++i) {
         CHECK_EQ(out[i].event->signal,
                  static_cast<uint16_t>(i + 40U));
@@ -628,19 +648,19 @@ COACT_TEST(staging_ring_backend)
 // ---------------------------------------------------------------------------
 COACT_TEST(staging_concurrent_no_loss)
 {
-    constexpr int kProducers = 3;
-    constexpr int kPerProducer = 80;          // 240 distinct tags, fits uint8_t
-    constexpr int kSlots = kProducers * kPerProducer;
+    constexpr int32_t kProducers = 3;
+    constexpr int32_t kPerProducer = 80;          // 240 distinct tags, fits uint8_t
+    constexpr int32_t kSlots = kProducers * kPerProducer;
 
     MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
-    std::atomic<int> done{0};
+    std::atomic<int32_t> done{0};
     std::vector<std::thread> threads;
     std::vector<unsigned char> seen(static_cast<size_t>(kSlots), 0U);
 
-    for (int p = 0; p < kProducers; ++p) {
+    for (int32_t p = 0; p < kProducers; ++p) {
         threads.emplace_back([&s, p, &done]() {
-            const int base = p * kPerProducer;
-            for (int i = 0; i < kPerProducer; ++i) {
+            const int32_t base = p * kPerProducer;
+            for (int32_t i = 0; i < kPerProducer; ++i) {
                 while (!s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(base + i)),
                                   coact::PriorityClass::Normal, 0U)) {
                     std::this_thread::yield();
@@ -685,12 +705,12 @@ COACT_TEST(staging_concurrent_no_loss)
         t.join();
     }
 
-    CHECK_EQ(static_cast<int>(out.size()), kSlots);
-    int dup = 0;
-    int oob = 0;
+    CHECK_EQ(static_cast<int32_t>(out.size()), kSlots);
+    int32_t dup = 0;
+    int32_t oob = 0;
     for (const coact::StagingSlot& v : out) {
-        const unsigned int sig = v.event->signal;
-        if (sig >= static_cast<unsigned int>(kSlots)) {
+        const uint32_t sig = v.event->signal;
+        if (sig >= static_cast<uint32_t>(kSlots)) {
             ++oob;
             continue;
         }
@@ -700,8 +720,8 @@ COACT_TEST(staging_concurrent_no_loss)
         }
         mark = 1U;
     }
-    int missing = 0;
-    for (int i = 0; i < kSlots; ++i) {
+    int32_t missing = 0;
+    for (int32_t i = 0; i < kSlots; ++i) {
         if (seen[static_cast<size_t>(i)] == 0U) {
             ++missing;
         }

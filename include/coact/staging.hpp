@@ -325,6 +325,21 @@ public:
     // 50-80 enlarge batch, 80-95 wake immediately, >95 hard-throttle.
     uint8_t watermark(Partition p) const noexcept
     {
+        return watermark_snapshot(p).pct;
+    }
+
+    // One-pass usage snapshot (pct + used + capacity). The Dispatcher's
+    // per-batch telemetry needs all three, and `watermark()` already scans the
+    // partition once internally; calling `size()` a second time would double
+    // the O(Capacity) scan on the SMP MPSC backend. A single snapshot keeps the
+    // hot path to one scan per partition.
+    struct WatermarkSnapshot {
+        uint8_t pct;
+        uint16_t used;
+        uint16_t capacity;
+    };
+    WatermarkSnapshot watermark_snapshot(Partition p) const noexcept
+    {
         uint16_t used = 0U;
         uint16_t cap = 1U;
         switch (p) {
@@ -344,14 +359,14 @@ public:
             break;   // unreachable: explicit default
         }
         if (used == 0U) {
-            return 0U;
+            return WatermarkSnapshot{0U, 0U, cap};
         }
         uint32_t pct = (static_cast<uint32_t>(used) * 100U)
                      / static_cast<uint32_t>(cap);
         if (pct > 100U) {
             pct = 100U;
         }
-        return static_cast<uint8_t>(pct);
+        return WatermarkSnapshot{static_cast<uint8_t>(pct), used, cap};
     }
 
     // Current number of buffered slots in a partition.
