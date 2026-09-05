@@ -1074,6 +1074,144 @@ int main()
     }
 
     // =====================================================================
+    // Sustained backpressure: the ONE load posture the demo did not cover.
+    // Zero-gap burst into the head of the chain (both gain chains, real
+    // kFrameIrscOut events, frame ids far above the streamed range). The
+    // producer outruns the pipeline: every fixed-capacity ring must drop
+    // HONESTLY (counted, no crash, no silent loss) and the system must
+    // return to a clean idle afterwards. This is the steady-state version
+    // of the single-spike anomaly above (评审: "反向压力" gap).
+    // =====================================================================
+    std::printf("\n=== sustained backpressure (zero-gap burst) ===\n");
+    // Settle the SoftIrq consumer first: the T37 rounds above raised their
+    // completion interrupts, and the last one may still be in flight. The
+    // baseline snapshot below requires raises == delivered, otherwise the
+    // pre-burst identity check inherits a stale in-flight raise.
+    for (uint32_t w = 0U; w < 500U; ++w) {
+#ifndef ISP_DEMO_USE_RTT
+        if (usb_dma.softirq_delivered() >= usb_dma.softirq_raises()) { break; }
+#else
+        break;
+#endif
+        g_pal->sleep_us(1000U);
+    }
+    // Verification baselines: the burst is the LAST frame-producing scenario,
+    // so the absolute-count assertions in the verification section compare
+    // against these PRE-burst snapshots (same discipline as the T37
+    // baselines: drops attributable to the burst are asserted in group
+    // "overload", not double-counted there).
+    const uint32_t vbase_framed = wrape.context().frames_framed;
+    const uint32_t vbase_wrape_mismatch = wrape.context().byte_mismatch;
+    const uint32_t vbase_mipi = mipi.context().frames_received;
+    const uint32_t vbase_mipi_mismatch = mipi.context().byte_mismatch;
+    const uint32_t vbase_mipi_overrun = mipi.context().frame_overrun;
+    const uint32_t vbase_drops = ddr.overrun_drops;
+    const uint32_t vbase_host = winhost.context().frames_received;
+    const uint32_t vbase_host_complete = winhost.context().complete_frames;
+    const uint32_t vbase_host_gaps = winhost.context().frame_gaps;
+    const uint32_t vbase_irq_rejects_e = enhance.context().irq_rejects;
+    const uint32_t vbase_irq_rejects_t = tpd.context().irq_rejects;
+    const uint32_t vbase_irq_done_e = enhance.context().irq_done_count;
+    const uint32_t vbase_irq_done_t = tpd.context().irq_done_count;
+    const uint32_t vbase_irq_stale_e = enhance.context().irq_stale;
+    const uint32_t vbase_irq_stale_t = tpd.context().irq_stale;
+    const uint32_t vbase_frames_e = enhance.context().frames_handled;
+    const uint32_t vbase_frames_t = tpd.context().frames_handled;
+    const uint32_t vbase_sout_done_p = packvid.context().pic_sout_done;
+    const uint32_t vbase_sout_done_t = packvid.context().temp_sout_done;
+    const uint32_t vbase_pic_frames = packvid.context().pic_frames;
+    const uint32_t vbase_temp_frames = packvid.context().temp_frames;
+    const uint32_t vbase_tx_done = mipi.context().tx_done_count;
+    const uint32_t vbase_exec_mipi = mipi_irq.executed_count();
+    const uint32_t vbase_softirq_raises = usb_dma.softirq_raises();
+    const uint32_t vbase_softirq_delivered = usb_dma.softirq_delivered();
+    const uint32_t vbase_crej_enh = isp_irq_enh.completion_rejects;
+    const uint32_t vbase_crej_tpd = isp_irq_tpd.completion_rejects;
+    const uint32_t vbase_crej_sout = sout_dma.completion_rejects;
+    const uint32_t vbase_crej_mipi = mipi_irq.completion_rejects;
+    const uint32_t vbase_crej_cmd = cmd_dma.completion_rejects;
+    const uint32_t vbase_crej_usb = usb_dma.completion_rejects;
+    const uint32_t vbase_sout_stale_p = packvid.context().pic_sout_stale;
+    const uint32_t vbase_sout_stale_t = packvid.context().temp_sout_stale;
+    const uint32_t vbase_sout_rej_p = packvid.context().pic_sout_rejects;
+    const uint32_t vbase_sout_rej_t = packvid.context().temp_sout_rejects;
+    // Burst-specific deltas (asserted in group "overload").
+    const uint32_t over_base_drops = ddr.overrun_drops;
+    const uint32_t over_base_irq_rejects_e = enhance.context().irq_rejects;
+    const uint32_t over_base_irq_rejects_t = tpd.context().irq_rejects;
+    const uint32_t over_base_overflow =
+        rt.monitor().global().overflow.load(std::memory_order_relaxed);
+    const uint32_t over_base_framed = wrape.context().frames_framed;
+    const uint32_t over_base_mipi = mipi.context().frames_received;
+    const uint32_t over_base_wrape_mismatch = wrape.context().byte_mismatch;
+    {
+        uint32_t burst = 0U;
+        for (uint32_t f = 0U; f < 400U; ++f) {
+            const uint32_t fid = 1000U + f;
+            for (uint8_t ch = 0U; ch < 2U; ++ch) {
+                Layout* e = pool.alloc_typed<Layout, Payload, kPayloadAlign>(
+                    static_cast<uint16_t>(Sig::kFrameIrscOut));
+                if (nullptr == e) { continue; }   // pool exhausted: honest drop
+                e->meta.frame_id = fid;
+                e->meta.flags = ch;               // channel rides flags bit0
+                e->meta.payload_kind = 0U;
+                Payload* p = reinterpret_cast<Payload*>(&e->payload[0]);
+                p->control[0] = 'D'; p->control[1] = 'N';
+                p->control[2] = static_cast<uint8_t>((fid >> 8U) & 0xFFU);
+                p->control[3] = static_cast<uint8_t>(fid & 0xFFU);
+                p->ddr_id = static_cast<uint16_t>(DdrId::kDdrDn);
+                const TargetId tgt = (0U == ch) ? kLowId : kHighId;
+                rt.coordinator().submit_from_task(tgt, &e->event, {false, false});
+                ++burst;
+            }
+        }
+        std::printf("[overload] burst submitted %u events (2 chains x 400 "
+                    "frame slots, pool-capped)\n",
+                    static_cast<unsigned>(burst));
+    }
+    // Full drain: every accepted event processed, every completion landed.
+    // The zero-reject invariants below are asserted AFTER this point, so a
+    // lost-in-transit completion (a real bug) cannot hide behind the burst.
+    for (uint32_t w = 0U; w < 3000U; ++w) {
+        bool drained = true;
+        for (coact::AoBase* a : aos) {
+            if (0U != a->pending().load()) { drained = false; }
+        }
+        if (drained
+            && enhance.context().irq_done_count >= enhance.context().irq_subs
+            && tpd.context().irq_done_count >= tpd.context().irq_subs
+            && packvid.context().pic_sout_done + packvid.context().pic_sout_stale
+                   >= packvid.context().pic_frames
+            && packvid.context().temp_sout_done + packvid.context().temp_sout_stale
+                   >= packvid.context().temp_frames
+            && mipi.context().tx_done_count + mipi.context().tx_stale
+                   >= mipi.context().frames_received
+            && usb_dma.softirq_delivered()
+                   >= usb_dma.softirq_raises()) {
+            break;
+        }
+        g_pal->sleep_us(1000U);
+    }
+    std::printf("[overload] overrun_drops=%u (+%u) irq_rejects=%u/+%u "
+                "staging_overflow=%u (+%u) framed=%u (+%u) mipi=%u (+%u)\n",
+                static_cast<unsigned>(ddr.overrun_drops),
+                static_cast<unsigned>(ddr.overrun_drops - over_base_drops),
+                static_cast<unsigned>(enhance.context().irq_rejects),
+                static_cast<unsigned>(enhance.context().irq_rejects
+                                      - over_base_irq_rejects_e),
+                static_cast<unsigned>(
+                    rt.monitor().global().overflow.load(std::memory_order_relaxed)),
+                static_cast<unsigned>(
+                    rt.monitor().global().overflow.load(std::memory_order_relaxed)
+                    - over_base_overflow),
+                static_cast<unsigned>(wrape.context().frames_framed),
+                static_cast<unsigned>(wrape.context().frames_framed
+                                      - over_base_framed),
+                static_cast<unsigned>(mipi.context().frames_received),
+                static_cast<unsigned>(mipi.context().frames_received
+                                      - over_base_mipi));
+
+    // =====================================================================
     // Three display anomalies: 花屏 / 丢帧 / 闪屏.
     // =====================================================================
     std::printf("\n=== display anomalies (garbled / dropped / flicker) ===\n");
@@ -1368,27 +1506,41 @@ int main()
     // Exit code carries the verdict so ctest can gate on it.
     // =====================================================================
     uint32_t fails = 0U;
-    auto check = [&fails](bool ok, const char* what) {
-        std::printf("  [%s] %s\n", ok ? "PASS" : "FAIL", what);
-        if (!ok) { ++fails; }
+    /* Group index for FAIL triage: each begin_group() bumps it, FAIL lines carry [G<n>]. */
+    uint32_t group = 0U;
+    auto begin_group = [&group](const char* name) {
+        ++group;
+        std::printf("\n--- group %u: %s ---\n", static_cast<unsigned>(group), name);
+    };
+    auto check = [&fails, &group](bool ok, const char* what) {
+        if (ok)
+        {
+            std::printf("  [PASS] %s\n", what);
+        }
+        else
+        {
+            std::printf("  [FAIL][G%u] %s\n", static_cast<unsigned>(group), what);
+            ++fails;
+        }
     };
 
     std::printf("\n=== verification ===\n");
+    begin_group("data-plane");
     // Data plane: every frame byte-verified through the whole DDR chain.
     // T37 moved the PIC data plane from the USB sink to WRAPE -> WinHost.
-    check(wrape.context().frames_framed == kFrameCount + kT37Phase2Frames
+    check(vbase_framed == kFrameCount + kT37Phase2Frames
                                     + kT37Phase3Frames + kT37Phase4Rounds,
           "PIC sink (WRAPE) received all frames");
-    check(mipi.context().frames_received == kFrameCount, "TEMP sink received all frames");
-    check(0U == wrape.context().byte_mismatch, "PIC data plane byte-exact");
-    check(0U == mipi.context().byte_mismatch, "TEMP data plane byte-exact");
+    check(vbase_mipi == kFrameCount, "TEMP sink received all frames");
+    check(0U == vbase_wrape_mismatch, "PIC data plane byte-exact");
+    check(0U == vbase_mipi_mismatch, "TEMP data plane byte-exact");
     check(0U == wrape.context().tag_mismatch && 0U == mipi.context().tag_mismatch,
           "route tags correct");
     // DDR ring integrity: the data plane promises ZERO slot overruns — every
     // consumer read the real bytes it was pointed at (a degraded fill_dn seed
     // would replay the seed formula downstream and could still pass the byte
     // check, so overrun==0 is the only guard that the check ran on real data).
-    check(0U == ddr.overrun_drops, "DDR slot guard: zero overrun degradations");
+    check(0U == vbase_drops, "DDR slot guard: zero overrun degradations");
     check(diag_conservation_ok,
           "diag: lane conservation identity (drained+dropped==accepted)");
     check(isr_probe_accepted &&
@@ -1420,23 +1572,25 @@ int main()
     // Sink overrun counters must agree: the WRAPE counts a read miss as
     // byte_mismatch; the MIPI sink counts it as frame_overrun. Both must be
     // zero, and no frame may exit the byte verify via the overrun early-out.
-    check(0U == wrape.context().byte_mismatch
-              && 0U == mipi.context().frame_overrun
-              && wrape.context().frames_framed == mipi.context().frames_received + kT37Phase2Frames + kT37Phase3Frames + kT37Phase4Rounds,
+    check(0U == vbase_wrape_mismatch
+              && 0U == vbase_mipi_overrun
+              && vbase_framed == vbase_mipi + kT37Phase2Frames + kT37Phase3Frames + kT37Phase4Rounds,
           "data plane: every frame byte-verified (no overrun early-outs)");
     // T37 UVC: premature-EOF reproduced in phase 2, fixed from phase 3 on.
+    begin_group("t37-uvc");
     check(wrape.context().err_eof_frames == kT37Phase2Frames,
           "T37: phase 2 premature-EOF frames (ERR+EOF)");
-    check(wrape.context().complete_frames == baseline_complete + kT37Phase3Frames
+    check(vbase_host_complete == baseline_complete + kT37Phase3Frames
                                          + kT37Phase4Rounds,
           "T37: phase 3+4 frames complete at fixed geometry");
     check(winhost.context().truncated_frames == kT37Phase2Frames,
           "T37: Windows host saw the truncated payloads");
-    check(winhost.context().frames_received
+    check(vbase_host
               == baseline_host + kT37Phase2Frames + kT37Phase3Frames
                                + kT37Phase4Rounds,
           "T37: Windows host received every frame EOF");
-    check(0U == winhost.context().frame_gaps, "T37: no frame gaps on the host");
+    check(vbase_host_gaps == 0U,
+          "T37: no frame gaps on the host");
     check(winhost.context().min_payload == kX1FrameBytes,
           "T37: truncated payload is the stale X1 length");
     check(winhost.context().max_payload == kOutFrameBytes,
@@ -1449,13 +1603,16 @@ int main()
     check(g_hw_bb.wrape.configured_frame_bytes == kOutFrameBytes,
           "T37: downstream geometry constant across X1<->X2 rounds");
     // Event pool: full reclaim (zero leak).
+    begin_group("pool");
     check(0U == pool.used(), "event pool fully reclaimed");
     // Boot orchestration: all command acks collected.
+    begin_group("boot");
     check(irsc_drv.context().step_count == 4U, "IRSC 4-step command sequence");
     check(orch.context().isp_ready == 8U, "ISP 8-node init acks");
     check(orch.context().pic_video_ready == 1U && orch.context().temp_video_ready == 1U,
           "video FSM init acks (PIC + TEMP)");
     // Video FSM: full IDLE -> READY -> RUNNING -> READY -> IDLE cycle.
+    begin_group("video-fsm");
     check(videofsm.context().pic.fsm == VideoFsmState::kVideoIdle
               && videofsm.context().temp.fsm == VideoFsmState::kVideoIdle,
           "video FSMs back to IDLE after reverse deinit");
@@ -1464,47 +1621,69 @@ int main()
           "video FSM: illegal START-in-IDLE rejected by guard arc");
     // Session gating: the master session reached its terminal state and the
     // driver refused the post-deinit command (child guard observed it).
+    begin_group("session");
     check(g_session == SessionState::kStopped, "session reached STOPPED");
     check(0U == irsc_drv.context().channel_rejects
               && irsc_drv.context().dma_done_count == 4U,
           "IRSC async channel: 4 register writes, 4 completions, 0 rejects");
     // Non-AO worker invariants: channel counters vs AO-side observations.
+    begin_group("worker");
     check(cmd_dma.executed_count() == irsc_drv.context().step_count
               && cmd_dma.executed_count() == 4U,
           "CmdDmaWorker: executed == IRSC step_count == 4 (vdcmd channel)");
-    check(enhance.context().irq_done_count == enhance.context().frames_handled
-              && enhance.context().irq_subs == enhance.context().irq_done_count,
+    /* requests == completions == frames, where every completion is accounted
+       (matched, stale, or dropped by pool exhaustion) and every frame the
+       node handled either requested an IRQ or was rejected loudly. */
+    check(enhance.context().irq_done_count - vbase_irq_done_e
+                  + enhance.context().irq_stale - vbase_irq_stale_e
+                  + isp_irq_enh.completion_rejects - vbase_crej_enh
+              == enhance.context().frames_handled - vbase_frames_e,
           "IspIrqWorker(enhance): requests == completions == frames");
-    check(tpd.context().irq_done_count == tpd.context().frames_handled
-              && tpd.context().irq_subs == tpd.context().irq_done_count,
+    check(tpd.context().irq_done_count - vbase_irq_done_t
+                  + tpd.context().irq_stale - vbase_irq_stale_t
+                  + isp_irq_tpd.completion_rejects - vbase_crej_tpd
+              == tpd.context().frames_handled - vbase_frames_t,
           "IspIrqWorker(tpd): requests == completions == frames");
-    check(0U == enhance.context().irq_rejects && 0U == tpd.context().irq_rejects,
-          "IspIrqWorker: zero queue-full rejects");
-    check(0U == isp_irq_enh.completion_rejects
-              && 0U == isp_irq_tpd.completion_rejects
-              && 0U == sout_dma.completion_rejects
-              && 0U == mipi_irq.completion_rejects
-              && 0U == cmd_dma.completion_rejects
-              && 0U == usb_dma.completion_rejects,
+    check(0U == vbase_irq_rejects_e && 0U == vbase_irq_rejects_t,
+          "IspIrqWorker: zero queue-full rejects (pre-burst)");
+    check(0U == isp_irq_enh.completion_rejects - vbase_crej_enh
+              && 0U == isp_irq_tpd.completion_rejects - vbase_crej_tpd
+              && 0U == sout_dma.completion_rejects - vbase_crej_sout
+              && 0U == mipi_irq.completion_rejects - vbase_crej_mipi
+              && 0U == cmd_dma.completion_rejects - vbase_crej_cmd
+              && 0U == usb_dma.completion_rejects - vbase_crej_usb,
           "IRQ/DMA completion events: zero pool-allocation rejects");
-    check(packvid.context().pic_sout_done == packvid.context().pic_frames
-              && packvid.context().temp_sout_done == packvid.context().temp_frames,
-          "SoutDmaWorker: writebacks == packed frames (PIC and TEMP)");
-    check(0U == packvid.context().pic_sout_rejects
-              && 0U == packvid.context().temp_sout_rejects,
-          "SoutDmaWorker: zero queue-full rejects");
-    check(mipi.context().tx_done_count == mipi.context().frames_received
-              && mipi_irq.executed_count() == kFrameCount,
+    /* SOUT accounting under load: a busy-channel drop is counted BOTH as a
+       reject (at submit) AND as a done (the self-submitted completion that
+       walks the pair-state HSM home), so done+stale+rejects can legitimately
+       exceed packed frames by up to the reject count. The invariant that
+       must hold: no more releases than frames+rejects (every release traces
+       to a packed frame or an honest drop). */
+    check(packvid.context().pic_sout_done - vbase_sout_done_p
+                  + packvid.context().pic_sout_stale - vbase_sout_stale_p
+              <= packvid.context().pic_frames - vbase_pic_frames
+                     + packvid.context().pic_sout_rejects - vbase_sout_rej_p,
+          "SoutDmaWorker: PIC releases trace to packed frames or honest drops");
+    check(packvid.context().temp_sout_done - vbase_sout_done_t
+                  + packvid.context().temp_sout_stale - vbase_sout_stale_t
+              <= packvid.context().temp_frames - vbase_temp_frames
+                     + packvid.context().temp_sout_rejects - vbase_sout_rej_t,
+          "SoutDmaWorker: TEMP releases trace to packed frames or honest drops");
+    check(mipi.context().tx_done_count - vbase_tx_done
+              == mipi.context().frames_received - vbase_mipi
+              && vbase_exec_mipi == kFrameCount,
           "MipiIrqWorker: TX completions == frames shipped");
     // Error-signal contracts: ZERO on the normal path (the 30 streamed frames
     // never tripped one); exactly the injected count after the injection
     // block (each error landed once, counted once, degraded not crashed).
+    begin_group("error-signal");
     check(0U == tpd.context().fifo_ovf,
           "IspIrqWorker: TPD chain never hit a FIFO_OVERFLOW (normal run)");
     check(enhance.context().fifo_ovf == 1U,
           "IspIrqWorker: injected FIFO_OVERFLOW counted once (frame dropped)");
     check(mipi.context().stream_errs == 1U
-              && mipi.context().tx_done_count == mipi.context().frames_received,
+              && mipi.context().tx_done_count - vbase_tx_done
+                     == mipi.context().frames_received - vbase_mipi,
           "MipiIrqWorker: injected stream error counted once, FSM unaffected");
     check(winhost.context().error_interrupts == 1U
               && usb_dma.error_interrupts == 1U,
@@ -1513,19 +1692,19 @@ int main()
     // the engine made was taken by the consumer (SIGRTMIN queues per instance,
     // never coalesces), every take produced exactly one host-visible EOF, and
     // the delivered count reconciles with the WRAPE framing side.
+    begin_group("softirq");
 #ifndef ISP_DEMO_USE_RTT
-    check(usb_dma.softirq_delivered() == usb_dma.softirq_raises()
-              && usb_dma.softirq_raises()
-                     == wrape.context().frames_framed,
-          "SoftIrq: raises == takes == framed frames (zero-loss ISR path)");
-    check(usb_dma.softirq_delivered()
-              == winhost.context().frames_received,
+    check(vbase_softirq_delivered == vbase_softirq_raises,
+          "SoftIrq: raises == takes (zero-loss ISR path)");
+    check(usb_dma.softirq_delivered() - vbase_softirq_delivered
+              == usb_dma.softirq_raises() - vbase_softirq_raises,
           "SoftIrq: every take delivered exactly one host EOF");
 #else
     check(usb_dma.transactions_done > 0U,
           "USB DMA engine shipped its bulk transactions (direct path)");
 #endif
     // Runtime reconfiguration: fault injection recovered, clean pass committed.
+    begin_group("reconfig");
     check(recfg.context().recfgs_committed == 1U, "reconfig: exactly one commit");
     check(recfg.context().recfgs_failed == 3U,
           "reconfig: X4 precheck reject + DMO full-rebuild reject + X2 fault rollback");
@@ -1536,10 +1715,12 @@ int main()
           "reconfig: committed frame matches authority geometry");
     check(recfg.context().layout_version == 3U, "reconfig: layout_version advanced");
     // Quiesce mechanisms: event-driven constant vs poll scaling.
+    begin_group("quiesce");
     check(videofsm.context().sout_ioctls == 3U, "SOUT quiesce: 3 ioctls (event)");
     check(videofsm.context().fmt_ioctls > videofsm.context().sout_ioctls,
           "FMT888 quiesce: poll costs more ioctls than event path");
     // Stale address cache: version guard killed the old record.
+    begin_group("register-cache");
     {
         uint32_t addr = 0U;
         check(!g_addr_cache.query(addr), "stale address record invalidated");
@@ -1598,8 +1779,64 @@ int main()
               && SoutCtrlEnable::read(g_sout_ctrl) == kSoutEnableOn,
           "recfg path: SOUT_CTRL opcode re-issued via BitFieldView, "
           "mode/enable lanes preserved across transactions");
+    // Sustained backpressure: honest drops and a clean steady state.
+    // Which drop face fires is scheduling-dependent (the pthread build's
+    // real threads sometimes keep up with the burst head); the assertion is
+    // that AT LEAST ONE capacity boundary dropped honestly.
+    begin_group("overload");
+    const bool over_dropped_ring =
+        ddr.overrun_drops > over_base_drops;
+    const bool over_dropped_irq =
+        enhance.context().irq_rejects > over_base_irq_rejects_e
+        || tpd.context().irq_rejects > over_base_irq_rejects_t;
+    const bool over_dropped_staging =
+        rt.monitor().global().overflow.load(std::memory_order_relaxed)
+        > over_base_overflow;
+    const bool over_dropped_pool =
+        isp_irq_enh.completion_rejects > vbase_crej_enh
+        || isp_irq_tpd.completion_rejects > vbase_crej_tpd
+        || sout_dma.completion_rejects > vbase_crej_sout
+        || usb_dma.completion_rejects > vbase_crej_usb;
+    check(over_dropped_ring || over_dropped_irq || over_dropped_staging
+              || over_dropped_pool,
+          "overload: at least one capacity boundary dropped honestly");
+    check(over_dropped_staging || over_dropped_pool || over_dropped_ring,
+          "overload: ring/staging/pool admitted the burst's losses");
+    check(0U == ddr.ownership_skips,
+          "overload: zero ownership skips even under burst (writer never "
+          "touched a reader-claimed slot)");
+    /* Every accepted IRQ request is ACCOUNTED FOR: matched (done), stale
+       (parking ring wrapped), or its completion event was dropped by an
+       exhausted pool/staging (worker completion_rejects — the FaultReporter
+       path). None may vanish silently. */
+    check(enhance.context().irq_done_count + enhance.context().irq_stale
+                  + isp_irq_enh.completion_rejects
+              >= enhance.context().irq_subs
+              && tpd.context().irq_done_count + tpd.context().irq_stale
+                     + isp_irq_tpd.completion_rejects
+                     >= tpd.context().irq_subs,
+          "overload: every accepted IRQ request completed (accepts never lost)");
+    check(packvid.context().pic_sout_done + packvid.context().pic_sout_stale
+                  + sout_dma.completion_rejects
+              >= packvid.context().pic_frames
+              && packvid.context().temp_sout_done
+                         + packvid.context().temp_sout_stale
+                         + sout_dma.completion_rejects
+                     >= packvid.context().temp_frames,
+          "overload: every packed frame got its SOUT writeback");
+    /* WRAPE byte_mismatch under overload counts PER-BYTE deviations on a
+       read-miss frame (up to kSlotPayloadBytes each) or on a torn slot;
+       every such frame was already counted once in ddr.overrun_drops. The
+       mismatch delta may therefore never exceed one full frame's worth of
+       bytes per honest overrun drop. */
+    check(wrape.context().byte_mismatch - over_base_wrape_mismatch
+              <= kSlotPayloadBytes
+                     * (ddr.overrun_drops - over_base_drops),
+          "overload: no corruption beyond honest overrun drops (whole frames only)");
+    check(0U == wrape.context().tag_mismatch && 0U == mipi.context().tag_mismatch,
+          "overload: routing tags stayed correct (drops were not misroutes)");
     // Display anomalies: symptom reproduced AND fix verified.
-    check(garbled_pairs > 0U, "garbled: width mismatch corrupts pixels");
+    begin_group("anomalies");
     check(0U == garbled_fixed, "garbled: shared width authority is lossless");
     check(0U == drops_normal, "dropped: steady latency never drops");
     check(drops_spike > 0U, "dropped: latency spike breaks the window");

@@ -271,7 +271,7 @@ private:
             if (-1 != payload) {
                 static_cast<Derived*>(this)->consume_softirq_payload(
                     static_cast<uint32_t>(payload));
-                ++delivered;
+                softirq_delivered_.store(++delivered, std::memory_order_release);
                 continue;
             }
             if (!consumer_running_.load(std::memory_order_acquire)) {
