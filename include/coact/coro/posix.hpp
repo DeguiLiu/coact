@@ -118,6 +118,14 @@ struct YieldRequest {
     WaitReason reason = WaitReason::kDone;
     uint64_t param_ns = 0U;   // kSleep: absolute deadline (now_ns based)
     uint16_t param_task = 0U; // kWaitTask: raw TaskId value
+    // kSleep only: notify-sequence snapshot taken by the body's wait loop
+    // AFTER its condition re-check and BEFORE this yield. 0 (default) = a
+    // plain timed sleep with no condition: deadline-only wake. The sleeping
+    // slot re-wakes when the global sequence differs from this snapshot -
+    // the snapshot being taken after the re-check closes the lost-wake
+    // window (a notify that lands between the re-check and the park is
+    // already != snapshot).
+    uint32_t seq_snapshot = 0U;
 };
 
 // Resume argument (coroutine.resume(co, ...) equivalent): the payload of
@@ -193,7 +201,6 @@ private:
     std::atomic<bool> running_{false};
     bool started_ = false;
     inline static thread_local Coroutine* active_ = nullptr;
-
     static void trampoline(void* self_void) noexcept;
     void run_body() noexcept;
 
@@ -204,6 +211,7 @@ public:
     // on its stack.
     YieldRequest yield(YieldRequest request) noexcept;
 };
+
 
 inline void Coroutine::trampoline(void* self_void) noexcept
 {
@@ -226,6 +234,12 @@ inline void Coroutine::run_body() noexcept
 
 inline YieldRequest Coroutine::yield(YieldRequest request) noexcept
 {
+    /* kSleep: the CALLER filled seq_snapshot BEFORE this call (after its
+       own condition re-check) - the lost-wake window is closed by that
+       ordering, not here. Plain sleeps (no waiter) leave it zero, which
+       never equals a bumped sequence and behaves like a normal deadline
+       sleep plus notify-wake (harmless: a body that did not check any
+       condition just re-parks). */
     last_yield_ = request;
     if (WaitReason::kDone == request.reason) {
         running_ = false;
@@ -388,6 +402,38 @@ public:
         }
     }
 
+    // Cumulative count of slots whose stack guard was corrupted at
+    // retirement. Grows monotonically; a non-zero value means a coroutine
+    // body overran or underran its stack, and that slot's neighbors may be
+    // silently corrupted. Lock-free read: the counter is only written by
+    // run_once() (inside the state lock), relaxed read is a plain word on
+    // every supported target.
+    uint16_t corrupted_guards() const noexcept
+    {
+        return corrupted_guards_.load(std::memory_order_relaxed);
+    }
+
+    // Peak stack usage of a slot: the distance from the stack top guard to
+    // the deepest byte a body wrote (the stack grows down; end guards are
+    // excluded). Returns 0 for a never-armed slot. Diagnostic only: call
+    // after the executor is stopped. Best-effort read, no watermark tracking
+    // on the hot resume path.
+    uint32_t stack_watermark(uint16_t slot) const noexcept
+    {
+        if (slot >= kCapacity) {
+            return 0U;
+        }
+        const std::byte* const base = stacks_[slot].bytes.data();
+        /* Skip the top guard, then scan down for the first un-written byte:
+           the floor of the used region. Stack grows toward base. */
+        for (uint32_t i = kStackBytes - (sizeof(uint64_t) + 1U); i > 0U; --i) {
+            if (std::byte{0U} != base[i]) {
+                return i + 1U;
+            }
+        }
+        return 0U;
+    }
+
     // One cooperative pass: run every runnable coroutine once, retire the
     // finished ones. Called by the executor thread loop (or a single-shot
     // driver in tests - the same cooperative semantics, no thread needed).
@@ -396,6 +442,8 @@ public:
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         const uint64_t now = now_ns();
+        const uint32_t notify_seq =
+            notify_seq_.load(std::memory_order_acquire);
         uint16_t live = 0U;
 
         for (uint16_t i = 0U; i < kCapacity; ++i) {
@@ -405,11 +453,25 @@ public:
             }
             if (SlotState::kSleep == s.state) {
                 if (now < s.deadline_ns) {
-                    ++live;
-                    continue;
+                    /* Event-driven early wake (WAITER sleeps only): the
+                       snapshot is taken by the body's wait loop AFTER its
+                       condition re-check. Snapshot 0 = a plain timed sleep
+                       with no condition to re-check - deadline-only wake.
+                       A waiter's snapshot never equals a sequence bumped
+                       since its park (the lost-wake closer); a false alarm
+                       costs one pass (the body re-parks). */
+                    if ((0U == s.park_seq)
+                        || (s.park_seq == notify_seq)) {
+                        ++live;
+                        continue;
+                    }
+                    s.state = SlotState::kRun;
+                    s.pending_arg = ResumeArg{};
                 }
-                s.state = SlotState::kRun;
-                s.pending_arg = ResumeArg{};
+                else {
+                    s.state = SlotState::kRun;
+                    s.pending_arg = ResumeArg{};
+                }
             }
             if (SlotState::kRun != s.state) {
                 ++live;
@@ -423,11 +485,13 @@ public:
             switch (y.reason) {
             case WaitReason::kDone:
             case WaitReason::kNone:
+                check_guard(i);
                 s.state = SlotState::kFree;
                 break;
             case WaitReason::kSleep:
                 s.state = SlotState::kSleep;
                 s.deadline_ns = y.param_ns;
+                s.park_seq = y.seq_snapshot;   // from yield(): post-recheck
                 ++live;
                 break;
             case WaitReason::kWaitTask:
@@ -455,6 +519,45 @@ public:
         return live;
     }
 
+    // Test/instrumentation hook: writable view of a slot's stack (guard
+    // region included). Lets the guard-verification test corrupt a guard
+    // deterministically - a REAL overflow smashes glibc's context-restore
+    // data before the guard, so the test injects the guard damage directly
+    // instead of triggering undefined behavior.
+    std::byte* stack_for_test(uint16_t slot) noexcept
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        return (slot < kCapacity) ? stacks_[slot].bytes.data() : nullptr;
+    }
+
+    // Event-driven early wake (PAL sem_release/cond_signal path): bump the
+    // notification sequence so the NEXT run_once() pass resumes every
+    // sleeping coroutine before its deadline (each body then re-checks its
+    // own condition - sem/cond state lives outside the executor). Safe from
+    // any thread: a single relaxed increment. Thread-safe by design with
+    // run_once(); kWaitTask slots are NOT disturbed (they have their own
+    // wake() channel).
+    void notify() noexcept
+    {
+        notify_seq_.fetch_add(1U, std::memory_order_release);
+    }
+
+    // Current notify-sequence value (wait loops snapshot this AFTER their
+    // condition re-check and pass it via YieldRequest.seq_snapshot).
+    uint32_t notify_sequence() const noexcept
+    {
+        return notify_seq_.load(std::memory_order_acquire);
+    }
+
+    // Test hook: force the notify sequence to a value near the uint32 wrap
+    // boundary so the boundary test can park a waiter at 0xFFFFFFFF and prove
+    // a notify() wrapping back to 0 still wakes it. Relaxed store: tests call
+    // it before arming/parking on a single thread.
+    void notify_sequence_for_test(uint32_t v) noexcept
+    {
+        notify_seq_.store(v, std::memory_order_release);
+    }
+
 private:
     enum class SlotState : uint8_t { kFree = 0U, kRun, kSleep, kWaitTask };
 
@@ -463,6 +566,7 @@ private:
         SlotState state = SlotState::kFree;
         uint64_t deadline_ns = 0U;
         ResumeArg pending_arg{};
+        uint32_t park_seq = 0U;   // notify_seq_ snapshot when the body parked
     };
 
     Slot* slot_of(Coroutine& co) noexcept
@@ -475,9 +579,149 @@ private:
         return nullptr;
     }
 
+    // Verify the slot's two stack-end guards at retirement. The magic is
+    // re-armed on each arm(); a body that overran or underran its stack
+    // overwrites the guard word, which this check turns into the cumulative
+    // corrupted_guards_ counter (observable, never a crash).
+    void check_guard(uint16_t slot) noexcept
+    {
+        constexpr uint64_t kGuard = 0xDEADBEEFCAFEBABEULL;
+        std::byte* const base = stacks_[slot].bytes.data();
+        uint64_t lo = 0U;
+        uint64_t hi = 0U;
+        std::memcpy(&lo, base, sizeof(kGuard));
+        std::memcpy(&hi, base + kStackBytes - sizeof(kGuard), sizeof(kGuard));
+        if ((kGuard != lo) || (kGuard != hi)) {
+            corrupted_guards_.fetch_add(1U, std::memory_order_relaxed);
+        }
+    }
+
     Slot slots_[kCapacity]{};
     StaticStackPool<StackBytes> stacks_[kCapacity]{};
     mutable std::mutex state_mutex_;
+    std::atomic<uint16_t> corrupted_guards_{0U};
+    std::atomic<uint32_t> notify_seq_{1U};
+};
+
+// -------------------------------------------------------------------------
+// CoroSem: atomic permit + notify-sequence semaphore for coroutine bodies.
+// THE coro-side replacement for the pthread mutex/cond emulation: no mutex,
+// no condition variable, no periodic polling.
+//
+//   take():  acquire-load the permit -> CAS-decrement -> on failure snapshot
+//            the notify sequence AFTER the re-check -> park (kSleep, far
+//            future) with that snapshot. The re-check-then-snapshot-then-
+//            park ordering closes the lost-wake window: a release() between
+//            the re-check and the park bumps the sequence, so the executor's
+//            park-sequence comparison wakes the taker on the next pass.
+//   release(): release-store the permit increment, then notify() - every
+//            parked taker re-runs its CAS; only permit holders proceed.
+//
+// Binary mode caps the permit at 1 (duplicate releases do not accumulate).
+// The semaphore NEVER wakes a specific coroutine: notify publishes a state
+// change only, and each woken body re-evaluates - the wake order is the
+// executor's round-robin, never the releaser's choice.
+//
+// take() with a timeout returns false at the deadline; zero timeout = wait
+// forever (deadline sentinel). The deadline re-park keeps the loop honest
+// without periodic polling: a far-future deadline is only cut short by
+// notify() or by the deadline itself.
+//
+// x86/ARM Linux: standard C++ atomics, no assembly, no atomic_flag spins.
+// -------------------------------------------------------------------------
+class CoroSem final {
+public:
+    static constexpr uint32_t kWaitForever = 0xFFFFFFFFU;
+
+    explicit CoroSem(uint32_t initial_permits = 0U, bool binary = false)
+        noexcept
+        : permits_(initial_permits), binary_(binary)
+    {
+        static_assert(std::atomic<uint32_t>::is_always_lock_free,
+                      "CoroSem requires lock-free 32-bit atomics; a toolchain "
+                      "that cannot provide them must fail at compile time, "
+                      "not silently lock");
+    }
+    CoroSem(const CoroSem&) = delete;
+    CoroSem& operator=(const CoroSem&) = delete;
+
+    // Consume one permit, parking the calling coroutine until one exists.
+    // Returns false on timeout (or halt). Must run on the executor thread
+    // inside a coroutine body (nullptr Coroutine::current() is a caller
+    // bug; asserted by behavior: non-coro callers never park).
+    template <typename Exec>
+    bool take(Coroutine& self, Exec& exec,
+              uint32_t timeout_us = kWaitForever) noexcept
+    {
+        const uint64_t deadline =
+            (kWaitForever == timeout_us)
+                ? 0xFFFFFFFFFFFFFFFFULL
+                : now_ns() + static_cast<uint64_t>(timeout_us) * 1000ULL;
+        for (;;) {
+            if (try_consume()) {
+                return true;
+            }
+            /* Re-check passed: snapshot AFTER it, BEFORE the park. */
+            const uint32_t seq = exec.notify_sequence();
+            if (try_consume()) {
+                return true;   // raced in our favor between check and snap
+            }
+            (void)self.yield(YieldRequest{
+                WaitReason::kSleep, deadline, 0U, seq});
+            if (try_consume()) {
+                return true;
+            }
+            if (now_ns() >= deadline) {
+                return false;   // timeout: no permit arrived in the window
+            }
+            /* Spurious wake (sequence bumped by an unrelated release):
+               loop re-checks the permit - no periodic polling involved. */
+        }
+    }
+
+    // Publish one permit, then nudge the executor. Safe from any thread
+    // (coroutine body, Dispatcher thread, bare pthread).
+    template <typename Exec>
+    void release(Exec& exec) noexcept
+    {
+        uint32_t cur = permits_.load(std::memory_order_acquire);
+        for (;;) {
+            const uint32_t next = binary_ ? 1U : cur + 1U;
+            if (permits_.compare_exchange_weak(cur, next,
+                                               std::memory_order_release,
+                                               std::memory_order_acquire)) {
+                break;
+            }
+            /* cur was refreshed by the failed CAS; binary keeps the cap. */
+        }
+        exec.notify();
+    }
+
+    // Non-consuming observation (diagnostics/tests).
+    [[nodiscard]] uint32_t permits() const noexcept
+    {
+        return permits_.load(std::memory_order_acquire);
+    }
+
+private:
+    bool try_consume() noexcept
+    {
+        uint32_t cur = permits_.load(std::memory_order_acquire);
+        for (;;) {
+            if (0U == cur) {
+                return false;
+            }
+            if (permits_.compare_exchange_weak(cur, cur - 1U,
+                                               std::memory_order_acquire,
+                                               std::memory_order_acquire)) {
+                return true;
+            }
+            /* cur refreshed; re-test. */
+        }
+    }
+
+    std::atomic<uint32_t> permits_;
+    bool binary_;
 };
 
 // -------------------------------------------------------------------------
