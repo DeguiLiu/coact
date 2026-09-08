@@ -596,6 +596,13 @@ void RtThread::worker_thread_entry(void* param) noexcept
     handle->entry(handle->context);
     /* Release the join waiter. */
     rt_sem_release(&slot->join_sem);
+#if defined(COACT_RTT_STUB)
+    /* Host stub only: the pthread backing this worker must be reaped. A real
+       target recycles the static TCB in the kernel; under COACT_RTT_STUB the
+       worker is a pthread, so detach it to avoid a TSan thread leak (and the
+       priority-restore race behind the intermittent tpp/futex abort). */
+    pthread_detach(pthread_self());
+#endif
 }
 
 bool RtThread::thread_create(ThreadHandle& t, ThreadEntry entry,
