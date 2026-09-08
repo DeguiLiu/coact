@@ -536,6 +536,75 @@ COACT_TEST(coro_sem_contention_single_permit)
     CHECK_EQ(0U, obs.sem.permits());
 }
 
+// Thundering-herd regression: releasing one semaphore must NOT wake a
+// waiter parked on a DIFFERENT semaphore. The broadcast notify woke every
+// kSleep waiter (each re-checked its own sem and re-parked); the per-sem
+// sequence wakes only the matching waiter.
+COACT_TEST(coro_sem_release_does_not_wake_unrelated_waiter)
+{
+    using coact::coro::posix::CoroSem;
+    Exec exec;   // 4 slots: A + B fit
+    coro_sem_test::g_exec = &exec;
+    struct Obs {
+        CoroSem sem1{0U, false};
+        CoroSem sem2{0U, false};
+        uint32_t a_wakeups = 0U;
+        uint32_t b_wakeups = 0U;
+        bool a_took = false;
+        bool b_took = false;
+    } obs;
+    exec.arm(
+        [](void* user, Coroutine& self) {
+            Obs* o = static_cast<Obs*>(user);
+            for (;;) {
+                ++o->a_wakeups;
+                if (o->sem1.try_take()) {
+                    o->a_took = true;
+                    break;
+                }
+                const uint32_t seq = o->sem1.sequence();
+                (void)self.yield(YieldRequest{WaitReason::kSleep,
+                                              0xFFFFFFFFFFFFFFFFULL, 0U, seq,
+                                              o->sem1.waiter_identity()});
+            }
+            (void)self.yield(YieldRequest{WaitReason::kDone, 0U, 0U});
+        },
+        &obs, ResumeArg{});
+    exec.arm(
+        [](void* user, Coroutine& self) {
+            Obs* o = static_cast<Obs*>(user);
+            for (;;) {
+                ++o->b_wakeups;
+                if (o->sem2.try_take()) {
+                    o->b_took = true;
+                    break;
+                }
+                const uint32_t seq = o->sem2.sequence();
+                (void)self.yield(YieldRequest{WaitReason::kSleep,
+                                              0xFFFFFFFFFFFFFFFFULL, 0U, seq,
+                                              o->sem2.waiter_identity()});
+            }
+            (void)self.yield(YieldRequest{WaitReason::kDone, 0U, 0U});
+        },
+        &obs, ResumeArg{});
+
+    // First pass: both takers park (one wakeup each).
+    (void)exec.run_once();
+    CHECK_EQ(1U, obs.a_wakeups);
+    CHECK_EQ(1U, obs.b_wakeups);
+    CHECK(!obs.a_took);
+    CHECK(!obs.b_took);
+
+    // Release sem1 only; A must wake and take, B must stay parked.
+    obs.sem1.release(exec);
+    (void)exec.run_once();
+
+    CHECK(obs.a_took);
+    CHECK(!obs.b_took);
+    CHECK_EQ(2U, obs.a_wakeups);   // A: initial + permit wake
+    CHECK_EQ(1U, obs.b_wakeups);   // B: must NOT be thundering-herd woken
+}
+
 // Randomized interleaving: 10000 releases from a producer thread consumed
 // by one taker coroutine - conservation (no lost wake, no double consume).
 COACT_TEST(coro_sem_random_interleave_conserves)
