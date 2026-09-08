@@ -98,13 +98,13 @@ COACT_TEST(posix_mutex_serializes_two_threads)
     coact::pal::Posix pal;
     PosixMutexHandle m;
     CHECK(pal.mutex_init(m));
-    std::atomic<int> counter{0};
-    std::atomic<int> max_overlap{0};
+    std::atomic<int32_t> counter{0};
+    std::atomic<int32_t> max_overlap{0};
     std::atomic<bool> go{false};
 
     struct Ctx {
-        std::atomic<int>* counter;
-        std::atomic<int>* max_overlap;
+        std::atomic<int32_t>* counter;
+        std::atomic<int32_t>* max_overlap;
         std::atomic<bool>* go;
         PosixMutexHandle* m;
     } ctx{&counter, &max_overlap, &go, &m};
@@ -116,7 +116,7 @@ COACT_TEST(posix_mutex_serializes_two_threads)
         Ctx* c = static_cast<Ctx*>(a);
         while (!c->go->load(std::memory_order_relaxed)) { }
         c->m->pal->mutex_lock(*c->m);
-        const int inside = ++*c->counter;
+        const int32_t inside = ++*c->counter;
         /* If another thread ever overlapped, counter would exceed the max
            single-section overlap we allow (2). */
         if (inside > *c->max_overlap) { *c->max_overlap = inside; }
@@ -127,7 +127,7 @@ COACT_TEST(posix_mutex_serializes_two_threads)
         Ctx* c = static_cast<Ctx*>(a);
         while (!c->go->load(std::memory_order_relaxed)) { }
         c->m->pal->mutex_lock(*c->m);
-        const int inside = ++*c->counter;
+        const int32_t inside = ++*c->counter;
         if (inside > *c->max_overlap) { *c->max_overlap = inside; }
         --*c->counter;
         c->m->pal->mutex_unlock(*c->m);
@@ -180,10 +180,10 @@ COACT_TEST(posix_cond_handoff)
 COACT_TEST(posix_thread_create_join)
 {
     coact::pal::Posix pal;
-    std::atomic<int> ran{0};
+    std::atomic<int32_t> ran{0};
     PosixThreadHandle t{};
     CHECK(pal.thread_create(t, [](void* a) {
-        static_cast<std::atomic<int>*>(a)->store(1, std::memory_order_release);
+        static_cast<std::atomic<int32_t>*>(a)->store(1, std::memory_order_release);
     }, &ran));
     pal.thread_join(t);
     CHECK_EQ(1, ran.load(std::memory_order_acquire));
@@ -287,10 +287,10 @@ COACT_TEST(rtthread_cond_handoff)
 COACT_TEST(rtthread_thread_create_join)
 {
     coact::pal::RtThread pal;
-    std::atomic<int> ran{0};
+    std::atomic<int32_t> ran{0};
     RtThreadThreadHandle t{};
     CHECK(pal.thread_create(t, [](void* a) {
-        static_cast<std::atomic<int>*>(a)->store(1, std::memory_order_release);
+        static_cast<std::atomic<int32_t>*>(a)->store(1, std::memory_order_release);
     }, &ran));
     pal.thread_join(t);
     CHECK_EQ(1, ran.load(std::memory_order_acquire));
@@ -307,8 +307,8 @@ struct PalWorkerProbe {
     typename PalT::MutexHandle mtx;
     typename PalT::CondHandle cond;
     typename PalT::ThreadHandle thread;
-    int job{0};
-    int executed{0};
+    int32_t job{0};
+    std::atomic<int32_t> executed{0};
     bool running{false};
 
     bool start(PalT& p)
@@ -325,7 +325,7 @@ struct PalWorkerProbe {
     }
 
     /* Producer side (Dispatcher thread): reject when busy. */
-    bool submit(int j)
+    bool submit(int32_t j)
     {
         pal->mutex_lock(mtx);
         bool ok = false;
@@ -357,7 +357,7 @@ private:
             while (running && 0 == job) {
                 cond.pal->cond_wait(cond, mtx, 0U);
             }
-            const int j = job;
+            const int32_t j = job;
             job = 0;
             const bool alive = running;
             pal->mutex_unlock(mtx);
@@ -374,10 +374,10 @@ COACT_TEST(posix_worker_handoff_probe)
     CHECK(w.start(pal));
     CHECK(w.submit(1));
     CHECK(!w.submit(2));                /* single slot: busy reject */
-    while (w.executed < 1) { }
+    while (w.executed.load() < 1) { }
     CHECK(w.submit(3));
     w.stop();
-    CHECK_EQ(2, w.executed);
+    CHECK_EQ(2, w.executed.load());
 }
 
 COACT_TEST(rtthread_worker_handoff_probe)
@@ -387,10 +387,10 @@ COACT_TEST(rtthread_worker_handoff_probe)
     CHECK(w.start(pal));
     CHECK(w.submit(1));
     CHECK(!w.submit(2));
-    while (w.executed < 1) { }
+    while (w.executed.load() < 1) { }
     CHECK(w.submit(3));
     w.stop();
-    CHECK_EQ(2, w.executed);
+    CHECK_EQ(2, w.executed.load());
 }
 
 }  // namespace

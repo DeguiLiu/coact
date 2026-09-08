@@ -547,9 +547,17 @@ void RtThread::cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noe
 
 void RtThread::cond_signal(CondHandle& c) noexcept
 {
-    if (0U != c.waiters.load(std::memory_order_acquire)) {
-        rt_sem_release(&c.sem);
-    }
+    /* Unconditional release: the counting semaphore absorbs the release
+       even when the waiter has not yet blocked. A check-then-release on
+       waiters (the old code) raced with cond_wait's "increment, release
+       mutex, take" sequence: the signal could fire between the waiter's
+       predicate check and its sem_take, be observed as "no waiter" (the
+       increment happens under a DIFFERENT atomic timeline than the signal
+       reads it), and the wake was lost forever. Stray tokens from releases
+       that arrive early are absorbed by the waiter's while-loop re-check
+       (the standard condition-variable discipline: callers must re-check
+       the predicate after every wait return). */
+    rt_sem_release(&c.sem);
 }
 
 void RtThread::cond_broadcast(CondHandle& c) noexcept
