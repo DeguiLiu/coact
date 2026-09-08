@@ -111,6 +111,17 @@ enum class WaitReason : uint8_t {
     kDone           // coroutine finished
 };
 
+// Type-erased waiter identity: the executor matches a parked slot to a
+// release by comparing the slot's parked sequence snapshot against the
+// waiter's CURRENT sequence. CoroSem/cond supply this small vtable so the
+// executor never depends on the concrete waiter type. A null `self` means
+// an unconditional (deadline-only) sleep matched by the global notify
+// sequence.
+struct WaiterSeq {
+    const void* self = nullptr;
+    uint32_t (*sequence)(const void*) = nullptr;
+};
+
 // What a coroutine hands to the scheduler when it yields. The scheduler
 // consumes the reason and the parameter (deadline or task id) and registers
 // the resume condition.
@@ -126,6 +137,11 @@ struct YieldRequest {
     // window (a notify that lands between the re-check and the park is
     // already != snapshot).
     uint32_t seq_snapshot = 0U;
+    // kSleep only: which waiter this sleep waits on. A null `self` keeps the
+    // global notify-sequence matching (plain timed sleep); a concrete waiter
+    // matches against that waiter's own sequence so a release of a DIFFERENT
+    // semaphore does not thundering-herd this slot awake.
+    WaiterSeq waiter{};
 };
 
 // Resume argument (coroutine.resume(co, ...) equivalent): the payload of
@@ -459,9 +475,14 @@ public:
                        with no condition to re-check - deadline-only wake.
                        A waiter's snapshot never equals a sequence bumped
                        since its park (the lost-wake closer); a false alarm
-                       costs one pass (the body re-parks). */
+                       costs one pass (the body re-parks). A concrete waiter
+                       matches against ITS OWN sequence so an unrelated
+                       release does not thundering-herd it awake. */
+                    const uint32_t cur_seq = (nullptr != s.waiter.self)
+                        ? s.waiter.sequence(s.waiter.self)
+                        : notify_seq;
                     if ((0U == s.park_seq)
-                        || (s.park_seq == notify_seq)) {
+                        || (s.park_seq == cur_seq)) {
                         ++live;
                         continue;
                     }
@@ -492,6 +513,7 @@ public:
                 s.state = SlotState::kSleep;
                 s.deadline_ns = y.param_ns;
                 s.park_seq = y.seq_snapshot;   // from yield(): post-recheck
+                s.waiter = y.waiter;           // per-sem match (null = plain)
                 ++live;
                 break;
             case WaitReason::kWaitTask:
@@ -567,6 +589,7 @@ private:
         uint64_t deadline_ns = 0U;
         ResumeArg pending_arg{};
         uint32_t park_seq = 0U;   // notify_seq_ snapshot when the body parked
+        WaiterSeq waiter{};       // which sem/cond this sleep waits on (null = plain)
     };
 
     Slot* slot_of(Coroutine& co) noexcept
@@ -653,6 +676,7 @@ public:
     bool take(Coroutine& self, Exec& exec,
               uint32_t timeout_us = kWaitForever) noexcept
     {
+        (void)exec;   // retained for API symmetry with release(exec)
         const uint64_t deadline =
             (kWaitForever == timeout_us)
                 ? 0xFFFFFFFFFFFFFFFFULL
@@ -662,12 +686,12 @@ public:
                 return true;
             }
             /* Re-check passed: snapshot AFTER it, BEFORE the park. */
-            const uint32_t seq = exec.notify_sequence();
+            const uint32_t seq = seq_.load(std::memory_order_acquire);
             if (try_consume()) {
                 return true;   // raced in our favor between check and snap
             }
             (void)self.yield(YieldRequest{
-                WaitReason::kSleep, deadline, 0U, seq});
+                WaitReason::kSleep, deadline, 0U, seq, waiter_identity()});
             if (try_consume()) {
                 return true;
             }
@@ -694,6 +718,10 @@ public:
             }
             /* cur was refreshed by the failed CAS; binary keeps the cap. */
         }
+        /* Bump THIS sem's sequence so only waiters on this sem are woken by
+           the next run_once pass (no thundering herd across sems); the
+           global notify() still nudges a blocked executor loop. */
+        seq_.fetch_add(1U, std::memory_order_release);
         exec.notify();
     }
 
@@ -703,7 +731,34 @@ public:
         return permits_.load(std::memory_order_acquire);
     }
 
+    // Non-blocking consume: true if a permit was available and consumed,
+    // false without suspending. Equivalent to take() with a zero timeout
+    // but parks nothing. Bodies that poll a semaphore use this to re-check
+    // after a wake without re-yielding.
+    bool try_take() noexcept { return try_consume(); }
+
+    // Current notify-sequence value (waiters snapshot this AFTER their
+    // condition re-check and pass it via YieldRequest.seq_snapshot).
+    uint32_t sequence() const noexcept
+    {
+        return seq_.load(std::memory_order_acquire);
+    }
+
+    // Type-erased waiter identity for YieldRequest.waiter: the executor
+    // compares a parked slot's seq_snapshot against THIS sem's sequence,
+    // so releasing a different sem leaves this one's waiters parked.
+    WaiterSeq waiter_identity() const noexcept
+    {
+        return WaiterSeq{this, &CoroSem::sequence_erased};
+    }
+
 private:
+    static uint32_t sequence_erased(const void* p) noexcept
+    {
+        return static_cast<const CoroSem*>(p)->seq_.load(
+            std::memory_order_acquire);
+    }
+
     bool try_consume() noexcept
     {
         uint32_t cur = permits_.load(std::memory_order_acquire);
@@ -721,6 +776,7 @@ private:
     }
 
     std::atomic<uint32_t> permits_;
+    std::atomic<uint32_t> seq_{1U};   // per-sem notify sequence (herd fix)
     bool binary_;
 };
 
