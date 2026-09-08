@@ -100,6 +100,7 @@ g_rt.start();                                        // 内部 set stack -> init
 | monitor | `monitor.hpp` | 熔断器、水位、RTC 超时 |
 | policy | `policy.hpp` | 限速 / 策略钩子 |
 | core | `coordinator.hpp` `dispatcher.hpp` `runtime.hpp` | 提交管线、派发循环、装配 |
+| coro | `coro/`（`coro.hpp` `posix.hpp`） | 栈式协程（ucontext）、CoroSem、事件驱动同步、栈守卫/水位 |
 | pal | `pal_posix.hpp` `pal_rtthread.hpp` | 平台抽象 |
 
 ## 测试
