@@ -464,7 +464,7 @@ struct SpscWorkerProbe {
     coact::SpscRing<int32_t, 4U> ring;
     std::atomic<uint32_t> executed{0U};
     std::atomic<bool> running{false};
-    int32_t last_job{-1};
+    std::atomic<int32_t> last_job{-1};   /* cross-thread read by the test loop */
 
     bool start(PalT& p)
     {
@@ -495,7 +495,7 @@ private:
         for (;;) {
             int32_t j = 0;
             while (ring.try_pop(j)) {
-                last_job = j;
+                last_job.store(j, std::memory_order_relaxed);
                 executed.fetch_add(1U, std::memory_order_relaxed);
             }
             if (!running.load(std::memory_order_acquire)) { return; }
@@ -523,7 +523,7 @@ COACT_TEST(posix_spsc_worker_handoff_probe)
     CHECK(w.submit(6));
     w.pal->sem_release(w.wake);
     while (w.executed.load(std::memory_order_acquire) < 5U) { }
-    CHECK_EQ(6, w.last_job);           /* FIFO order preserved */
+    CHECK_EQ(6, w.last_job.load());           /* FIFO order preserved */
 
     w.stop();
     CHECK_EQ(5U, w.executed.load());
