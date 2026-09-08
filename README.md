@@ -141,6 +141,7 @@ event-interaction diagrams are documented in
 | monitor | `monitor.hpp` | breaker, watermark, RTC timeout |
 | policy | `policy.hpp` | rate-limit / policy hooks |
 | core | `coordinator.hpp` `dispatcher.hpp` `runtime.hpp` | submit pipeline, dispatch loop, assembly |
+| coro | `coro/` (`coro.hpp` `posix.hpp`) | stackful coroutines (ucontext), CoroSem, event-driven sync, stack guard/watermark |
 | pal | `pal_posix.hpp` `pal_rtthread.hpp` | platform abstraction |
 
 ## Testing
