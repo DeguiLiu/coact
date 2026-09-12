@@ -109,6 +109,17 @@ target_link_libraries(test_softirq PRIVATE Threads::Threads)
 target_compile_definitions(test_softirq PRIVATE COACT_RTT_STUB)
 target_include_directories(test_softirq PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
+# Windows PAL: native Win32 primitives (CreateSemaphoreW / CRITICAL_SECTION /
+# CONDITION_VARIABLE / _beginthreadex / event + SPSC ring). Windows-only — the
+# Linux host build must not compile pal_windows.cpp (it includes <windows.h>).
+if(WIN32)
+    coact_add_test(test_pal_windows
+        test_pal_windows.cpp
+        pal_windows.cpp)
+    target_include_directories(test_pal_windows PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+endif()
+
 # Negative compile contracts: RtThread::Profile is only valid on a real
 # single-core RT-Thread build. Each target compiles with a minimal synthetic
 # RT-Thread configuration and CTest inverts the expected compiler failure.

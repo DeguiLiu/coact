@@ -7,7 +7,7 @@
 
 coact（**Co**operative **Act**ive-object framework）是一个面向运行 RT-Thread 的 MCU 的 C++17 事件驱动框架，基于**主动对象（Active Object）+ 层次状态机（HSM）**，在单核上提供确定性的异步事件调度。
 
-**RT-Thread 是首选目标平台。** Linux（host）保留为开发、测试与 SMP 参考——同一套头文件两个平台都能编，仅需切换 PAL。
+**RT-Thread 是首选目标平台。** Linux（host）与 Windows（host）保留为开发、测试与 SMP 参考——同一套头文件各平台都能编，仅需切换 PAL。
 
 ## 解决的问题
 
@@ -27,8 +27,9 @@ coact（**Co**operative **Act**ive-object framework）是一个面向运行 RT-T
 |---|---|---|---|
 | **RT-Thread 5.2.x 单核**（首选） | `SingleCoreCriticalRing`（irq-mask，无原子） | `rt_hw_interrupt_disable/enable` | Cortex-M 原生 32-bit CAS，零堆 |
 | Linux host（兼容） | `BoundedMpscQueue`（ready-set） | 无锁 64-bit 原子 | 用于开发 / 测试 / SMP 参考 |
+| Windows host（原生） | `BoundedMpscQueue`（ready-set） | `CreateSemaphoreW` / `CRITICAL_SECTION` / `CONDITION_VARIABLE` | Win32 原生原语；编 `src/core/pal_windows.cpp` |
 
-选平台即选 PAL：RT-Thread 用 `coact/pal_rtthread.hpp`，host 用 `coact/pal_posix.hpp`。其余框架完全一致。
+选平台即选 PAL：RT-Thread 用 `coact/pal_rtthread.hpp`，Linux host 用 `coact/pal_posix.hpp`，Windows host 用 `coact/pal_windows.hpp`。其余框架完全一致。
 
 ## 快速开始（host）
 
@@ -80,6 +81,15 @@ g_rt.start();                                        // 内部 set stack -> init
 
 单核产品（`RttSingleCoreProfile`）要求 `RT_CPUS_NR==1` 且未启用 `RT_USING_SMP`；`Runtime` 第三模板参把 profile 传导到 Dispatcher（单核→immediate reclaim，Host 默认→batched）。
 
+## 在 Windows 上
+
+包含同一组头文件，改用 `coact/pal_windows.hpp`，并把 `src/core/pal_windows.cpp` 编进宿主工程（它只用 Win32 原语：`CreateSemaphoreW`、`CRITICAL_SECTION`、`CONDITION_VARIABLE`、`_beginthreadex`、`CreateEventW` + `QueryPerformanceCounter`）。同步原语契约与 POSIX / RT-Thread 完全一致，注意两处易错语义：
+
+- `sem_take(0)` 是**非阻塞试一次**，永久等待用 `kWaitForever`；而 `cond_wait(0)` 是**永久等待**。Win32 `SleepConditionVariableCS(..., 0)` 恰好表示“立即超时”，所以 Windows PAL 内部把 `0` / `kWaitForever` 显式转成 `INFINITE`。
+- SoftIrqOps 没有 `signalfd`，且 Win32 event 不携带数据：改用 `CreateEventW` 作唤醒提示 + 固定 8 槽 SPSC payload 环承载 `int32_t`。第 9 次 `raise` 返回 false 拒绝（不覆盖、不合并），`take` 按 FIFO 取出，超时返回 `-1`。
+
+`sleep_us` 的整毫秒部分走 `Sleep`，不足 1 ms 的部分用 QPC 忙等；Windows 默认定时器分辨率约 15.6 ms（未调 `timeBeginPeriod` 时），它是下限而非精确微秒延时。Windows 测试目标在 CMake 的 `if(WIN32)` 下构建，Linux host 构建不受影响。
+
 ## 示例
 
 - `examples/hsm_protocol_demo.cpp` — 层次协议状态机（父状态事件继承），完整走 pool → submit → 队列 → dispatch。
@@ -101,11 +111,11 @@ g_rt.start();                                        // 内部 set stack -> init
 | policy | `policy.hpp` | 限速 / 策略钩子 |
 | core | `coordinator.hpp` `dispatcher.hpp` `runtime.hpp` | 提交管线、派发循环、装配 |
 | coro | `coro/`（`coro.hpp` `posix.hpp`） | 栈式协程（ucontext）、CoroSem、事件驱动同步、栈守卫/水位 |
-| pal | `pal_posix.hpp` `pal_rtthread.hpp` | 平台抽象 |
+| pal | `pal_posix.hpp` `pal_rtthread.hpp` `pal_windows.hpp` | 平台抽象 |
 
 ## 测试
 
-默认 14 个 host 测试目标通过（`ctest`），池 / Dispatcher 路径 TSan 无竞争，CI（`.github/workflows/ci.yml`）跑 host + ASan/UBSan；`serial_ota_demo` 需 `-DCOACT_BUILD_SERIAL_OTA=ON`（依赖树外 newosp 头文件）。开发期间已在 RT-Thread 5.2.1 / qemu-vexpress-a9（单核）上完成启动验证。
+默认 14 个 host 测试目标通过（`ctest`），池 / Dispatcher 路径 TSan 无竞争，CI（`.github/workflows/ci.yml`）跑 host + ASan/UBSan；`serial_ota_demo` 需 `-DCOACT_BUILD_SERIAL_OTA=ON`（依赖树外 newosp 头文件）。Windows host 额外构建 `test_pal_windows`（`if(WIN32)`，仅 Windows 主机）。开发期间已在 RT-Thread 5.2.1 / qemu-vexpress-a9（单核）上完成启动验证。
 
 ## 许可
 

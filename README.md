@@ -10,9 +10,9 @@ framework for MCUs that run RT-Thread. It schedules asynchronous events through
 **Active Objects (AO)** and **Hierarchical State Machines (HSM)**, giving a
 deterministic, preemptive-safe dispatch model on a single core.
 
-**RT-Thread is the primary target.** Linux (host) is kept working as a
-development, test and SMP reference — the same headers build both, with a small
-PAL swap.
+**RT-Thread is the primary target.** Linux and Windows (host) are kept working
+as development, test and SMP references — the same headers build every platform,
+with a small PAL swap.
 
 ## Why it exists
 
@@ -46,9 +46,11 @@ AOs safely.
 |---|---|---|---|
 | **RT-Thread 5.2.x, single-core** (primary) | `SingleCoreCriticalRing` (irq-mask, no atomics) | `rt_hw_interrupt_disable/enable` | Cortex-M native 32-bit CAS, zero heap |
 | Linux host (compat) | `BoundedMpscQueue` (ready-set) | lock-free 64-bit atomics | for dev / tests / SMP reference |
+| Windows host (native) | `BoundedMpscQueue` (ready-set) | `CreateSemaphoreW` / `CRITICAL_SECTION` / `CONDITION_VARIABLE` | Win32 primitives; compile `src/core/pal_windows.cpp` |
 
 Choose the PAL: `coact/pal_rtthread.hpp` for RT-Thread, `coact/pal_posix.hpp`
-for host. The rest of the framework is identical.
+for Linux host, `coact/pal_windows.hpp` for Windows host. The rest of the
+framework is identical.
 
 ## Quick start (host)
 
@@ -117,6 +119,29 @@ Single-core products (`RttSingleCoreProfile`) require `RT_CPUS_NR==1` and no
 `RT_USING_SMP`. `Runtime`'s third template parameter forwards the profile to
 the Dispatcher (single-core → immediate reclaim; host default → batched).
 
+## On Windows
+
+Include the same headers, pick `coact/pal_windows.hpp`, and compile
+`src/core/pal_windows.cpp` into the host project (it only uses Win32
+primitives: `CreateSemaphoreW`, `CRITICAL_SECTION`, `CONDITION_VARIABLE`,
+`_beginthreadex`, `CreateEventW` + `QueryPerformanceCounter`). The sync
+contract matches POSIX / RT-Thread exactly. Two easy-to-miss semantics:
+
+- `sem_take(0)` is a **non-blocking try** (use `kWaitForever` to block),
+  whereas `cond_wait(0)` means **wait forever**. Win32
+  `SleepConditionVariableCS(..., 0)` means "return immediately" instead, so
+  the Windows PAL explicitly translates `0` / `kWaitForever` to `INFINITE`.
+- SoftIrqOps has no `signalfd`, and a Win32 event carries no data: it uses
+  `CreateEventW` as a wake hint plus a fixed 8-slot SPSC payload ring for the
+  `int32_t`. The 9th `raise` returns false as a busy reject (no overwrite, no
+  coalescing); `take` drains FIFO and returns `-1` on timeout.
+
+`sleep_us` uses `Sleep` for whole milliseconds and a QPC busy-wait for the
+sub-millisecond remainder; Windows' default timer resolution is ~15.6 ms
+without `timeBeginPeriod()`, so this is a floor, not a precise delay. The
+Windows test target builds under CMake `if(WIN32)` and does not affect the
+Linux host build.
+
 ## Examples
 
 - `examples/hsm_protocol_demo.cpp` — hierarchical protocol HSM (parent-state
@@ -142,7 +167,7 @@ event-interaction diagrams are documented in
 | policy | `policy.hpp` | rate-limit / policy hooks |
 | core | `coordinator.hpp` `dispatcher.hpp` `runtime.hpp` | submit pipeline, dispatch loop, assembly |
 | coro | `coro/` (`coro.hpp` `posix.hpp`) | stackful coroutines (ucontext), CoroSem, event-driven sync, stack guard/watermark |
-| pal | `pal_posix.hpp` `pal_rtthread.hpp` | platform abstraction |
+| pal | `pal_posix.hpp` `pal_rtthread.hpp` `pal_windows.hpp` | platform abstraction |
 
 ## Testing
 
