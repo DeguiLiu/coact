@@ -206,6 +206,39 @@ COACT_TEST(rtthread_softirq_cross_thread)
     pal.softirq_deinit(h);
 }
 
+/* timeout_ms 0 means "wait forever" (pal.hpp SoftIrqOps contract), NOT an
+   immediate timeout. This is the one place the two PALs disagreed: poll()
+   spells forever as -1 and returns at once for 0, so a POSIX implementation
+   that forwarded 0 straight through would report "nothing raised" while the
+   producer was about to raise. The consumer must still be waiting when the
+   payload arrives. */
+COACT_TEST(posix_softirq_take_zero_waits_forever)
+{
+    Posix pal;
+    PosixSoftIrq h{};
+    REQUIRE(pal.softirq_init(h));
+
+    std::atomic<bool> raised{false};
+    PosixRaiseCtx ctx{&pal, &h, 31337, &raised};
+    PosixThread t{};
+    REQUIRE(pal.thread_create(t, [](void* a) {
+        PosixRaiseCtx* c = static_cast<PosixRaiseCtx*>(a);
+        /* Give the consumer time to reach take(0) and actually block; if 0
+           were still "return immediately" the consumer would already have
+           given up by the time this lands. */
+        c->h->pal->sleep_us(50000U);
+        c->h->pal->softirq_raise(*c->h, c->payload);
+        c->ready->store(true, std::memory_order_release);
+    }, &ctx));
+
+    const int32_t got = pal.softirq_take(h, 0U);
+    pal.thread_join(t);
+
+    CHECK_EQ(31337, got);
+    CHECK(raised.load(std::memory_order_acquire));
+    pal.softirq_deinit(h);
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

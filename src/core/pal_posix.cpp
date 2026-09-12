@@ -453,8 +453,14 @@ int32_t Posix::softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept
     pfd.fd      = h.fd;
     pfd.events  = POLLIN;
     pfd.revents = 0;
-    int timeout = (kWaitForever == timeout_ms) ? -1
-                                               : static_cast<int>(timeout_ms);
+    /* timeout_ms 0 means "wait forever" per the SoftIrqOps contract in
+       pal.hpp (the same convention CondOps and the Dispatcher wait use); it
+       does NOT mean an immediate timeout. poll() spells forever as -1 and
+       treats 0 as "return immediately", so both 0 and kWaitForever must map
+       to -1. The RT-Thread PAL honors the same rule — keeping the two in step
+       is what lets a caller pass 0 portably. */
+    const bool forever = (0U == timeout_ms) || (kWaitForever == timeout_ms);
+    const int timeout = forever ? -1 : static_cast<int>(timeout_ms);
     const int pret = poll(&pfd, 1, timeout);
     if (pret <= 0) {
         return -1;   /* timeout (0) or poll error (-1): same caller contract */

@@ -452,6 +452,46 @@ COACT_TEST(event_registry_queries)
 
     // idempotent re-registration returns the same id
     CHECK_EQ(coact::register_pool(&probe_record), id);
+
+    // unregister releases the slot, and is idempotent so an explicit teardown
+    // composes with a later destructor. Without this a destroyed pool would
+    // leave the registry pointing at a dead PoolRecord, which the gc/reclaim
+    // hot path dereferences via pool_record().
+    coact::unregister_pool(&probe_record);
+    CHECK(coact::pool_record(id) == nullptr);
+    coact::unregister_pool(&probe_record);
+    CHECK(coact::pool_record(id) == nullptr);
+    coact::unregister_pool(nullptr);   // must be a no-op, not a crash
+}
+
+/* A pool destroyed and rebuilt at the same address must not be reachable
+   through a record belonging to the previous object. This is the create /
+   destroy cycle a reused slot performs, and it is what makes a missing
+   unregister a real (not theoretical) dangling-pointer window. */
+COACT_TEST(event_pool_destructor_unregisters)
+{
+    static constexpr std::uint16_t kCap = 8U;
+    alignas(64) static unsigned char storage[4096];
+
+    coact::EventPool<16U, kCap>* pool =
+        new (static_cast<void*>(storage)) coact::EventPool<16U, kCap>();
+    REQUIRE(pool->init(storage + 64, sizeof(storage) - 64));
+    CHECK(coact::pool_record(static_cast<std::uint8_t>(1U)) != nullptr);
+
+    pool->~EventPool();
+    // Every slot must be released once the pool is gone.
+    bool any_live = false;
+    for (std::uint8_t i = 0U; i < coact::kMaxEventPools; ++i) {
+        if (coact::detail::g_pool_registry[i] != nullptr) {
+            any_live = true;
+        }
+    }
+    CHECK(!any_live);
+
+    // Rebuild at the same address: registration must succeed again.
+    pool = new (static_cast<void*>(storage)) coact::EventPool<16U, kCap>();
+    CHECK(pool->init(storage + 64, sizeof(storage) - 64));
+    pool->~EventPool();
 }
 
 COACT_TEST_MAIN()

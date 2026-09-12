@@ -95,4 +95,27 @@ inline uint8_t register_pool(PoolRecord* rec) noexcept
     return 0U;
 }
 
+// Detach a pool record from the registry, releasing its slot. Call only once
+// the pool is done for good: every event carrying this pool_id must already
+// have been reclaimed. pool_record() is read on the gc/reclaim hot path, so a
+// record left behind by a destroyed pool is dereferenced after its storage is
+// gone — a real hazard whenever a pool is constructed, destroyed and then
+// rebuilt at the same address (a reused slot), which is exactly what a
+// create/destroy cycle does.
+//
+// Idempotent: a record that is not registered is simply not found, so the
+// explicit teardown path and any later destructor compose.
+inline void unregister_pool(PoolRecord* rec) noexcept
+{
+    if (rec == nullptr) {
+        return;
+    }
+    for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
+        if (detail::g_pool_registry[i] == rec) {
+            detail::g_pool_registry[i] = nullptr;
+            return;
+        }
+    }
+}
+
 }  // namespace coact

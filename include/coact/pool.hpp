@@ -387,6 +387,29 @@ public:
     {
     }
 
+    // Unregister on destruction so a pool that goes out of scope cannot leave a
+    // dangling entry in the global registry. See unregister_pool() in event.hpp
+    // for why a stale entry is unsafe: pool_record() is read on the gc/reclaim
+    // hot path, and a pool rebuilt at the same address (a reused slot) would
+    // otherwise be reached through a record belonging to the previous object.
+    // shutdown() is idempotent, so an explicit teardown followed by this
+    // destructor composes.
+    ~EventPool() noexcept
+    {
+        shutdown();
+    }
+
+    // Detach this pool from the process-wide event registry. Call only after
+    // the owning Runtime/Dispatcher has stopped and reclaimed every event; an
+    // event_gc after this point would otherwise have no valid PoolRecord.
+    void shutdown() noexcept
+    {
+        if (pool_id_ != 0U) {
+            unregister_pool(&record_);
+            pool_id_ = 0U;
+        }
+    }
+
     // Initialize the lock-free indexed free list from external storage, bind
     // the platform critical-section hook, and register this pool. The injected
     // CriticalSection is the same hook the single-core queue backend uses:
