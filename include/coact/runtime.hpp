@@ -35,10 +35,16 @@ template <typename PalT>
 inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry,
                                  void* ctx) noexcept
 {
-    if constexpr (std::is_same<decltype(pal.start_dispatcher(entry, ctx)),
-                               void>::value) {
+    using StatusT = decltype(pal.start_dispatcher(entry, ctx));
+    if constexpr (std::is_same<StatusT, void>::value) {
         pal.start_dispatcher(entry, ctx);
         return true;
+    }
+    else if constexpr (std::is_same<StatusT, bool>::value) {
+        /* A bool PAL reports success as true (not as the enum convention of
+           zero). Comparing against decltype(status){0} here would invert the
+           result, because value-initialised bool is false. */
+        return pal.start_dispatcher(entry, ctx);
     }
     else {
         /* Status-returning PAL (RtThread, design §7.5): success == the enum's
