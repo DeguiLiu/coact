@@ -12,3 +12,10 @@ build/
 *~
 # OS artifacts
 .DS_Store
+
+# Local-only material: the blog series stays on disk but is not published
+docs/blogs/
+
+# One-off artifacts: run logs and backups are not part of the published docs
+docs/*run_log*.txt
+docs/**/*.bak

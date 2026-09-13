@@ -8,9 +8,8 @@
 coact (**Co**operative **Act**ive-object framework) is a header-first **C++17**
 event framework for **single-core MCUs** running RT-Thread: producers submit from
 task or ISR context, one dispatcher thread delivers to **Active Objects (AO)**
-backed by **Hierarchical State Machines (HSM)**. It shares the AO + HSM discipline
-of **QP/C++ (qpcpp)** — events instead of threads, one dispatcher, static state
-tables — with the differences below.
+backed by **Hierarchical State Machines (HSM)**. Events replace threads; one
+dispatcher thread runs them; transition tables are static.
 
 ## Why coact
 

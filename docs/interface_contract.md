@@ -1,152 +1,239 @@
-# coact 实现契约（Implementation Contract）v0.1
+# coact 实现契约（Interface Contract）v0.5.0
 
-本文档是所有编码 subagent 的接口契约。**先读本文，再读 `design_coact_zh.md` 对应章节，最后动手。**
+本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。版本号与顶层构建一致（`CMakeLists.txt` 中 `project(coact VERSION 0.5.0)`）。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
 
-## 0. 纪律（最高优先级）
+读者可先读 `README.md` 与 `docs/cpp17_coact_usage_zh.md` 建立使用视图，再回到本文核对契约细节。本文中的签名以当前 `include/coact/` 下的实现为准；凡与本机代码不一致之处，以代码为准。
 
-- 项目许可证：**MIT**。新文件必须有 `// SPDX-License-Identifier: MIT` 头注释。
-- 语言：**C++17**（if constexpr 可用）。构建强制 `-fno-exceptions -fno-rtti`，代码不得依赖异常与 RTTI。
-- 代码来源：
-  - `newosp`（MIT，`/home/dgliu/newosp`）白名单组件**可复用/移植**，必须保留原 MIT 版权文本并标注来源文件。
-  - `QP/C++`（`/home/dgliu/qpcpp`）、`qpc-rtthread`（`/home/dgliu/qpc-rtthread`）：**允许复用其代码、宏配置体系、全局注册表、引用计数事件模型**（用户决策 2026-08-08）。项目整体仍以 MIT License 发布；复用实现时按 coact API 适配，并在文件头注明来源仓库与文件，供合规回溯。
-  - **接口契约优先**：本文档 4.x 的签名是已冻结架构（QP 式引用计数事件 + 受控全局池/AO 注册表，用户 2026-08-08 决策定稿）；如实现过程中发现需要偏离（例如改回唯一所有权、改变 ref_ctr/event_gc 语义、引入新的全局单例），属于架构变更，必须先报告协调者裁决，不得擅自推翻已冻结签名。
-- 编码风格：Allman 大括号、4 空格缩进、120 列上限、无 `goto`、无动态分配（核心运行时）、错误用返回值/`Expected`、禁止全局可变单例（`constexpr` 表除外）。
-- 头文件 `#pragma once`，统一放 `include/coact/`。不要修改其他模块的头文件——如有跨模块接口问题，在报告中指出，由协调者裁决。
-- 允许 QP 式**受控全局注册表**（事件池注册表、AO 注册表）作为唯一允许的单例形式；其余运行状态仍显式实例化。
+## 0. 纪律与代码来源
 
-## 1. 仓库结构（已就绪）
+- 项目许可证：**MIT**。新增文件必须带 `// SPDX-License-Identifier: MIT` 头注释。
+- 语言：**C++17**。构建强制关闭异常与 RTTI（见 §2 的严格编译选项），代码不得依赖异常与 RTTI。
+- 第三方复用与许可：本仓库复用了若干第三方 MIT 许可的组件与设计思路（事件池的定步长空闲链表、引用计数事件、单执行权活动对象与批处理派发循环等）。这些组件的版权归属与来源文件标注在各源文件头部；再分发时必须保留原 MIT 版权文本并保持来源标注，供合规回溯。派生实现须按 coact API 重新表达，项目整体仍以 MIT 发布。
+- 编码风格：Allman 大括号、4 空格缩进、120 列上限、无 `goto`、核心运行时路径无动态分配；错误用返回值或 `Expected` 表达，不抛异常。
+- 头文件统一 `#pragma once`，公共头放 `include/coact/`。
+- 禁止全局可变单例，唯一例外是**受控的全局事件池注册表**（`event.hpp` 的 `detail::g_pool_registry`）：仅初始化期写入，之后只读。
+- 平台差异一律通过 PAL 类型参数在**编译期**解析，禁止运行期分支选择平台行为。
 
+## 1. 仓库结构
+
+### 1.1 公共头文件（`include/coact/`，按职责分组）
+
+- **基础与词汇（L0）**
+  - `config.hpp`：`LogicalPrio` / `PriorityClass` / `ContextKind` / `ExecutionContext` / `EventQos` / `TargetId` / `Signal` / `SubmitDisposition` / `SubmitResult` / `QueueResult` / `PoolError` / `InitError` / `DefaultConfig`。
+  - `assert.hpp`：`COACT_ASSERT`、`COACT_UNLIKELY`、`coact::fatal_assert`。
+  - `expected.hpp`：move-only 的 `Expected<V, E>` 与 `Expected<void, E>`。
+  - `bitfield.hpp`：`BitFieldView<Reg, Offset, Width>`，编译期位域读写视图。
+- **事件与内存（L1）**
+  - `event.hpp`：`Event`、`PoolRecord`、`kMaxEventPools`、`pool_record` / `register_pool` / `unregister_pool`、`event_ref_inc` / `event_gc`。
+  - `pool.hpp`：`EventPool`、同步 profile（`RttSingleCoreProfile` / `HostSmpProfile`）、回收策略（`ImmediateReclaimer` / `ReclaimBatcher` / `BatchedReclaimer`）。
+- **状态与队列原语（L2）**
+  - `hsm.hpp`：`TransitionKind`、`StateDef`、`TransitionDef`、`Hsm`。
+  - `queue.hpp`：`BoundedMpscQueue`（SMP）、`SingleCoreCriticalRing`（单核临界区）。
+  - `spsc_ring.hpp`：`SpscRing`（单生产者单消费者无锁环形缓冲）。
+  - `policy.hpp`：`PolicyResult` / `PolicyReason` / `PolicyOps` / `TokenBucketRateLimiter` / `MergeCell`。
+  - `monitor.hpp`：`BreakerLevel` / `Breaker` / `BreakerBank` / `RejectReason` / `AoCounters` / `GlobalCounters` / `Monitor`。
+- **执行与缓冲（L3）**
+  - `ao.hpp`：`AoRunState` / `ExecutionLease` / `PendingCounter` / `AoBase` / `AoRegistry` / `Ao`。
+  - `static_ao.hpp`：`StaticAoEntry` / `make_static_ao_entry`（板级静态 AO 表的非拥有入口）。
+  - `staging.hpp`：`Partition` / `StagingSlot` / `BatchSelector` / `Staging`。
+  - `timer.hpp`：`TimerTaskId` / `TimerError` / `SteadyTickSource` / `ManualTickSource` / `TimerScheduler`。
+- **集成装配（L4）**
+  - `dispatcher.hpp`：`Dispatcher`（单线程批处理循环）。
+  - `coordinator.hpp`：`DispatchCoordinator`（统一提交入口）。
+  - `runtime.hpp`：`Runtime`（三阶段初始化与生命周期）。
+- **平台抽象（PAL）**
+  - `pal.hpp`：`CriticalSection` / `CriticalSectionGuard` / `pal::CriticalToken` / `pal::ClockOps` / `pal::ThreadEntry` / `make_critical_section` / `SpinCriticalSection` / `make_spin_critical_section`，以及 PAL 方法级契约注释。
+  - `pal_posix.hpp`：`pal::Posix`（pthread / condvar / 单调时钟，SMP 语义）。
+  - `pal_rtthread.hpp`：`pal::RtThread`（静态资源 RT-Thread PAL，单核语义）。
+- **协程子系统（`coro/`）**
+  - `coro/coro.hpp`、`coro/task.hpp`（`Task` / `Promise` / `AwaitableRef` / `TaskRegistry`）、`coro/scheduler.hpp`（`TimerFacade`）、`coro/combinators.hpp`、`coro/awaitable.hpp`、`coro/task_id.hpp`、`coro/error.hpp`、`coro/config.hpp`、`coro/version.hpp`、`coro/posix.hpp`（`Coroutine` / `StackfulExecutor`）、`coro/detail/fixed_storage.hpp`、`coro/detail/task_slot.hpp`。
+- **诊断**
+  - `diag/log.hpp`：`LogLevel` / `LogLane` / `LogRecord` / `DiagRing` / `LogDescriptor` / `LogCatalog` / `LogSinkOps` / `LogClockOps` / `LogStats` / `Logger`。
+  - `diag/log_rtthread.hpp`：RT-Thread 后端适配。
+
+### 1.2 源与测试（`src/`、`test/`、`examples/`、`tools/`）
+
+- `src/<module>/`：每个模块一个目录，模块自身的头文件放 `include/coact/`，目录内是模块测试与 `CMakeLists.txt`。现有模块目录：`event`、`hsm`、`queue`、`ao`、`staging`、`policy`、`monitor`、`core`、`diag`。
+- `src/core/`：装配与集成所在，含 `pal_posix.cpp`、`pal_rtthread.cpp`、`coordinator` / `integration` / `stress` / `static_lifetime` / `bitfield` / `config` / `expected` / `timer` / `softirq` / `pal_sync` / `rtt_pal` 等测试，以及协程测试（`test_coro_*.cpp`）与热点基准（`bench_hotpath.cpp`）。
+- `test/`：`test_harness.hpp` 测试框架；RT-Thread 主机桩（`rtthread_stub.h`、`rtthread_gate_smp/`、`rtthread_gate_multicore/`）；`tsan_classify.sh` / `asan_classify.sh` / `elf_audit.sh` 卫生脚本。
+- `examples/`：主机示例（`isp_pipeline/`、`serial_ota/`、协程 demo、`flash_proxy_demo`、`hsm_protocol_demo`、`node_manager_demo` 等），见 `examples/README.md`。
+- `tools/`：开发辅助脚本（`flamegraph_svg.py`）。
+
+### 1.3 模块依赖
+
+箭头方向为“依赖”。下图为模块级主要依赖，依据各头文件的 `#include` 关系；`examples/README.md` 的分层表与本图一致。
+
+```mermaid
+graph TD
+    subgraph L0["L0 基础"]
+        config["config / assert / expected / bitfield"]
+        pal["pal"]
+    end
+    subgraph L1["L1 事件与内存"]
+        event["event"]
+        pool["pool"]
+    end
+    subgraph L2["L2 状态与队列"]
+        hsm["hsm"]
+        Q["queue / spsc_ring"]
+        policy["policy"]
+        monitor["monitor"]
+    end
+    subgraph L3["L3 执行与缓冲"]
+        ao["ao / static_ao"]
+        staging["staging"]
+        timer["timer"]
+    end
+    subgraph L4["L4 集成装配"]
+        dispatcher["dispatcher"]
+        coordinator["coordinator"]
+        runtime["runtime"]
+        coro["coro"]
+        diag["diag"]
+    end
+    pal --> config
+    event --> pal
+    pool --> event
+    hsm --> config
+    hsm --> event
+    Q --> config
+    Q --> pal
+    policy --> config
+    policy --> event
+    monitor --> config
+    ao --> hsm
+    ao --> event
+    staging --> Q
+    staging --> event
+    timer --> pool
+    timer --> event
+    dispatcher --> ao
+    dispatcher --> staging
+    dispatcher --> monitor
+    dispatcher --> pool
+    coordinator --> policy
+    coordinator --> ao
+    coordinator --> staging
+    coordinator --> monitor
+    coordinator --> pool
+    runtime --> dispatcher
+    runtime --> coordinator
+    coro --> pool
+    coro --> event
+    diag --> event
 ```
-/home/dgliu/coact/
-├── CMakeLists.txt            # C++17 strict，add_subdirectory 各模块
-├── LICENSE                   # MIT
-├── include/coact/            # 公共头文件（config/expected/assert/pal 已由骨架提供）
-│   ├── assert.hpp            # COACT_ASSERT + coact::fatal_assert
-│   ├── config.hpp            # LogicalPrio/PriorityClass/ExecutionContext/EventQos/
-│   │                         #   TargetId/SubmitDisposition/SubmitResult/错误枚举/DefaultConfig
-│   ├── expected.hpp          # Expected<T,E>（move-only）+ Expected<void,E>
-│   └── pal.hpp               # pal::CriticalToken / pal::ThreadEntry + PAL 契约注释
-├── test/
-│   ├── test_harness.hpp      # COACT_TEST/CHECK/REQUIRE/COACT_TEST_MAIN
-│   └── CMakeLists.txt        # coact_add_test(<target> <src>...) 辅助函数
-└── src/<module>/             # 每个 subagent 拥有一个模块目录
-    ├── CMakeLists.txt        # 用 coact_add_test 声明测试可执行文件
-    ├── ...（本模块头文件，放 include/coact/）
-    └── test_<module>.cpp
-```
 
-## 2. 构建与测试（每个 subagent 独立执行）
+依赖规则：模块只 `#include` 自身与图中列出的下游模块头文件。回调函数指针类型**不带** `noexcept` 限定（`CriticalSection`、`PoolRecord::reclaim`、`StateDef` / `TransitionDef` 的函数指针均如此）——C++17 下 `noexcept` 不是函数指针类型的一部分，写出会造成类型不匹配。
 
-使用**独立 build 目录**，避免并行冲突：
+## 2. 构建与测试
+
+顶层为 header-only 的 `coact_core` INTERFACE 库；测试经 CTest 注册。仓库相对的最小流程：
 
 ```sh
-cd /home/dgliu/coact
-cmake -B build_<mod> -S .
-cmake --build build_<mod> --target test_<mod>
-ctest --test-dir build_<mod> -R test_<mod> --output-on-failure
+cmake -B build -S .
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
-- 未写 CMakeLists 的模块目录目前是空占位（`add_subdirectory` 对空 CMakeLists 无害）。
-- 你的模块 `src/<mod>/CMakeLists.txt` 写完后，顶层 configure 仍会对其他空模块正常通过。
-- 测试用 `#include "test/test_harness.hpp"`，文件末尾 `COACT_TEST_MAIN()`。
-- 若测试需要 `pthread`，在模块 CMakeLists 加 `target_link_libraries(test_<mod> PRIVATE pthread)`。
+- 单个目标（如协调器契约测试）：`cmake --build build --target test_coordinator && ctest --test-dir build -R test_coordinator --output-on-failure`。
+- 严格编译选项：MSVC 为 `/W4 /GR- /EHs-c-`；其它编译器为 `-Wall -Wextra -Wpedantic -fno-exceptions -fno-rtti`。这些是 INTERFACE 用法要求，传导给链接 `coact_core` 的消费者。
+- `COACT_PORTABLE_ONLY=ON`（默认 OFF）是 Windows CI 的显式裁剪开关：只注册可跨主机构建的目标，被跳过的测试在 configure 阶段列出。它不是平台宏，不改变运行期行为。
+- 测试用 `#include "test/test_harness.hpp"`，文件末尾用 `COACT_TEST_MAIN()`；`CMakeLists.txt` 中的 `coact_add_test(<target> <src>...)` 负责链接 `coact_core` 与测试框架，并为每个测试设 120 秒墙钟上限（用于捕获真挂起，而非性能门槛）。
+- 并发与内存卫生脚本：`test/tsan_classify.sh`、`test/asan_classify.sh`；符号级零堆断言见 `test/elf_audit.sh`。
+- 示例为 POSIX PAL 可执行文件，随顶层构建一并生成，部分示例自带 `add_test` 自校验。
 
-## 3. 模块、文件所有权与依赖
+## 3. 模块接口契约
 
-| 模块 | 目录 | 头文件（include/coact/） | 依赖骨架 | 依赖其他模块 |
-|---|---|---|---|---|
-| event | src/event | event.hpp, pool.hpp | expected, config, assert | 无 |
-| hsm | src/hsm | hsm.hpp | config | event 的 `Event` 类型 |
-| queue | src/queue | queue.hpp | config | 无 |
-| monitor | src/monitor | monitor.hpp | config, expected | 无 |
-| policy | src/policy | policy.hpp | config, assert | event 的 `Event` |
-| ao | src/ao | ao.hpp | config | hsm 的 `Hsm`、event 的 `Event` |
-| staging | src/staging | staging.hpp | config | queue 的队列、event 的 `Event` |
-| core（集成） | src/core | coordinator.hpp, runtime.hpp, dispatcher.hpp | 全部 | 全部 |
+契约以当前实现为准。以下“失败返回”一栏描述的是**运行时返回值**，不改变编译期约束（`static_assert`）。
 
-依赖规则：只 `#include` 自己模块与所列依赖模块的头文件。禁止 include 未列出的模块。函数指针类型**不带** `noexcept` 限定（C++17 下 noexcept 不是函数指针类型的一部分）。
-
-## 4. 模块接口契约（签名以设计文档为权威，此处补缺省）
-
-### 4.1 event（src/event）— 见设计 §6（已切换为 QP 式引用计数 + 全局池注册表）
+### 3.1 event / pool（事件与事件池，L1）
 
 ```cpp
 struct Event {
     uint16_t signal;
-    uint8_t pool_id;   // 0 = 非池（静态）事件；否则为全局池注册表索引
-    uint8_t ref_ctr;   // 引用计数：alloc 时 1，额外所有权 inc，gc dec，归 0 回池
+    uint8_t  pool_id;   // 0 = 静态事件；否则为 1 基全局注册表索引
+    uint8_t  ref_ctr;   // alloc 后为 1；每额外投递 +1；归 0 回池
 };
 
-// 全局池注册表（受控单例，QP QF_pool_ 式）。初始化后按 pool_id 定位。
+static constexpr uint8_t kMaxEventPools = 16U;
+
 struct PoolRecord {
-    void* free_list;         // 空闲块链表头
-    uint16_t block_size;     // 事件块对齐大小
-    uint16_t capacity;
-    uint16_t used;
-    uint16_t high_watermark;
-    void (*reclaim)(Event* e) noexcept;   // 归还块
+    alignas(64) std::atomic<uint32_t> free_head;  // [31:16] ABA tag, [15:0] 空闲索引
+    uintptr_t base;                               // 块区对齐基址
+    uint16_t  block_size;                         // 对齐后的块步长
+    uint16_t  capacity;
+    alignas(64) std::atomic<uint16_t> used;
+    std::atomic<uint16_t> high_watermark;
+    void (*reclaim)(Event* e);                    // 归还块（无 noexcept 限定）
+    void* owner;                                  // 所属 EventPool*（其 CriticalSection）
+    CriticalSection cs;
 };
-PoolRecord* pool_record(uint8_t pool_id) noexcept;    // 未知池返回 nullptr
-uint8_t register_pool(PoolRecord* rec) noexcept;      // 分配 pool_id，注册表满返回 0
 
-// 事件池：定容、块内空闲链表（复用 newosp mem_pool.hpp 思路）、alloc 后 ref_ctr==1
+PoolRecord* pool_record(uint8_t pool_id) noexcept;      // 0 或未知 id 返回 nullptr
+uint8_t     register_pool(PoolRecord* rec) noexcept;    // 幂等；满则返回 0
+void        unregister_pool(PoolRecord* rec) noexcept;  // 幂等；注销前须已回收全部事件
+
+void event_ref_inc(Event* e) noexcept;  // 仅池事件；静态事件为 no-op
+void event_gc(Event* e) noexcept;       // 递减；归 0 且 pool_id!=0 时经 pool_record 回池
+
 template <uint16_t BlockSize, uint16_t Capacity,
           class Profile = HostSmpProfile,
           size_t BlockAlign = alignof(std::max_align_t)>
 class EventPool {
 public:
+    ~EventPool() noexcept;                 // 析构调用 shutdown()
+    void shutdown() noexcept;              // 从全局注册表注销
     bool init(void* storage, size_t bytes,
               CriticalSection cs = detail::noop_cs()) noexcept;
-    Event* alloc(uint16_t signal) noexcept;           // 满返回 nullptr；ref_ctr=1
+    Event* alloc(uint16_t signal) noexcept;                       // 满返回 nullptr
+    Event* alloc_with_margin(uint16_t signal, uint16_t margin) noexcept;
     template <typename Layout, typename Payload, size_t PayloadAlign>
     Layout* alloc_typed(uint16_t signal) noexcept;
+    template <typename Layout, typename Payload, size_t PayloadAlign>
+    Layout* alloc_typed_with_margin(uint16_t signal, uint16_t margin) noexcept;
     uint16_t used() const noexcept;
+    uint16_t capacity() const noexcept;
     uint16_t high_watermark() const noexcept;
 };
 
-// 引用计数管理（QP QF 语义）：
-//   submit 接管 allocation reference；额外投递/自留所有权前 event_ref_inc(e)
-//   event_gc 递减 ref_ctr；归 0 且 pool_id!=0 → 经 pool_record(pool_id) 回原池
-void event_ref_inc(Event* e) noexcept;
-void event_gc(Event* e) noexcept;
+class ImmediateReclaimer { void begin(); void release(Event*); void flush(); };
+template <uint16_t MaxPending = detail::kDefaultReclaimBatcherPools>
+class ReclaimBatcher;                 // release() 按池挂链，块数达 kReclaimBatchCap 或 flush 时一次 CAS 归并
+template <uint16_t MaxPending> using BatchedReclaimer = ReclaimBatcher<MaxPending>;
 ```
 
-`EventPool::init()` 成功初始化外部存储并完成池注册时返回 `true`；重复初始化、空存储、无效临界区、可用空间不足一个对齐块或注册表已满时返回 `false`，失败实例保持不可分配。`BlockAlign` 必须非零、为 2 的幂且不小于 `alignof(Event)`；对齐后的块步长必须能由 `uint16_t` 表示。
+语义与不变量：
 
-`alloc_typed()` 先取得原始块，再以 placement new 值初始化完整 `Layout`，写入 `Event` 头，最后在 `Layout::payload` 区域以 placement new 启动 `Payload` 生命周期。`Layout` 与 `Payload` 必须可无异常默认构造、可平凡复制且可平凡析构；`Layout` 必须是标准布局且首成员为精确的 `Event`。编译期同时校验 `sizeof(Layout) <= BlockSize`、`sizeof(Payload) <= sizeof(Layout::payload)`、`alignof(Layout) <= BlockAlign` 以及 payload 声明对齐、实际偏移和类型对齐一致。池不提供析构回调，因此回收时不执行应用类型析构函数。
+- `pool_id` 为 1 基注册表索引，`kMaxEventPools` 为 16；`pool_record(0)` 与越界 id 返回 `nullptr`。
+- `EventPool::init` 从外部存储构建定步长空闲链表、绑定临界区并注册；重复初始化、空存储、空临界区 hook、可用空间不足一个块时返回 `false` 并保持不可分配。`shutdown()` 与析构幂等，需在所有携带该 `pool_id` 的事件回收后调用，否则 `event_gc` 会读到失效记录。
+- 编译期约束（`static_assert`）：`Capacity > 0` 且 `< 0xFFFF`（16 位索引哨兵）；`BlockSize >= sizeof(Event)`；`BlockAlign` 非零、为 2 的幂、不小于 `alignof(Event)`，且对齐后步长可被 `uint16_t` 表示。`HostSmpProfile` 额外要求 32 位 CAS 无锁。
+- 空闲链表头是单个打包 32 位字（索引 + ABA tag），每次成功 alloc/reclaim 递增 tag 以拒绝过期弹出；`HostSmpProfile` 用 acquire/release CAS，`RttSingleCoreProfile` 在单个 irq 掩码临界区内做普通索引操作，无 CAS / tag / 退避。
+- `alloc_typed` 要求（编译期 `event_layout_complies_v`）：`Layout` 标准布局、首成员为精确的 `coact::Event`（offset 0）、`sizeof(Layout) <= BlockSize`、`sizeof(Payload)` 容于 payload 区、`alignof(Payload) <= PayloadAlign` 且 payload 偏移对齐、`Layout` 与 `Payload` 可无异常默认构造且可平凡复制/析构。池无析构回调，回收时不运行应用类型析构函数。
+- 引用计数生命周期：`alloc` 返回 `ref_ctr==1` 的池事件；首次 submit 转移该 allocation reference（不额外 inc）；多播或自留须先 `event_ref_inc`；消费者 `dispatch` 后 `event_gc`；最后一个引用归 0 时经 `pool_id` 回原池。静态事件（`pool_id==0`）永不被回收。生产者投递后不得再访问事件，除非已 `event_ref_inc` 自留。
+- 回收策略由 profile 选择：`RttSingleCoreProfile::kUseBatchedReclaim == false`（`ImmediateReclaimer`），`HostSmpProfile` 为 `true`（`ReclaimBatcher`）。`ReclaimBatcher` 仅限单一回收线程使用；链上每块的 `next` 写入与头 CAS 必须在同一临界区，SMP 下须注入 `make_spin_critical_section`（POSIX 的 `irq_save` 是 no-op，无法序列化 next 字段竞争）；批次数超过容量时降级为即时单块回收，不 assert。
 
-生命周期规则（QP QF 语义，设计 §6.4 改为 refCtr 生命周期）：
-- `alloc` 返回 `ref_ctr==1` 的池事件；生产者持有并配置 payload/signal；
-- 首次 submit 转移 allocation reference，不额外 inc；多播或自留所有权时，每增加一个 owner 先 `event_ref_inc(e)`；
-- 每个消费者在 `dispatch` 完成后 `event_gc(e)`（dec）；最后一个消费者把 `ref_ctr` 减到 0 时经 `pool_id` 回原池；
-- 静态事件（`pool_id==0`）`event_gc` 无操作；
-- 生产者投递后必须放弃访问，除非先 `event_ref_inc` 自留引用；
-- 同一事件只能回创建它的原池；池销毁前所有 outstanding 必须归 0。
-
-测试：refCtr 多播（同事件 2 次 inc + 2 次 gc 归 0 回收）、静态事件不回收、满池返回 nullptr、allocator hook 零堆、跨池 pool_id 路由正确、同一池事件 gc 后复用块。
-
-### 4.2 hsm（src/hsm）— 见设计 §7
+### 3.2 hsm（层次状态机，L2）
 
 ```cpp
 enum class TransitionKind : uint8_t { External, Internal, Self };
 
 template <typename Context>
 struct StateDef {
-    int8_t parent;                 // 0 表示根
-    void (*entry)(Context&);
-    void (*exit)(Context&);
-    const char* name;
-    int8_t initial_child = -1;     // 复合态的直接初始子态
+    int8_t parent;                 // 0 = 根；-1 = 无父
+    void (*entry)(Context&);       // 可为 null
+    void (*exit)(Context&);        // 可为 null
+    const char* name = nullptr;    // 仅调试标签
+    int8_t initial_child = -1;     // 直接初始子态；-1 = 叶
 };
 
 template <typename Context>
 struct TransitionDef {
-    int8_t source;                 // 0 表示 root；不允许 wildcard
+    int8_t source;                 // 0 = 根；不支持 wildcard
     uint16_t signal;
-    int8_t target;
+    int8_t target;                 // External 使用
     TransitionKind kind;
-    bool (*guard)(const Context&, const Event&);
-    void (*action)(Context&, const Event&);
+    bool (*guard)(const Context&, const Event&);   // null = 放行
+    void (*action)(Context&, const Event&);        // null = 无操作
 };
 
 template <typename Context>
@@ -155,199 +242,332 @@ public:
     Hsm(const StateDef<Context>* states, uint16_t num_states,
         const TransitionDef<Context>* transitions, uint16_t num_transitions,
         int8_t initial_state, uint8_t max_depth) noexcept;
-    void init(Context& ctx, const Event& evt) noexcept;   // 进入 initial_state
+    void init(Context& ctx, const Event& evt) noexcept;      // 自根沿父链进入 initial_state
     bool dispatch(Context& ctx, const Event& evt) noexcept;  // handled?
-    int8_t current_state() const noexcept;
+    int8_t current_state() const noexcept;                   // -1 = 未初始化
+    const char* current_state_name() const noexcept;         // 无标签时返回 nullptr
 };
 ```
 
-派发语义（设计 §7.3）：从当前叶按 `(state, signal)` 查转换，未命中沿 parent 上溯（最多 max_depth 次）；guard 失败继续同 source/signal 的下一条；internal 只 action；self 从实际叶退出到 source（含 source）、action、重进 source 并沿 `initial_child` 下降；external 按声明 source/target 的外部边界退出、action、进入 target，再沿 `initial_child` 下降。`TransitionKind` 不提供 Local：当 external 的 target 是 source 或当前叶的复合祖先时，仍须退出并重入该边界复合态，再进入其 `initial_child`；不得退化为不退出复合态的 local 转换。运行期父链与 LCA，不依赖 constexpr。函数指针不写 noexcept。
+派发语义：自当前叶按 `(state, signal)` 查找转换，未命中沿 `parent` 上溯，最多 `max_depth` 跳；`guard` 失败则继续匹配同 source/signal 的下一条。`Internal` 只执行 action。`Self` 自实际叶退出到 source（含 source）、执行 action、重入 source 并沿 `initial_child` 下降。`External` 求 source 与 target 的 LCA，若 LCA 恰为 source 或 target，则以 LCA 的父为边界（保证复合 source 到后代的转换不退化为 local），退出到 LCA（不含）、执行 action、进入 target 并沿 `initial_child` 下降。构造期 `validate_topology` 断言 `num_states <= 128`、父链无环、`initial_child` 与 parent 一致。
 
-### 4.3 queue（src/queue）— 见设计 §10.2
+### 3.3 queue / spsc_ring（队列后端，L2）
 
-两个编译期后端，都是**多生产者单消费者**，模板参数 `T` 任意定长类型：
+`CriticalSection` 由 `pal.hpp` 定义：`{ void* ctx; Token (*save)(void*); void (*restore)(void*, Token); }`，`Token == uintptr_t`。与旧契约不同，hook 现携带 `ctx`。
 
 ```cpp
 template <typename T, uint16_t Capacity>
-class BoundedMpscQueue {           // POSIX：fixed-cell ready-set，生产者 release/消费者 acquire
+class BoundedMpscQueue {                       // SMP 多生产者单消费者
 public:
-    bool try_push(const T& v) noexcept;
-    bool try_push(T&& v) noexcept;
+    BoundedMpscQueue() noexcept;
+    explicit BoundedMpscQueue(CriticalSection) noexcept;   // 参数被忽略（保持接口一致）
+    bool try_push(const T&) noexcept;
+    bool try_push(T&&) noexcept;
     bool try_pop(T& out) noexcept;
-    bool front(T& out) const noexcept;
+    bool front(T& out) const noexcept;         // 只看最早 Ready，不消费；消费者侧专用
+    uint16_t size() const noexcept;            // 计入 Writing 与 Ready
     bool has_ready() const noexcept;
-    uint16_t size() const noexcept;
     static constexpr uint16_t capacity() noexcept;
 };
 
 template <typename T, uint16_t Capacity>
-class SingleCoreCriticalRing {     // 单核：临界区内仅改索引与槽状态
+class SingleCoreCriticalRing {                 // 单核 irq 掩码临界区
 public:
-    // 临界区通过构造注入（函数指针或回调），宿主测试可注入 no-op
     explicit SingleCoreCriticalRing(CriticalSection cs) noexcept;
-    bool try_push(T&& v) noexcept;
+    bool try_push(const T&) noexcept;
+    bool try_push(T&&) noexcept;
+    [[nodiscard]] QueueResult try_push_observed(const T&) noexcept;
+    [[nodiscard]] QueueResult try_push_observed(T&&) noexcept;
     bool try_pop(T& out) noexcept;
     bool front(T& out) const noexcept;
-    bool has_ready() const noexcept;
     uint16_t size() const noexcept;
+    bool has_ready() const noexcept;
+    uint16_t size_locked() const noexcept;     // 调用方须已持同一 CriticalSection
 };
+
+template <typename T, uint16_t Capacity> class SpscRing;   // 单生产者单消费者
 ```
 
-- `CriticalSection` 由本模块定义：`{Token (*save)(); void (*restore)(Token);}`，token 为 `uintptr_t`。单核后端 push/pop 全程包在 save/restore 内；`T` 的移动/析构也位于临界区，因此 MCU payload 必须是有界、`noexcept` 的轻量类型。
-- `BoundedMpscQueue` 使用 fixed-cell ready-set：producer 独占 Writing cell，完成构造后 release 为 Ready；consumer 在固定 cell 集中选当前可见 publication ticket 最小项。Writing 只占一格，不阻塞其他 Ready 项；单线程 push 保持 FIFO，但并发 push 不承诺 per-producer FIFO（后发布且已完成的项可绕过仍在构造的项）。该后端要求无锁 64-bit 原子；push 满返回 false，pop 无 Ready 项返回 false；测试必须覆盖多生产者并发不丢失、不重复、不越界（可断言序号审计）。队列析构要求生产者和消费者已停止，并在析构时销毁仍存活的非平凡 payload。
-- `front()` 只复制当前 Ready 队首，不消费元素；它与 `try_pop()` 同属单消费者操作，禁止并发调用。`size()` 包含 Writing 与 Ready，用于停止排空判断；`has_ready()` 只表示当前存在可安全读取的 Ready payload。
+- `BoundedMpscQueue` 用 fixed-cell ready-set：producer 以 CAS 独占一个 Free cell，构造后 `release` 发布为 Ready；consumer 扫描固定 cell 集选当前可见 publication ticket 最小者。Writing 只占自身 cell，不阻塞其他 Ready 项。单线程 push 保 FIFO；并发 push 不承诺 per-producer FIFO。要求无锁 64 位原子；满时 `try_push` 返回 `false`，无 Ready 时 `try_pop` 返回 `false`。析构要求生产/消费者静默，并销毁仍存活的非平凡 payload。
+- `SingleCoreCriticalRing`：push/pop/观测全程在同一临界区，临界区内不调用任何用户回调。`try_push_observed` 融合“容量检查 + 移动 + 压入后水位”，失败不消耗入参。`size_locked()` 要求调用方已持有构造时注入的同一临界区，用于复合状态迁移时避免不可重入的嵌套 irq 掩码。
+- `front()` 与 `try_pop()` 同属消费者侧操作，禁止并发调用。
 
-### 4.4 monitor（src/monitor）— 见设计 §12
-
-Breaker 状态机（核心），输入事件驱动，纯逻辑可测：
+### 3.4 monitor / breaker（监控与熔断，L2）
 
 ```cpp
 enum class BreakerLevel : uint8_t { Normal, BrokenL1, BrokenL2, Safe, Recovering };
 
+template <typename Config = DefaultConfig>
 class Breaker {
 public:
-    explicit Breaker(const DefaultConfig& cfg) noexcept;
+    Breaker() noexcept;
+    explicit Breaker(const Config& cfg) noexcept;
     // 事件输入
     void on_direct_timeout() noexcept;          // 连续 3 次 -> L1
     void on_dispatcher_rtc_timeout() noexcept;  // 连续 3 次 -> L2（隔离慢 AO）
     void on_watermark_violation() noexcept;     // 持续 >80% -> L2
+    void on_watermark(uint8_t percent) noexcept;// 采样当前整体水位 0..100
     void on_overflow() noexcept;                // -> L2
     void on_key_reserve_exhausted() noexcept;   // -> Safe
     void on_watchdog() noexcept;                // -> Safe
-    void on_dispatch_cycle() noexcept;          // 每派发周期计数（冷却）
+    void on_dispatch_cycle() noexcept;          // 每派发周期（冷却计数）
     void on_probe_success() noexcept;
     void on_probe_failure() noexcept;           // Recovering -> L2
     void on_external_safe_restore() noexcept;   // Safe -> Recovering
+    void on_rtc_ok() noexcept;                  // 合格调用：清零连续超时，不跳过冷却
     // 查询
     BreakerLevel level() const noexcept;
-    bool direct_allowed(TargetId ao) const noexcept;   // L1 撤销该 AO direct
+    bool direct_allowed(TargetId ao) const noexcept;
     bool healthy_window_passed() const noexcept;
+    bool drop_non_critical() const noexcept;    // L2 / Safe
+    bool safe_events_only() const noexcept;     // Safe
+    // 阈值常量：kDirectTimeoutThreshold/kRtcTimeoutThreshold=3，kWatermarkViolationPct=80，
+    //           kLowWatermarkPct=50，kHighWatermarkPersist/kLowWatermarkPersist/kHealthyWindowsRequired=3
 };
 
 template <typename Config = DefaultConfig>
 class BreakerBank {
 public:
-    void on_direct_timeout(TargetId target) noexcept;
-    void on_dispatcher_rtc_timeout(TargetId target) noexcept;
-    void on_overflow(TargetId target) noexcept;
-    BreakerLevel level(TargetId target) const noexcept;
-    bool direct_allowed(TargetId target) const noexcept;
-    bool drop_non_critical(TargetId target) const noexcept;
-    bool safe_events_only(TargetId target) const noexcept;
+    static constexpr uint8_t kCapacity = Config::kMaxAo;
+    void on_direct_timeout(TargetId) noexcept;
+    void on_dispatcher_rtc_timeout(TargetId) noexcept;
+    void on_overflow(TargetId) noexcept;
+    void on_dispatch_cycle(TargetId) noexcept;
+    void on_probe_success(TargetId) noexcept;
+    void on_probe_failure(TargetId) noexcept;
+    void on_rtc_ok(TargetId) noexcept;
+    BreakerLevel level(TargetId) const noexcept;
+    bool direct_allowed(TargetId) const noexcept;
+    bool drop_non_critical(TargetId) const noexcept;
+    bool safe_events_only(TargetId) const noexcept;
+    void broadcast_watermark_violation() noexcept;
     void broadcast_watermark(uint8_t percent) noexcept;
+    void broadcast_key_reserve_exhausted() noexcept;
     void broadcast_watchdog() noexcept;
     void broadcast_dispatch_cycle() noexcept;
+    void broadcast_external_safe_restore() noexcept;
 };
 ```
 
-- 冷却默认 `kCooldownCycles`，恢复需冷却完成 + 低水位 + 无违规窗口 + 连续健康探针（设计 §12.4）。
-- `Runtime` 使用固定容量的 per-AO `BreakerBank`；目标级超时、RTC 超时、overflow 与探针只更新对应 `TargetId`，系统水位、watchdog、调度周期及外部恢复通过显式 `broadcast_*` 广播。
-- `BreakerBank` 对 `kInvalidTarget` 或超出 `Config::kMaxAo` 的目标采用 fail-safe：写操作忽略，`level()` 返回 `Safe`，`direct_allowed()` 返回 `false`，`drop_non_critical()` 与 `safe_events_only()` 返回 `true`，不得越界访问内部数组。
-- `Monitor`：每 AO 与全局固定计数器（direct/dispatcher 时长、C1-C7 拒绝、分区水位、disposition 计数、lease 竞争、pending max）+ watchdog 心跳。热路径只写计数，不格式化。SMP 允许每 CPU 计数后汇总。
+- 每 AO 部署一个 `Breaker`；`target_breaker()` 适配器让 `Coordinator` / `Dispatcher` 既能接受单个 `Breaker`（默认模板参数），也能接受 `BreakerBank`（`Runtime` 显式传入）。
+- 降级链：L1（撤销该 AO direct）-> L2（隔离慢 AO）-> Safe（关键容量或 watchdog 耗尽）；L1/L2 在冷却完成且水位持续低于 50% 后进入 Recovering；Safe 需外部恢复。回到 Normal 还需连续合格健康窗口与成功探针，单次成功派发不够。
+- `BreakerBank` 对 `kInvalidTarget` 或超出 `Config::kMaxAo` 的目标采用 fail-safe：写操作忽略，`level()` 返回 `Safe`，`direct_allowed()` 返回 `false`，`drop_non_critical()` / `safe_events_only()` 返回 `true`，不越界访问内部数组。
 
-### 4.5 policy（src/policy）— 见设计 §11
+`Monitor<Config>` 为固定计数器集合：per-AO `AoCounters`（direct/dispatcher 时长、超时、C1–C7 拒绝、lease 竞争、pending 及峰值）与 `GlobalCounters`（分区水位、overflow、disposition 计数、watchdog 心跳、平台故障、pending 峰值）。热路径只写 relaxed 计数，不格式化、不阻塞；SMP 可每 CPU 一份，上层汇总。
+
+### 3.5 policy（准入策略与合并单元，L2）
 
 ```cpp
 struct PolicyResult { bool accept; bool try_merge; uint16_t reason; };
+enum PolicyReason : uint16_t { kReasonOk = 0, kReasonFiltered, kReasonRateLimit, kReasonCriticalBlocked };
 
 struct PolicyOps {
     PolicyResult (*evaluate)(void* context, TargetId target,
                              const Event& event, const EventQos& qos, uint64_t now);
     bool (*merge)(void* context, Event& queued, const Event& incoming);
 };
+
+class TokenBucketRateLimiter { void init(const RateLimitRule&, uint64_t now);
+                               bool acquire(uint64_t now); uint64_t tokens() const; };
+
+enum class MergeCellState : uint8_t { Empty, Publishing, Published, Merging, Consuming };
+class MergeCell {
+    void init(TargetId, uint16_t signal);
+    bool try_publish(Event* e);                  // Empty -> Publishing -> Published
+    bool try_acquire_merge(Event*& queued);      // Published -> Merging
+    void release_merge();                        // Merging -> Published
+    bool take_owning(Event*& out);               // Published -> Consuming
+    void release_empty();                        // Consuming -> Empty（event_gc 之后）
+};
 ```
 
-MergeCell（固定槽，状态机 `Empty/Published/Merging/Consuming`，CAS 原子转移）：
-- 生产者 CAS `Published->Merging` 后改旧 payload，release 回 `Published`；
-- Dispatcher CAS `Published->Consuming` 后取得 owning handle；
-- 失败不等待，新事件进普通 staging；
-- merge 只在事件类型显式声明时允许；有界、不可阻塞。`MergeCell` 持有一个已投递的 `Event*`（引用计数事件，依赖 event 模块），替换 payload 走 CAS 状态机。
+- 策略是 caller-owned context + 单个 const 函数表，无闭包、无动态表。
+- `MergeCell` 持有**一个已投递、引用计数的事件**，状态迁移全为 `std::atomic` CAS，失败立即返回 `false` 不自旋。生产者先 `try_publish` 放入新事件，或对已发布事件 `try_acquire_merge` 后改写 payload 并 `release_merge`；消费者 `take_owning` 取得 owning handle，`event_gc` 一次后 `release_empty`。
+- **当前 coordinator 未接入 merge**：`submit_internal` 在 M4 后无视 `pr.try_merge`，直接落入 staging（代码注释明确“v1 未实现 per-signal MergeCell 注册表”）。因此 `SubmitDisposition::Merged` 至今不由提交路径产生；`MergeCell` 与 `PolicyOps::merge` 为已就绪、可按板级接入的组件。此为对照当前代码的更正。
 
-### 4.6 ao（src/ao）— 见设计 §5
+### 3.6 ao / static_ao（活动对象，L3）
 
 ```cpp
 enum class AoRunState : uint8_t { Idle, RunningDirect, RunningDispatcher };
 
-class ExecutionLease {
-public:
-    bool try_acquire(AoRunState desired) noexcept;  // 原子 Idle -> desired，失败返回 false
-    void release(AoRunState expected) noexcept;     // 校验 expected 后 -> Idle
+class ExecutionLease {                          // 线性化点 = Idle -> desired 的 CAS
+    bool try_acquire(AoRunState desired) noexcept;   // desired==Idle 恒 false
+    void release(AoRunState expected) noexcept;      // 状态不符为硬故障
     AoRunState state() const noexcept;
 };
-
-class PendingCounter {
-public:
-    uint16_t load() const noexcept;     // acquire 读
-    void increment() noexcept;          // release 写（先于 queue publish）
-    void decrement() noexcept;
-};
+class PendingCounter { uint16_t load() const noexcept;   // acquire
+                       void increment() noexcept;        // release，须先于队列发布
+                       void decrement() noexcept; };     // 空计数下溢为硬故障
 
 class AoBase {
 public:
-    virtual void dispatch(const Event& event) noexcept = 0;
-    virtual bool try_dispatch_queued(const Event& event) noexcept = 0;
+    explicit AoBase(uint64_t rtc_budget_ns) noexcept;
+    virtual void dispatch(const Event& event) noexcept = 0;            // RunningDispatcher；重入硬故障
+    virtual bool try_dispatch_queued(const Event& event) noexcept = 0; // lease 忙返回 false，事件不动
+    virtual bool dispatch_direct(const Event& event) noexcept = 0;     // RunningDirect；输掉竞争返回 false
     virtual LogicalPrio logical_prio() const noexcept = 0;
     virtual PriorityClass priority_class() const noexcept = 0;
     virtual bool direct_eligible() const noexcept = 0;
     virtual bool isr_direct_safe() const noexcept = 0;
-    virtual ExecutionLease& lease() noexcept = 0;     // 补充：coordinator C5 访问
-    virtual PendingCounter& pending() noexcept = 0;   // 补充：coordinator C4/C6 访问
+    virtual ExecutionLease& lease() noexcept = 0;
+    virtual PendingCounter& pending() noexcept = 0;
+    uint64_t rtc_budget_ns() const noexcept;
 protected:
-    ~AoBase() noexcept = default;   // 非拥有基类：AO 静态/自动存储期，禁止经基类 delete
+    ~AoBase() noexcept = default;   // 非拥有基类：禁止经基类 delete
 };
 
-template <typename Context, typename Hsm, typename Traits>
+template <typename Context, typename HsmT, typename Traits>
 class Ao : public AoBase {
-    // Traits 提供：logical_prio/priority_class/direct_eligible/isr_direct_safe/kRtcBudgetNs
-    // dispatch() 调用 hsm_.dispatch(context_, event)，保证 RTC 同步完成。
+    Ao(const StateDef<Context>* states, uint16_t num_states,
+       const TransitionDef<Context>* transitions, uint16_t num_transitions,
+       int8_t initial_state, uint8_t max_depth) noexcept;
+    void init(const Event& init_evt) noexcept;
+    Context& context() noexcept;
+    int8_t hsm_current_state() const noexcept;
+    const char* hsm_current_state_name() const noexcept;
 };
+
+template <typename Config = DefaultConfig>
+class AoRegistry {
+    static constexpr uint8_t kCapacity = Config::kMaxAo;   // TargetId 1 基直接索引
+    AoBase* lookup(TargetId) const noexcept;               // 无效/越界/未绑定返回 nullptr
+    bool bind(AoBase* ao, LogicalPrio prio) noexcept;      // 最小空槽；优先级唯一
+    bool bind_at(TargetId, AoBase& ao, LogicalPrio prio) noexcept;  // 板级 constexpr 表
+    TargetId target_of(const AoBase* ao) const noexcept;   // 反查
+};
+
+struct StaticAoEntry {                          // 非拥有入口，捕获无关函数指针
+    using DispatchFn = void (*)(void*, const Event&) noexcept;
+    void* object; DispatchFn dispatch; LogicalPrio logical_prio;
+    PriorityClass priority_class; bool direct_eligible; bool isr_direct_safe;
+    bool valid() const noexcept;
+    void dispatch_event(const Event&) const noexcept;
+};
+template <typename AoT, typename Traits>
+constexpr StaticAoEntry make_static_ao_entry(AoT& ao) noexcept;
 ```
 
-`AoRegistry`：定长 `AoBase*` 数组（**非拥有**，仅保存指针，永不 `delete`），`TargetId`（1 基）映射，`lookup(TargetId)`、`bind(AoBase*, prio)` 校验优先级唯一。AO 一律静态/自动存储期，生命周期由自身存储期决定，禁止经 `AoBase*` 释放。
+- AO 一律静态或自动存储期；`AoRegistry` 与 `Runtime` 只保存**非拥有** `AoBase*`，永不 `delete`。`AoBase` 析构受保护且非虚，使经基类删除成为编译期契约违例，并避免符号表引入 deleting destructor。
+- `dispatch()` 是保留非法重入硬断言的单执行权入口；`try_dispatch_queued()` 与 `dispatch_direct()` 用同一 `Idle -> Running*` CAS，差别只在记录的状态（供 C5 区分 direct / dispatcher 路径）。`dispatch_direct()` 输掉竞争返回 `false`，事件未被触碰。
+- `Traits` 静态提供 `logical_prio()` / `priority_class()` / `direct_eligible()` / `isr_direct_safe()` / `kRtcBudgetNs`；`Ao` 只存 `Context + Hsm + lease + pending`，不分配。
+- `isr_direct_safe()` 暴露于基类与 Traits，但**当前 coordinator 不消费它**（ISR 路径 `from_isr==true` 直接跳过 direct），仅为板级策略保留。
 
-**执行权（已定型，S6 落地）**：`Ao<Context,Hsm,Traits>::dispatch()` 是保留非法重入硬断言的自包含单执行权入口；`try_dispatch_queued()` 使用同一 `Idle→RunningDispatcher` CAS，但 lease 忙时返回 false 且不触碰事件。Dispatcher 只走 `try_dispatch_queued()`：失败时最多保留一个 deferred slot，不减 pending、不释放事件；睡眠前执行 `arm→CAS 重试→PAL wait`，direct 在释放 `RunningDirect` 后若 `pending>0` 请求唤醒。stop drain 对 deferred slot 与队列事件分别恰减一次 pending、恰释放一次引用。Direct 路径走 `dispatch_direct()`，同样由 AO 内部持有 lease。
-
-### 4.7 staging（src/staging）— 见设计 §10
-
-三区异构容量 staging，每个分区**独立类型/容量**（不能用同一模板容量冒充）：
+### 3.7 staging（三区暂存，L3）
 
 ```cpp
-struct StagingSlot {
-    TargetId target;
-    Event* event;          // 已转移的 owned reference；dispatcher 完成后 event_gc
-    uint64_t enqueue_ns;   // 用于 Low 老化计时
+enum class Partition : uint8_t { High = 0, Normal = 1, Low = 2 };
+Partition partition_from_class(PriorityClass) noexcept;
+
+struct StagingSlot { TargetId target; Event* event; uint64_t enqueue_ns; };
+
+class BatchSelector {
+    bool select(Partition& out, uint16_t high, uint16_t normal, uint16_t low,
+                bool low_aged, uint16_t batch_used, uint16_t batch_max) const noexcept;
 };
 
-// 纯批处理逻辑：优先级顺序 + aging 例外 + 数量上界（BatchSizeMax）
-class BatchSelector { /* High->Normal->Low；Low 超 LowMaxWaitMs 强制取一 */ };
-
-// 三区统一视图，编译期绑定队列后端（Mpsc 或 CriticalRing）
-template <typename Config, typename QueueBackend>
+template <typename Config, template <typename, uint16_t> class QueueBackend>
 class Staging {
-public:
-    // 每 AO 固定 PriorityClass 决定分区；watermark 返回 0-100 使用率
-    bool enqueue(TargetId target, Event* e, PriorityClass cls, uint64_t now_ns) noexcept;
-    bool dequeue_one(StagingSlot& out) noexcept;   // 按优先级/aging 取一个
-    uint8_t watermark(Partition p) const noexcept; // 50/80/95 档位
-    uint16_t size(Partition p) const noexcept;
+    using HighQueue   = QueueBackend<StagingSlot, Config::kHighCapacity>;
+    using NormalQueue = QueueBackend<StagingSlot, Config::kNormalCapacity>;
+    using LowQueue    = QueueBackend<StagingSlot, Config::kLowCapacity>;
+    explicit Staging(CriticalSection cs) noexcept;      // 仅单核后端使用；Mpsc 忽略
+    bool enqueue(TargetId, Event* e, PriorityClass cls, uint64_t now_ns) noexcept;
+    bool dequeue_one(StagingSlot& out, uint64_t now_ns) noexcept;
+    bool dequeue_one(StagingSlot& out) noexcept;        // 兼容 shim：用缓存 now
+    void begin_batch() noexcept;
+    uint8_t batch_used() const noexcept;
+    void tick(uint64_t now_ns) noexcept;
+    void arm_dispatcher_wait() noexcept;
+    bool request_dispatcher_wake() noexcept;
+    bool acquire_submission() noexcept;
+    bool release_submission() noexcept;
+    void close_admission() noexcept;
+    bool submissions_idle() const noexcept;
+    bool any_buffered() const noexcept;
+    bool any_ready() const noexcept;
+    uint8_t watermark(Partition) const noexcept;        // 0..100
+    uint16_t size(Partition) const noexcept;
 };
 ```
 
-注意：staging 是数据结构 + 批处理选择逻辑；**Dispatcher 线程循环放 core 模块**（依赖 PAL wait/signal）。
+- 三个分区容量为**独立的编译期类型**（默认 High 32 / Normal 64 / Low 128，来自 `Config`），不使用同一容量冒充。AO 的固定 `PriorityClass` 是分区选择的唯一依据。
+- `enqueue` 只存储在 coordinator 处已转移所有权的 `Event*` 引用，**不改变引用计数**；分区满返回 `false`，由 coordinator 决定 `event_gc`。`dequeue_one` 把该引用所有权交给消费者，dispatcher 必须在派发后 `event_gc`。
+- 批序：Low 头事件等待超过 `Config::kLowMaxWaitMs` 时强制先服务（唯一显式例外），否则 High -> Normal -> Low；`batch_used >= kBatchSizeMax` 时返回 `false`。Low 老化用无符号回绕安全比较，且当 `now < enqueue_ns`（批中途到达）时判为未老化，避免下溢误老化。
+- 唤醒用合并 latch：dispatcher 睡前 `arm_dispatcher_wait()`（acq_rel 清位）后复查 `any_ready()`；生产者先发布再 `request_dispatcher_wake()`，仅 false→true 的首个生产者持有 PAL 唤醒信号，关闭丢失唤醒窗口。
+- 提交准入用 `admission_` 计数 + 关闭位：`close_admission()` 后 `acquire_submission()` 拒绝新提交，已获准的生产者保留 lease 至 direct 派发或入队完成；`release_submission()` 在关闭后返回真表示这是最后一个已接受的提交，可唤醒停机排空。
+- `watermark()` 返回 0–100 使用率，dispatcher 据此映射 50/80/95 档位（<50 正常批次，50–80 扩大批次，80–95 立即唤醒，>95 硬限流）。
 
-### 4.8 core（集成）— 见设计 §4/8/13
+### 3.8 coordinator / dispatcher / runtime（集成装配，L4）
 
-- `dispatcher.hpp`：`Dispatcher`（单线程循环：drain → 取 batch → dispatch → 释放；空闲时以 acq_rel exchange 清 wake latch、复查 Ready，再调用 PAL wait）。producer 在 publish 后以 exchange 置 latch，仅 false→true 的首个 producer 发 signal，避免 missed wakeup 与逐 submit 唤醒。停止先关闭 submission admission，再等待已获 lease 的 submit 完成；Writing 槽计入 buffered，排空只读取 Ready 槽，最后一个 submission lease 负责唤醒停止等待。
-- `coordinator.hpp`：`DispatchCoordinator::submit_from_task(TargetId, Event*, const EventQos&) / try_submit_from_isr(...)`（事件引用由 submit 管理：入队则保留 ref 待 dispatcher gc，direct 则处理完 gc，drop/merge 则立即 gc），按设计 §8.1 管线：M4 → M1(C1-C7) → direct | merge | staging。统一入口，禁止绕过。
-- `runtime.hpp`：`Runtime<Config, Pal, Profile=HostSmpProfile>`：`initialize/bind/start/run_dispatcher/stop` 三阶段初始化。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；通用 `DispatchCoordinator`/`Dispatcher` 模板默认仍为单 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。默认 16 AO 的 Bank 约占 128 B，相对单 `Breaker` 净增约 120 B。`start()` 返回 `bool`，只有 PAL 报告 Dispatcher 启动成功才进入 started（design §7.5）；第三模板参把板级 profile 传导到 Dispatcher（单核 `RttSingleCoreProfile`→immediate reclaim，Host 默认→batched）。
-- `src/core/pal_posix.cpp`：`pal::Posix`（pthread、condvar、`clock_gettime(CLOCK_MONOTONIC)`）。
-- `src/core/pal_rtthread.cpp`：`pal::RtThread` 静态 PAL（design §7.5）：调用方提供 `RtThreadResources<StackBytes,ContextSlots>`（静态 TCB、对齐 stack、两个静态 semaphore、固定 `ContextSlot[N]`）；构造函数只保存引用；显式 `initialize()` 返回 `pal::InitError`；`start_dispatcher()` 返回 `pal::InitError`（只有 `rt_thread_startup()==RT_EOK` 才 kOk）；一次初始化/一次启动/一次停止，stop 后再次 start 返回 `kAlreadyStarted`；固定 ContextSlot 表不占 `user_data`、启动后冻结、Dispatcher 经静态 TCB 比较识别；`ClockOps` 静态函数表注入时钟（默认 RT tick，真机绑 10 MHz TIM）。
-- `src/core/test_integration.cpp`：端到端测试（生产→submit→dispatcher→AO action）。
+```cpp
+template <typename StagingT, typename PalT,
+          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>>
+class DispatchCoordinator {
+public:
+    DispatchCoordinator(StagingT&, RegistryT&, MonitorT&, BreakerRouterT&, PalT&,
+                        const PolicyOps* = nullptr, void* policy_ctx = nullptr) noexcept;
+    SubmitResult submit_from_task(TargetId, Event* e, const EventQos&) noexcept;
+    SubmitResult try_submit_from_isr(TargetId, Event* e, const EventQos&) noexcept;
+};
 
-## 5. 验收标准（每个模块）
+template <typename StagingT, typename PalT,
+          typename Profile = coact::HostSmpProfile,
+          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>>
+class Dispatcher {
+    static bool in_dispatcher_thread() noexcept;
+    void run() noexcept;
+    void request_stop() noexcept;
+};
 
-1. `cmake -B build_<mod> -S .` 无错误，`-fno-exceptions -fno-rtti` 生效。
-2. 所有测试通过（`ctest --output-on-failure`）。
-3. 每个不变量至少一个负例测试（如：double-wrap 检测、move 后访问空、队列满返回 false、lease 冲突失败、breaker 恢复需连续健康窗口）。
-4. 无动态分配证据：allocator hook 在 Running 后路径无堆调用（event/staging/core 模块）。
-5. 报告中列出：实现文件、测试清单、与契约的偏差、未决问题。
+template <typename Config, typename PalT, typename Profile = coact::HostSmpProfile>
+class Runtime {
+public:
+    using StagingType = Staging<Config, PalT::template QueueBackend>;
+    explicit Runtime(PalT& pal) noexcept;
+    bool bind(AoBase* ao) noexcept;                     // Phase 1：优先级取 ao->logical_prio()
+    bool bind_at(TargetId target, AoBase& ao) noexcept; // Phase 1：板级 constexpr 表
+    bool initialize() noexcept;                         // Phase 2：提交注册表（幂等）
+    bool start() noexcept;                              // Phase 3：启动 Dispatcher 线程
+    void stop() noexcept;
+    CoordinatorType& coordinator() noexcept;
+    Monitor<Config>& monitor() noexcept;
+    BreakerBank<Config>& breakers() noexcept;
+    BreakerBank<Config>& breaker() noexcept;
+};
+```
+
+- **提交是唯一入口**，禁止绕过 coordinator 直接操作 staging。管线：C1 目标已绑定 -> 获取 submission lease（失败即 `RejectedState`）-> M6 过载闸（`BrokenL2` 及以上且非 critical 时 `DroppedOverload`）-> M4 策略评估（`DroppedPolicy` / `DroppedRateLimit`）-> M1 direct（仅 Task 路径且 `direct_eligible` 且 `direct_allowed` 且 lease 为 Idle）-> staging（满则 `RejectedFull` 并 `on_overflow`）-> `Queued`。
+- **事件引用所有权**：`submit_from_task` / `try_submit_from_isr` 接管传入引用。staged：allocation reference 转交 staging，dispatcher 派发后 `event_gc`；direct：派发后立即消费；drop / merge：立即消费。调用方在提交返回后**不得**再访问事件。
+- direct 路径由 `Ao::dispatch_direct()` 内部持有 `RunningDirect` lease；派发完成后若 `pending>0`，经 `request_dispatcher_wake()` 决定是否 `signal_dispatcher_from_task`，与 dispatcher 的 arm-then-CAS 重试共同关闭“释放先于等待”窗口。
+- `Dispatcher` 单线程批循环：`begin_batch` -> 逐条 `dequeue_one(now)` -> `try_dispatch_slot` -> 批次结束 `reclaim.flush()`。queued 派发只用 `Ao::try_dispatch_queued()`；lease 忙时保留**一个** deferred slot，不减 pending、不释放事件，随后 `arm -> CAS 重试 -> PAL wait`。全部队列为空且无 deferred 时进入真正的阻塞等待 `wait_dispatcher(0)`（PAL 约定 0 == 永久），其余路径用有界的 `kBatchTimeoutMs` 等待。停机先 `close_admission()`，再在 `drain_queued_on_stop()` 中无派发地排空剩余事件，保证每事件恰好一次 pending 递减与一次引用释放。回收器由 `Profile` 选择：`HostSmpProfile` -> `ReclaimBatcher`（每批池容量 `min(kBatchSizeMax, kMaxEventPools)`），`RttSingleCoreProfile` -> `ImmediateReclaimer`。
+- `Runtime` 三阶段：Phase 1 `bind` / `bind_at`（注册 AO，须在 `initialize` 前）；Phase 2 `initialize`（提交注册表，幂等）；Phase 3 `start`（启动 Dispatcher 线程，`started_` 仅在 PAL 报告成功后才置位，失败返回 `false`）。`stop()` 请求停止并 join。**不存在 `run_dispatcher()` 公开方法**——Dispatcher 线程由 `start()` 经 PAL 启动（此为对旧契约的更正）。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；coordinator / dispatcher 的默认 `BreakerRouterT` 仍是单个 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。
+- `PalT::template QueueBackend` 决定 staging 后端：`pal::Posix` -> `BoundedMpscQueue`（SMP），`pal::RtThread` -> `SingleCoreCriticalRing`（单核）。`Profile` 决定池与回收策略；RT-Thread 板传 `pal::RtThread::Profile`（即 `RttSingleCoreProfile`），默认 `HostSmpProfile` 保持 batched 回收。
+
+### 3.9 PAL（平台抽象，L0/平台层）
+
+- `CriticalSection`：`save` 掩中断/加锁并返回不透明 token，`restore` 复原；`make_critical_section(pal)` 从任意提供 `irq_save()` / `irq_restore()` 的 PAL 构造（RT-Thread 映射 `rt_hw_interrupt_disable/enable`，POSIX 为 no-op）。SMP 上共享池的批回收须改用 `make_spin_critical_section`，见 §3.1。
+- `pal::ThreadEntry = void (*)(void* context)`；PAL 方法名（非虚、编译期解析）包括：`irq_save` / `irq_restore`、`current_context`、`monotonic_ns`、`clock_resolution_ns`、`wait_dispatcher`、`signal_dispatcher_from_task` / `signal_dispatcher_from_isr`、`start_dispatcher`、`join_dispatcher`、`watchdog_progress`、`set_dispatcher_stack_bytes`、`set_clock_ops`。
+- `pal::ClockOps`：`read_counter` 静态函数表 + `frequency_hz` + `counter_bits`，用于纳秒换算；RT tick 仍是阻塞等待与长超时的来源。
+- `pal::Posix`：`start_dispatcher` 返回 `void`；`QueueBackend = BoundedMpscQueue`；提供 pthread worker、condvar、`clock_gettime(CLOCK_MONOTONIC)` 及 SemOps/MutexOps/CondOps/ThreadOps/SoftIrqOps 家族。
+- `pal::RtThread`：静态 PAL，`QueueBackend = SingleCoreCriticalRing`，`Profile = RttSingleCoreProfile`。调用方提供 `RtThreadResources<StackBytes, ContextSlots, WorkerSlots>`（静态 TCB / stack / semaphore / ContextSlot 表），构造只保存引用，内核 API 全在 `initialize()`（任务上下文）调用；`initialize()` 与 `start_dispatcher()` 返回 `pal::InitError`（成功 == 枚举 0），二次启动或停机后再启动返回 `kAlreadyStarted`。要求单核（`SMP` 下 `#error`）。
+- `kWaitForever == 0xFFFFFFFF` 是 xxxOps take/wait 的显式永久等待常量；dispatcher 的 `wait_dispatcher(0)` 沿用“0 == 永久”的旧约定，两者语义不同、不可混用。
+
+### 3.10 timer / coro / diag / bitfield（扩展组件）
+
+- **timer**：`TimerScheduler<PoolT, CoordinatorT, MaxTasks = 16, TickSourceT = SteadyTickSource>`，非拷贝非移动。`schedule_periodic(target, signal, period_ms, qos)` / `schedule_once(target, signal, delay_ms, qos)` 返回 `Expected<TimerTaskId, TimerError>`；`cancel(id)` 返回 `Expected<void, TimerError>`；`start()` / `stop()` 管理内部线程。到期经 `coordinator.submit_from_task(target, e, qos)` 投递，coordinator 在每条路径消费引用，timer **自身不调用 `event_gc`**。`ManualTickSource` 供主机测试推进时钟。
+- **coro**：独立的栈式协程子系统，自有版本命名空间 `coact::coro`（`kVersionMajor/Minor/Patch`，当前 0.1.0）与 ABI 守卫（`TaskId` 为 2 字节）。`Task<T, RegistryT>` / `Promise` / `AwaitableRef` / `TaskRegistry` 提供任务槽与代际防别名；`Coroutine` / `StackfulExecutor`（`coro/posix.hpp`）提供栈式执行；`TimerFacade`（`coro/scheduler.hpp`）封装 `TimerScheduler`；`AsyncConfig` 给出默认任务槽容量、组容量与完成事件块布局。完成结果不放在事件里，消费者经注册表读取任务槽。该子系统以 POSIX 后端为主，RT-Thread 端口的完整性**未在本机验证**。
+- **diag**：`Logger<NormalCapacity, ...>` 记录定长 `LogRecord` 到 `DiagRing` 通道，配合 `LogCatalog` / `LogSinkOps` 渲染；`log_rtthread.hpp` 提供 RT-Thread 后端。热路径只入环，不格式化、不阻塞。
+- **bitfield**：`BitFieldView<Reg, Offset, Width>` 提供编译期偏移/宽度的寄存器位段读写，零运行期开销。
+
+### 3.11 expected / assert（基础契约，L0）
+
+- `Expected<V, E>` 为 move-only、`[[nodiscard]]`，用 `success(...)` / `error(...)` 构造，`value()` / `error()` 违反前置条件时触发断言；`Expected<void, E>` 只有 `success()` / `error(E)`。
+- `COACT_ASSERT(cond)` 在失败时调用 `coact::fatal_assert(file, line)`；`COACT_UNLIKELY` 提示冷路径。运行期错误尽量用返回值表达，断言只用于捕获协议违例（如重入、计数下溢、经基类删除）。
+
+## 4. 验收标准
+
+1. `cmake -B build -S .` 配置无错误，严格选项（`-fno-exceptions -fno-rtti` 或 MSVC 等价项）生效。
+2. `ctest --test-dir build --output-on-failure` 全部通过；`COACT_PORTABLE_ONLY` 下被跳过的目标须在日志中逐项列出，跳过不得计为通过。
+3. 每个不变量至少有一个负例测试。现有负例可直接引用：`src/event/pool_*_neg.cpp`（生命周期、超尺寸 payload、块对齐、默认构造）、`src/ao/ao_base_delete_neg.cpp`（经基类删除）、`src/core/test_static_lifetime.cpp`、`src/core/test_coro_gate.sh` 等。
+4. 核心运行路径无动态分配证据：`test/elf_audit.sh`（符号级零堆）、`test/asan_classify.sh`、`test/tsan_classify.sh` 保持清洁。
+5. 报告须列出：实现文件、测试清单、与本文契约的偏差、未决问题。与本机代码不符处一律以代码为准并更新本文。

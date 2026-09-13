@@ -7,9 +7,8 @@
 
 coact（**Co**operative **Act**ive-object framework）是一个面向 **RT-Thread 单核
 MCU** 的 header-first **C++17** 事件框架：生产者从任务或 ISR 上下文提交事件，由单
-一线程派发给**主动对象（AO）**，AO 行为由**层次状态机（HSM）**描述。它与
-**QP/C++（qpcpp）**同为 AO + HSM 范式——用事件而非线程、单一派发者、静态状态表
-——差异见下。
+一线程派发给**主动对象（AO）**，AO 行为由**层次状态机（HSM）**描述。事件代替线程；
+单一线程派发；转移表是静态的。
 
 ## 为什么选 coact
 
