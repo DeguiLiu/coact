@@ -20,8 +20,10 @@ MCU** 的 header-first **C++17** 事件框架：生产者从任务或 ISR 上下
   SMP 只是测试参考，不是产品目标。
 - **容量定死，热路径零分配。** 定容 `EventPool` 以引用计数回收，同一事件可安全
   扇出给多个 AO（`-fno-exceptions -fno-rtti`）。
-- **RT-Thread 是首选目标，而不是"移植之一"。** Linux host 用同一套头文件，仅切换
-  PAL。
+- **RT-Thread 是首选目标，而不是"移植之一"。** Linux / Windows host 用同一套头文件，
+  仅切换 PAL。
+- **关键事件预约**（仅本分支）：`kHighCriticalReserve` 为 High 分区保留单元，使
+  关键事件在普通流量打满时仍能进入，并配一条 `ReservedNormal` 通道。
 - **唤醒确定性。** 仅在 Dispatcher 空闲时才 signal，drain 复查封闭 missed-wakeup
   窗口；`submit_from_task` 可让生产者直接派发（S6 快路径），
   `try_submit_from_isr` 永不阻塞。
@@ -56,7 +58,7 @@ flowchart TB
     L4["应用层 — 主动对象、HSM、Context"]:::app
     L3["core/ — Coordinator、Dispatcher、Runtime"]:::core
     L2["构件层 — staging、event/pool、queue、monitor、policy、coro"]:::core
-    L1["平台层 pal/ — RtThread、Posix"]:::pal
+    L1["平台层 pal/ — RtThread、Posix、Windows"]:::pal
     L4 --> L3 --> L2 --> L1
 ```
 
@@ -78,7 +80,7 @@ rt.start();
 
 在 RT-Thread 上包含同一组头文件，选 `coact/pal_rtthread.hpp`，把
 `src/core/pal_rtthread.cpp` 编进 BSP——该 PAL 使用调用方提供的静态资源，自身不做
-任何分配。
+任何分配。Windows host：`coact/pal_windows.hpp` 加对应 `.cpp`。
 
 ## 模块
 

@@ -7,10 +7,9 @@
 
 coact (**Co**operative **Act**ive-object framework) is a header-first **C++17**
 event framework for **single-core MCUs** running RT-Thread: producers submit from
-task or ISR context, one dispatcher thread delivers to **Active Objects (AO)**
-backed by **Hierarchical State Machines (HSM)**. It shares the AO + HSM discipline
-of **QP/C++ (qpcpp)** — events instead of threads, one dispatcher, static state
-tables — with the differences below.
+task or ISR context and one dispatcher thread delivers to **Active Objects (AO)**
+with **Hierarchical State Machines (HSM)** — the AO + HSM discipline of **QP/C++
+(qpcpp)**, with the differences below.
 
 ## Why coact
 
@@ -21,8 +20,10 @@ tables — with the differences below.
   libatomic-free; host SMP is a test reference, not the product target.
 - **Fixed capacity, zero hot-path allocation.** A fixed-size `EventPool` recycled
   by ref-count lets one event fan out safely (`-fno-exceptions -fno-rtti`).
-- **RT-Thread is the primary target, not a port.** The Linux host builds from the
-  same headers through a small PAL swap.
+- **RT-Thread is the primary target, not a port.** Linux and Windows hosts build
+  from the same headers through a small PAL swap.
+- **Critical-High staging reservation** (this branch): `kHighCriticalReserve` keeps
+  High-partition cells free for critical events, plus a `ReservedNormal` lane.
 - **Deterministic wakeups.** The dispatcher wakes only when idle and a drain-check
   closes the missed-wakeup window; `try_submit_from_isr` never blocks.
 - **Back-pressure, not silent drops.** A breaker degrades under overload; the
@@ -58,7 +59,7 @@ flowchart TB
     L4["application — Active Object, HSM, Context"]:::app
     L3["core/ — Coordinator, Dispatcher, Runtime"]:::core
     L2["blocks — staging, event/pool, queue, monitor, policy, coro"]:::core
-    L1["pal/ — RtThread, Posix"]:::pal
+    L1["pal/ — RtThread, Posix, Windows"]:::pal
     L4 --> L3 --> L2 --> L1
 ```
 
@@ -80,7 +81,8 @@ rt.start();
 
 On RT-Thread include the same headers, select `coact/pal_rtthread.hpp` and compile
 `src/core/pal_rtthread.cpp` into the BSP — the PAL uses caller-provided static
-resources and never allocates.
+resources and never allocates. Windows host: `coact/pal_windows.hpp` plus
+`src/core/pal_windows.cpp`.
 
 ## Modules
 
@@ -90,9 +92,8 @@ resources and never allocates.
 
 ## Testing
 
-Host targets pass under `ctest` and are TSan-clean on the pool/dispatcher paths;
-CI adds ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread 5.2.1 /
-qemu-vexpress-a9 (single core).
+Host targets pass under `ctest`, TSan-clean on the pool/dispatcher paths; CI adds
+ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread 5.2.1 (single core).
 
 ## License
 
