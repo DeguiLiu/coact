@@ -5,9 +5,14 @@ coact_add_test(test_pool_smp test_pool_smp.cpp)
 coact_add_test(test_reclaimer test_reclaimer.cpp)
 
 find_package(Threads REQUIRED)
+if(COACT_PORTABLE_ONLY)
+    coact_skip(test_dispatcher_reclaim
+        "links pal_posix.cpp / fork()-based contention cases (POSIX only)")
+else()
 coact_add_test(test_dispatcher_reclaim test_dispatcher_reclaim.cpp ../core/pal_posix.cpp)
 target_link_libraries(test_dispatcher_reclaim PRIVATE Threads::Threads)
 target_include_directories(test_dispatcher_reclaim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+endif()
 
 # Negative compile contract: this TU MUST NOT compile (typed alloc with a
 # non-trivial payload). EXCLUDE_FROM_ALL keeps it out of the default build; the

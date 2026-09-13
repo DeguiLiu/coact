@@ -2,14 +2,43 @@
 # SPDX-License-Identifier: MIT
 find_package(Threads REQUIRED)
 
+# ---- Host-portable core tests (build everywhere, including MSVC) ----------
+# These use only headers plus Threads::Threads; no POSIX PAL, no pthread,
+# no fork(). They are the tests that prove the Windows CI scope is not empty.
+coact_add_test(test_expected test_expected.cpp)
+target_include_directories(test_expected PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# Coordinator wakeup-on-empty optimization test (flame finding): mock PAL counts
+# Dispatcher signals to prove a submit behind a buffered event does not wake it.
+coact_add_test(test_coordinator
+    test_coordinator.cpp)
+target_link_libraries(test_coordinator PRIVATE Threads::Threads)
+target_include_directories(test_coordinator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# ---- POSIX / RT-Thread host suites ----------------------------------------
+# Everything below links pal_posix.cpp / pal_rtthread.cpp (pthread, signalfd,
+# ucontext) or the COACT_RTT_STUB pthread shim, or forks a child to observe
+# COACT_ASSERT. None of it compiles under MSVC; the Windows CI scope skips the
+# whole block by name instead of pretending these suites passed.
+if(COACT_PORTABLE_ONLY)
+    foreach(skipped
+            test_core test_integration test_pal_sync test_rtt_pal test_stress
+            test_config test_timer test_bitfield test_static_lifetime
+            test_static_pal test_softirq test_rtt_smp_gate
+            test_rtt_multicore_gate bench_hotpath
+            test_coro_registry test_coro_combinators test_coro_posix
+            test_coro_awaitable test_coro_scheduler test_coro_integration
+            test_coro_rg_gate)
+        coact_skip("${skipped}"
+            "POSIX PAL / pthread / RT-Thread host stub / ucontext (MSVC cannot build it)")
+    endforeach()
+else()
+
 coact_add_test(test_core
     test_core.cpp
     pal_posix.cpp)
 target_link_libraries(test_core PRIVATE Threads::Threads)
 target_include_directories(test_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-
-coact_add_test(test_expected test_expected.cpp)
-target_include_directories(test_expected PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 coact_add_test(test_integration
     test_integration.cpp
@@ -48,13 +77,6 @@ coact_add_test(test_config
     pal_posix.cpp)
 target_link_libraries(test_config PRIVATE Threads::Threads)
 target_include_directories(test_config PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
-
-# Coordinator wakeup-on-empty optimization test (flame finding): mock PAL counts
-# Dispatcher signals to prove a submit behind a buffered event does not wake it.
-coact_add_test(test_coordinator
-    test_coordinator.cpp)
-target_link_libraries(test_coordinator PRIVATE Threads::Threads)
-target_include_directories(test_coordinator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # TimerScheduler (event-source timer adapted from newosp osp::timer.hpp):
 # ManualTickSource poll() mode end-to-end through the full coact pipeline.
@@ -133,11 +155,17 @@ set_tests_properties(test_rtt_multicore_gate PROPERTIES WILL_FAIL TRUE)
 add_executable(bench_hotpath bench_hotpath.cpp pal_posix.cpp)
 target_link_libraries(bench_hotpath PRIVATE coact_core Threads::Threads)
 # -O2 for representative timings; keep frame pointers so backtrace() works.
-target_compile_options(bench_hotpath PRIVATE -O2 -g -fno-omit-frame-pointer)
-target_link_options(bench_hotpath PRIVATE -rdynamic)
+if(MSVC)
+    target_compile_options(bench_hotpath PRIVATE /O2)
+else()
+    target_compile_options(bench_hotpath PRIVATE -O2 -g -fno-omit-frame-pointer)
+    target_link_options(bench_hotpath PRIVATE -rdynamic)
+endif()
 target_include_directories(bench_hotpath PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # coact::coro: task registry / combinators / stackful executor (Linux PAL
 # cooperative layer). Registration lives in the standalone fragment so the
 # component can land independently of other in-flight src/core changes.
 include(${CMAKE_CURRENT_SOURCE_DIR}/test_coro.cmake)
+
+endif()  # COACT_PORTABLE_ONLY
