@@ -16,8 +16,34 @@ endif()
 add_library(coact_core INTERFACE)
 target_include_directories(coact_core INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_options(coact_core INTERFACE
-    -Wall -Wextra -Wpedantic -fno-exceptions -fno-rtti)
+
+# Strict-warning + no-exceptions / no-RTTI policy. Guarded per compiler: the
+# former unconditional GCC/Clang flags made every MSVC configure fail before
+# compiling a single TU, which is why the Windows product's branch had no CI.
+if(MSVC)
+    target_compile_options(coact_core INTERFACE /W4 /GR- /EHs-c-)
+else()
+    target_compile_options(coact_core INTERFACE
+        -Wall -Wextra -Wpedantic -fno-exceptions -fno-rtti)
+endif()
+
+# Host-portability gate for CI. OFF by default, so every POSIX / RT-Thread /
+# coro / timer suite builds on the Linux host exactly as before. The MSVC job
+# sets it ON: only targets that compile under MSVC are registered, and every
+# skipped suite is named at configure time (and echoed by the job) so a skip
+# can never be mistaken for a pass. This is not a platform macro - it is an
+# explicit CI scope, and it changes nothing at runtime.
+option(COACT_PORTABLE_ONLY
+       "Register only targets that build on every host (skip POSIX/RT-Thread/coro/timer suites)"
+       OFF)
+
+# Visible-skip helper. Prints only under the Windows CI scope; a no-op on a
+# normal host build so the configure log stays clean.
+function(coact_skip target reason)
+    if(COACT_PORTABLE_ONLY)
+        message(STATUS "coact CI: SKIP target '${target}' - ${reason}")
+    endif()
+endfunction()
 
 enable_testing()
 
@@ -30,4 +56,20 @@ add_subdirectory(src/staging)
 add_subdirectory(src/policy)
 add_subdirectory(src/monitor)
 add_subdirectory(src/core)
-add_subdirectory(examples)
+
+# Examples are all POSIX-PAL executables (or RT-Thread host-stub builds); none
+# is host-portable under MSVC. Skip them as a unit and say so out loud.
+if(NOT COACT_PORTABLE_ONLY)
+    add_subdirectory(examples)
+else()
+    coact_skip(examples "POSIX PAL / pthread workers / RT-Thread host stub")
+endif()
+
+# Guard against a configure that registers zero core tests: `ctest` with an
+# empty test set exits 0 and would look green while proving nothing. The
+# portable core test is registered on every host, so its absence is fatal on
+# Linux and under the Windows CI scope alike.
+if(NOT TARGET test_coordinator)
+    message(FATAL_ERROR
+        "coact: test_coordinator target missing - CI scope is broken")
+endif()

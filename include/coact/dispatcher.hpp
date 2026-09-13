@@ -161,7 +161,24 @@ public:
                 if (staging_.any_ready()) {
                     continue;   /* something arrived before we slept */
                 }
-                pal_.wait_dispatcher(BatchCfg::kBatchTimeoutMs);
+                /* Idle wait: a TRUE blocking wait (PAL convention: 0 == wait
+                   forever). Safe only in this branch, and only because the
+                   arm/any_ready protocol above closes every lost-wakeup window:
+                   every producer publishes to staging BEFORE it calls
+                   request_dispatcher_wake(), which owns the PAL signal while
+                   the latch is armed - so a blocked Dispatcher is woken by the
+                   first Low/Normal/High producer, by direct-completion
+                   (coordinator.hpp: pending>0), and by request_stop()
+                   (signal_dispatcher_from_task). Low aging needs no timer:
+                   the idle branch is reachable only with every partition
+                   empty/not-ready, so a Low event that arrives while the
+                   Dispatcher sleeps is the sole batch candidate and is served
+                   the moment the wake lands - far inside kLowMaxWaitMs. The
+                   deferred-slot path (above) and the stop drain below keep
+                   their bounded kBatchTimeoutMs waits; only this branch blocks.
+                   The former 5 ms poll woke a fully idle process 200x/second
+                   forever for no work. */
+                pal_.wait_dispatcher(0U);
             }
         }
         if (has_deferred) {

@@ -2,12 +2,19 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, windows]
     tags: ['v*']
   pull_request:
-    branches: [master]
+    branches: [master, windows]
+
+# A same-repo push to `windows` also fires pull_request when a PR is open, so
+# the same commit can otherwise queue two runs. Cancel the stale one per ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  # Linux host suite, full scope (POSIX PAL, RT-Thread host stub, coro, timer).
   host-test:
     runs-on: ubuntu-latest
     strategy:
@@ -37,3 +44,38 @@ jobs:
         run: cmake --build build-san -j 4
       - name: Test
         run: ctest --test-dir build-san --output-on-failure
+
+  # Windows / MSVC job. The windows branch is what the Windows product
+  # consumes, and pal_windows.{hpp,cpp} only compile here, so this job is the
+  # only place that defect class can be caught. Scope is the host-portable
+  # subset (COACT_PORTABLE_ONLY=ON): POSIX-only modules are skipped by CMake
+  # with a named message, never silently counted as passing.
+  windows-msvc:
+    name: windows-msvc (portable subset)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (portable subset)
+        run: cmake -B build-win -S . -DCMAKE_BUILD_TYPE=Release -DCOACT_PORTABLE_ONLY=ON
+
+      - name: Declare what this job does and does not cover
+        shell: pwsh
+        run: |
+          Write-Host "=== coact Windows CI scope ==="
+          Write-Host "BUILT : core(expected/coordinator), event, queue, staging, policy,"
+          Write-Host "        monitor, ao(static), Windows PAL (pal_windows.cpp)"
+          Write-Host "SKIPPED by COACT_PORTABLE_ONLY=ON (cannot compile under MSVC):"
+          Write-Host "  - coact::coro suite        : ucontext / pthread_setaffinity_np"
+          Write-Host "  - timer.hpp / test_timer   : unconditional pthread.h"
+          Write-Host "  - POSIX PAL tests          : pal_posix.cpp (pthread/signalfd)"
+          Write-Host "  - RT-Thread host-stub tests: test_rtt_pal/test_pal_sync/test_static_*"
+          Write-Host "  - fork()-based tests       : test_ao, test_hsm, test_dispatcher_reclaim"
+          Write-Host "  - examples                 : POSIX PAL worker threads"
+          Write-Host "A skipped suite is NOT a passing suite; run it on the Linux jobs."
+
+      - name: Build
+        run: cmake --build build-win --config Release -j 4
+
+      - name: Test
+        run: ctest --test-dir build-win -C Release --output-on-failure
