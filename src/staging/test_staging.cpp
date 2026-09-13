@@ -82,6 +82,59 @@ struct ReserveCfg {
 };
 using ReserveStaging = coact::Staging<ReserveCfg, coact::BoundedMpscQueue>;
 
+// Declares ONLY the High reserve. A probe that required both constant names at
+// once would not match this Config and would silently zero the reserve that IS
+// declared, so this shape is the regression guard for that failure mode.
+struct HighOnlyReserveCfg {
+    enum : uint8_t {
+        kBatchSizeMax = 8U
+    };
+    enum : uint16_t {
+        kHighCapacity = 4U,
+        kNormalCapacity = 4U,
+        kLowCapacity = 4U,
+        kHighCriticalReserve = 2U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 1U
+    };
+};
+using HighOnlyReserveStaging =
+    coact::Staging<HighOnlyReserveCfg, coact::BoundedMpscQueue>;
+
+// Declares ONLY the Normal lane capacity, the mirror image of the above.
+struct NormalOnlyReserveCfg {
+    enum : uint8_t {
+        kBatchSizeMax = 8U
+    };
+    enum : uint16_t {
+        kHighCapacity = 4U,
+        kNormalCapacity = 4U,
+        kLowCapacity = 4U,
+        kNormalReservedCapacity = 1U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 1U
+    };
+};
+using NormalOnlyReserveStaging =
+    coact::Staging<NormalOnlyReserveCfg, coact::BoundedMpscQueue>;
+
+// Each constant must be picked up on its own, and the one that is absent must
+// read as zero rather than taking the declared one down with it.
+static_assert(coact::detail::StagingReserveConfig<HighOnlyReserveCfg>::kHighCritical == 2U,
+              "a Config declaring only kHighCriticalReserve lost its reserve");
+static_assert(coact::detail::StagingReserveConfig<HighOnlyReserveCfg>::kNormalReserved == 0U,
+              "an undeclared kNormalReservedCapacity must read as zero");
+static_assert(coact::detail::StagingReserveConfig<NormalOnlyReserveCfg>::kHighCritical == 0U,
+              "an undeclared kHighCriticalReserve must read as zero");
+static_assert(coact::detail::StagingReserveConfig<NormalOnlyReserveCfg>::kNormalReserved == 1U,
+              "a Config declaring only kNormalReservedCapacity lost its lane");
+static_assert(HighOnlyReserveStaging::ReserveConfig::kHighCritical == 2U,
+              "Staging did not inherit the single declared reserve");
+
 // Deliberately use distinct capacities so this probe can hold High in a
 // reserved-but-unpublished state while Normal is published. It models the
 // observable BoundedMpscQueue contract from mpsc_reserved_slot_is_not_ready.
@@ -1064,6 +1117,44 @@ COACT_TEST(staging_reserved_claims_hold_under_concurrency)
         }
     }
     CHECK_EQ(admitted, kOrdinaryLimit);
+}
+
+// A Config declaring only ONE of the two reservation constants must have that
+// one honoured. If the probe demanded both names, the declared reserve would be
+// silently zeroed and ordinary traffic would fill the whole partition - so the
+// observable cap below is the proof that the probe is per-constant.
+COACT_TEST(staging_single_declared_reserve_is_honoured)
+{
+    HighOnlyReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    const auto kOrdinaryLimit = HighOnlyReserveCfg::kHighCapacity
+                              - HighOnlyReserveCfg::kHighCriticalReserve;   // 2
+
+    for (uint16_t i = 0U; i < kOrdinaryLimit; ++i) {
+        REQUIRE(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
+                          coact::PriorityClass::High, 0U));
+    }
+    // Ordinary traffic stops at capacity minus the declared reserve...
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(30U),
+                     coact::PriorityClass::High, 0U));
+    // ...while those two cells stay reachable for critical traffic.
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(31U),
+                    coact::PriorityClass::High, 0U, /*critical=*/true,
+                    coact::StagingAdmission::Ordinary));
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(32U),
+                    coact::PriorityClass::High, 0U, /*critical=*/true,
+                    coact::StagingAdmission::Ordinary));
+    CHECK_EQ(s.size(coact::Partition::High), HighOnlyReserveCfg::kHighCapacity);
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(33U),
+                     coact::PriorityClass::High, 0U, /*critical=*/true,
+                     coact::StagingAdmission::Ordinary));
+
+    // The Normal lane was never declared, so it must have no capacity at all.
+    CHECK(!s.enqueue(coact::TargetId(2U), seq_event(34U),
+                     coact::PriorityClass::Normal, 0U, /*critical=*/false,
+                     coact::StagingAdmission::ReservedNormal));
+
+    std::vector<coact::StagingSlot> out;
+    REQUIRE_EQ(drain_all(s, out), HighOnlyReserveCfg::kHighCapacity);
 }
 
 COACT_TEST_MAIN()

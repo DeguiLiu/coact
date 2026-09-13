@@ -98,26 +98,48 @@ static_assert(sizeof(StagingSlot) == sizeof(detail::StagingSlotNoClaim),
 
 namespace detail {
 
-// Capacity reservations are opt-in: a Config that does not declare the two
-// constants gets zero for both, so every claim collapses to None and the
-// staging hot path is unchanged. The void_t probe keeps one Staging
-// instantiation valid for both old and reserving Configs.
+// Capacity reservations are opt-in, and each constant is probed INDEPENDENTLY.
+//
+// Probing both names in one specialization looks tidier but fails silently in
+// the worst possible way: a Config that declares only kHighCriticalReserve -
+// the case a board with no reserved Normal lane actually has - would not match
+// the specialization at all and would get zero for BOTH, so the declared
+// reserve would be quietly dropped. A feature whose entire job is to guarantee
+// capacity must not degrade to "no guarantee" because of how it was declared.
+// Opting out requires declaring a zero, not forgetting a name.
+
 template <typename Config, typename = void>
-struct StagingReserveConfig {
-    static constexpr uint16_t kHighCritical = 0U;
-    static constexpr uint16_t kNormalReserved = 0U;
+struct HighCriticalReserveOf {
+    static constexpr uint16_t value = 0U;
 };
 
 template <typename Config>
-struct StagingReserveConfig<
-    Config,
-    std::void_t<decltype(Config::kHighCriticalReserve),
-                decltype(Config::kNormalReservedCapacity)>>
+struct HighCriticalReserveOf<
+    Config, std::void_t<decltype(Config::kHighCriticalReserve)>>
 {
-    static constexpr uint16_t kHighCritical =
+    static constexpr uint16_t value =
         static_cast<uint16_t>(Config::kHighCriticalReserve);
-    static constexpr uint16_t kNormalReserved =
+};
+
+template <typename Config, typename = void>
+struct NormalReservedOf {
+    static constexpr uint16_t value = 0U;
+};
+
+template <typename Config>
+struct NormalReservedOf<
+    Config, std::void_t<decltype(Config::kNormalReservedCapacity)>>
+{
+    static constexpr uint16_t value =
         static_cast<uint16_t>(Config::kNormalReservedCapacity);
+};
+
+// A Config that declares neither constant gets zero for both, so every claim
+// collapses to None and the staging hot path is unchanged.
+template <typename Config>
+struct StagingReserveConfig {
+    static constexpr uint16_t kHighCritical = HighCriticalReserveOf<Config>::value;
+    static constexpr uint16_t kNormalReserved = NormalReservedOf<Config>::value;
 };
 
 }  // namespace detail
