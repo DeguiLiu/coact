@@ -7,7 +7,8 @@
 //   - QueryPerformanceCounter monotonic clock (monotonic_ns /
 //     clock_resolution_ns)
 //   - _beginthreadex for the Dispatcher thread, with an explicit started
-//     handshake (start/join_dispatcher)
+//     handshake and a start gate (start/join_dispatcher) so a failed handshake
+//     can never leave the entry thread running against a destroyed object
 //   - thread_local Dispatcher identity (in_dispatcher_thread); interrupt
 //     masking is a documented no-op on a Windows host, matching the POSIX PAL.
 //
@@ -131,7 +132,7 @@ public:
     };
 
     Windows() noexcept;
-    ~Windows() noexcept;   // join_dispatcher + close the wake/started events
+    ~Windows() noexcept;   // join_dispatcher + close the wake/started/gate events
 
     // A PAL owns raw kernel HANDLEs (wake/started events and, while a
     // Dispatcher is live, its thread handle). Copying one would produce two
@@ -168,6 +169,12 @@ public:
     // No-op: Windows uses the default thread stack; kept so the Runtime can
     // push Config::kDispatcherStackBytes to any PAL uniformly.
     void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
+
+    // Host-test hook (same spirit as set_tick_hz): bound the start_dispatcher
+    // entry handshake, default 1000 ms. Setting 0 forces the handshake-timeout
+    // path deterministically so a test can prove a failed start never runs the
+    // entry. Production leaves the default untouched.
+    void set_dispatcher_start_timeout_ms(uint32_t ms) noexcept;
 
     // Block up to timeout_ms for a dispatcher signal (0 = wait forever).
     void wait_dispatcher(uint32_t timeout_ms) noexcept;
@@ -237,12 +244,17 @@ private:
     static unsigned int __stdcall dispatcher_entry(void* arg) noexcept;
     static unsigned int __stdcall thread_trampoline(void* arg) noexcept;
 
-    HANDLE      wake_event_;      // auto-reset Dispatcher wake
-    HANDLE      started_event_;   // auto-reset start handshake
+    HANDLE      wake_event_;       // auto-reset Dispatcher wake
+    HANDLE      started_event_;    // auto-reset start handshake (entry -> starter)
+    HANDLE      start_gate_event_; // auto-reset start gate (starter -> entry)
     bool        thread_valid_;
     HANDLE      dispatcher_thread_;  // _beginthreadex handle, closed on join
     ThreadEntry user_entry_;
     void*       user_ctx_;
+    // Set by start_dispatcher when the entry handshake times out: the entry,
+    // however late it is scheduled, must return before touching user_entry_.
+    std::atomic<bool> start_abandoned_;
+    uint32_t    start_timeout_ms_; // handshake bound (host-test hook)
     LARGE_INTEGER freq_;
     uint32_t    tick_hz_;         // 0 = no quantization (QPC native)
     uint64_t    ns_per_tick_;     // 1e9 / tick_hz_, valid when tick_hz_ != 0

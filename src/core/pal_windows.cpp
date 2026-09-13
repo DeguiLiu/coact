@@ -11,6 +11,20 @@ namespace pal {
 
 namespace {
 
+// Default bound (ms) for the start_dispatcher entry handshake. Production uses
+// this; the host-test hook set_dispatcher_start_timeout_ms() can shorten it.
+constexpr uint32_t kDefaultStartTimeoutMs = 1000U;
+
+// Bound (ms) for reclaiming an entry thread whose start handshake timed out.
+// Once start_abandoned_ is set and start_gate_event_ is signaled, the entry
+// consumes the gate and returns before it can call user_entry_: the Dispatcher
+// loop is never entered on this path, so this wait is bounded by one thread
+// scheduling, not by the loop. The timeout is only a guard against an OS-level
+// thread-start failure; it must never be turned into a detach. On the
+// (should-be-impossible) expiry the handle stays owned by thread_valid_ so
+// join_dispatcher() still reclaims it.
+constexpr DWORD kAbandonJoinMs = 5000U;
+
 // Busy-wait the sub-millisecond remainder of sleep_us() on QPC. Kept private
 // and tiny: the alternative (a waitable timer per call) would be a heap
 // allocation for a delay measured in microseconds.
@@ -45,18 +59,23 @@ thread_local ExecutionContext Windows::tls_ctx_ = {
 Windows::Windows() noexcept
     : wake_event_(nullptr),
       started_event_(nullptr),
+      start_gate_event_(nullptr),
       thread_valid_(false),
       dispatcher_thread_(nullptr),
       user_entry_(nullptr),
       user_ctx_(nullptr),
+      start_abandoned_(false),
+      start_timeout_ms_(kDefaultStartTimeoutMs),
       freq_{},
       tick_hz_(0U),
       ns_per_tick_(0U)
 {
-    wake_event_    = CreateEventW(nullptr, FALSE /*auto-reset*/,
-                                  FALSE /*initially non-signaled*/, nullptr);
-    started_event_ = CreateEventW(nullptr, FALSE /*auto-reset*/,
-                                  FALSE /*initially non-signaled*/, nullptr);
+    wake_event_       = CreateEventW(nullptr, FALSE /*auto-reset*/,
+                                     FALSE /*initially non-signaled*/, nullptr);
+    started_event_    = CreateEventW(nullptr, FALSE /*auto-reset*/,
+                                     FALSE /*initially non-signaled*/, nullptr);
+    start_gate_event_ = CreateEventW(nullptr, FALSE /*auto-reset*/,
+                                     FALSE /*initially non-signaled*/, nullptr);
     QueryPerformanceFrequency(&freq_);
 }
 
@@ -73,6 +92,10 @@ Windows::~Windows() noexcept
     if (started_event_ != nullptr) {
         CloseHandle(started_event_);
         started_event_ = nullptr;
+    }
+    if (start_gate_event_ != nullptr) {
+        CloseHandle(start_gate_event_);
+        start_gate_event_ = nullptr;
     }
 }
 
@@ -161,6 +184,13 @@ void Windows::set_dispatcher_stack_bytes(uint32_t /*bytes*/) noexcept
     // Default thread stack is used.
 }
 
+void Windows::set_dispatcher_start_timeout_ms(uint32_t ms) noexcept
+{
+    // Host-test hook; see the declaration. No upper clamp is needed because
+    // WaitForSingleObject accepts any DWORD millisecond value.
+    start_timeout_ms_ = ms;
+}
+
 void Windows::wait_dispatcher(uint32_t timeout_ms) noexcept
 {
     if (nullptr == wake_event_) {
@@ -199,17 +229,35 @@ unsigned int __stdcall Windows::dispatcher_entry(void* arg) noexcept
     if (self->started_event_ != nullptr) {
         SetEvent(self->started_event_);
     }
+    /* Start gate: start_dispatcher signals it on success (the entry proceeds
+       into user_entry_) or after setting start_abandoned_ on a handshake
+       timeout (the entry returns without ever touching user_entry_). Both
+       outcomes signal it exactly once, so this INFINITE wait cannot hang: a
+       signal that lands before the wait is retained by the auto-reset event and
+       consumed here. Waiting for the gate is what makes the timeout path safe —
+       the entry cannot race past the decision and enter the Dispatcher loop
+       after start_dispatcher has reported failure. */
+    if (self->start_gate_event_ != nullptr) {
+        (void)WaitForSingleObject(self->start_gate_event_, INFINITE);
+    }
+    if (self->start_abandoned_.load(std::memory_order_acquire)) {
+        return 0U;   // start failed: never run user_entry_
+    }
     self->user_entry_(self->user_ctx_);
     return 0U;
 }
 
 bool Windows::start_dispatcher(ThreadEntry entry, void* context) noexcept
 {
-    if (entry == nullptr || started_event_ == nullptr || thread_valid_) {
+    if (entry == nullptr || started_event_ == nullptr ||
+        start_gate_event_ == nullptr || thread_valid_) {
         return false;
     }
     user_entry_ = entry;
     user_ctx_   = context;
+    // thread_valid_ is false here, so no entry thread from a previous start can
+    // still be live and observe this reset.
+    start_abandoned_.store(false, std::memory_order_relaxed);
     // _beginthreadex returns 0 (null handle) on failure — no C++ exceptions,
     // which matters because coact_core is built with -fno-exceptions.
     const uintptr_t raw = _beginthreadex(
@@ -220,20 +268,32 @@ bool Windows::start_dispatcher(ThreadEntry entry, void* context) noexcept
     dispatcher_thread_ = reinterpret_cast<HANDLE>(raw);
     thread_valid_      = true;
     // Handshake: only report success once the Dispatcher has actually entered
-    // its entry function.
-    if (WAIT_OBJECT_0 == WaitForSingleObject(started_event_, 1000U)) {
+    // its entry function. The gate then releases the entry into user_entry_.
+    if (WAIT_OBJECT_0 ==
+        WaitForSingleObject(started_event_, static_cast<DWORD>(start_timeout_ms_))) {
+        SetEvent(start_gate_event_);
         return true;
     }
-    // The handshake timed out — e.g. the thread was starved before it could
-    // signal. Do NOT join here: the thread runs user_entry_, the Dispatcher
-    // loop, which does not return on its own, so an INFINITE wait would block
-    // the caller forever. Release our reference to the handle and report the
-    // failure; the thread is left to finish under the OS. Closing the handle
-    // does not terminate the thread, and _beginthreadex followed by
-    // CloseHandle is the documented way to detach it.
-    CloseHandle(dispatcher_thread_);
-    dispatcher_thread_ = nullptr;
-    thread_valid_      = false;
+    /* The handshake timed out — e.g. the thread was starved before it could
+       signal. It may still be waiting to be scheduled, and it has NOT entered
+       user_entry_ (that call is behind the gate). Do NOT detach: an unjoinable
+       thread would later run the Dispatcher loop against a destroyed PAL /
+       Dispatcher / Runtime. Instead, set the abandon flag and open the gate, so
+       that however late it is scheduled it returns from dispatcher_entry without
+       calling user_entry_. Then join it. The join is bounded because the entry
+       cannot enter the loop after start_abandoned_ was published (the release
+       store happens-before the gate's SetEvent, and the entry's acquire load
+       follows the gate wait); in the normal case the wait completes on the
+       entry's next scheduling. If it ever expires, the handle stays owned and
+       thread_valid_ stays true so join_dispatcher() reclaims it — never
+       detached. The failure return value is unchanged. */
+    start_abandoned_.store(true, std::memory_order_release);
+    SetEvent(start_gate_event_);
+    if (WAIT_OBJECT_0 == WaitForSingleObject(dispatcher_thread_, kAbandonJoinMs)) {
+        CloseHandle(dispatcher_thread_);
+        dispatcher_thread_ = nullptr;
+        thread_valid_      = false;
+    }
     return false;
 }
 

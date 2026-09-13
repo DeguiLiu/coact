@@ -154,6 +154,80 @@ COACT_TEST(windows_thread_create_join)
     CHECK_EQ(1, ran.load(std::memory_order_acquire));
 }
 
+/* ---- Dispatcher start handshake lifetime --------------------------------- */
+//
+// Defect pinned here: on a handshake timeout the PAL used to CloseHandle-and-
+// detach the entry thread, which then ran the Dispatcher loop against a
+// destroyed PAL/Dispatcher/Runtime (use-after-free). The gate protocol makes
+// the entry return without touching user_entry_ on any failed start, and
+// start_dispatcher joins it before returning false.
+
+// Positive contract: a successful start releases the entry into user_entry_,
+// and join_dispatcher() reclaims it. The real entry is the Dispatcher loop; an
+// entry that returns on its own is a legal ThreadEntry and keeps this joinable.
+COACT_TEST(windows_start_dispatcher_success_runs_entry)
+{
+    Windows pal;
+    std::atomic<int32_t> ran{0};
+    struct Ctx { std::atomic<int32_t>* ran; } ctx{&ran};
+    const bool ok = pal.start_dispatcher([](void* a) {
+        static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
+    }, &ctx);
+    CHECK(ok);
+    // start_dispatcher returns only after it opened the gate, so the entry is
+    // on its way in; give it a bounded moment to report.
+    for (int i = 0; i < 2000 && ran.load(std::memory_order_acquire) == 0; ++i) {
+        pal.sleep_us(500U);
+    }
+    CHECK_EQ(1, ran.load(std::memory_order_acquire));
+    pal.join_dispatcher();                 // entry already returned
+    CHECK(true);                           // no hang = pass
+}
+
+// The invariant: a handshake timeout must never let the entry thread run
+// user_entry_, and must never leave an unjoinable (detached) thread. The
+// host-test hook forces the timeout deterministically (0 = fail immediately).
+COACT_TEST(windows_start_dispatcher_timeout_never_runs_entry)
+{
+    Windows pal;
+    pal.set_dispatcher_start_timeout_ms(0U);   // force the handshake timeout
+    std::atomic<int32_t> ran{0};
+    struct Ctx { std::atomic<int32_t>* ran; } ctx{&ran};
+    const bool ok = pal.start_dispatcher([](void* a) {
+        static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
+    }, &ctx);
+    CHECK(!ok);                            // failure return unchanged
+    // Under the old detach path the starved thread would signal started_event_
+    // and call user_entry_ here, flipping `ran` to 1.
+    pal.sleep_us(200000U);                 // give a detached thread time to run
+    CHECK_EQ(0, ran.load(std::memory_order_acquire));
+    pal.join_dispatcher();                 // must be a no-op, not a hang
+    CHECK(true);
+}
+
+// A failed start must be restartable: start_abandoned_ is reset per attempt and
+// a later start still completes the gate handshake.
+COACT_TEST(windows_start_dispatcher_abort_then_restart)
+{
+    Windows pal;
+    std::atomic<int32_t> ran{0};
+    struct Ctx { std::atomic<int32_t>* ran; } ctx{&ran};
+    pal.set_dispatcher_start_timeout_ms(0U);
+    CHECK(!pal.start_dispatcher([](void* a) {
+        static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
+    }, &ctx));
+    pal.set_dispatcher_start_timeout_ms(1000U);
+    const bool ok = pal.start_dispatcher([](void* a) {
+        static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
+    }, &ctx);
+    CHECK(ok);
+    for (int i = 0; i < 2000 && ran.load(std::memory_order_acquire) == 0; ++i) {
+        pal.sleep_us(500U);
+    }
+    CHECK_EQ(1, ran.load(std::memory_order_acquire));
+    pal.join_dispatcher();
+}
+
 /* ---- CondOps: timeout 0 == wait forever ----------------------------------- */
 
 COACT_TEST(windows_cond_handoff_zero_is_forever)
