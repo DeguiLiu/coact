@@ -12,7 +12,6 @@
 
 #include "coact/config.hpp"
 #include "coact/queue.hpp"
-#include "test/rtthread_stub.h"
 #include "test/test_harness.hpp"
 
 namespace {
@@ -293,24 +292,25 @@ COACT_TEST(spsc_try_push_observed)
 }
 
 // ---------------------------------------------------------------------------
-// Single-core ISR/task visibility (RT-Thread host stub): an ISR-context
-// producer pushes and a task-context consumer pops. The lock-free ring must
-// work from ISR nesting with no irq-mask and never lose the ISR-written items.
+// Single-core producer/consumer visibility with no irq-mask: the lock-free ring
+// must accept a full producer drain and let the consumer pop every item back in
+// FIFO order, losing nothing. SpscRing never reads irq-mask or ISR-nest state
+// (see spsc_ring.hpp), so there is no host-side ISR context to emulate here;
+// real ISR interleaving is a target concern (arm_ring_probe.cpp) and host SMP
+// concurrency is covered by the two-thread stress test below.
 // ---------------------------------------------------------------------------
-COACT_TEST(spsc_isr_producer_task_consumer)
+COACT_TEST(spsc_producer_consumer_no_irq_mask)
 {
     coact::SpscRing<uint16_t, 8> q;
 
-    stub_set_isr_nest(1U);   // ISR context
     for (uint16_t i = 0U; i < 8U; ++i) {
-        REQUIRE(q.try_push(std::move(i)));   // ISR pushes
+        REQUIRE(q.try_push(std::move(i)));
     }
-    CHECK(!q.try_push(0xFFU));   // ISR push on a full ring fails cleanly
-    stub_set_isr_nest(0U);       // back to task context
+    CHECK(!q.try_push(0xFFU));   // push on a full ring fails cleanly
 
     uint16_t v = 0U;
     for (uint16_t i = 0U; i < 8U; ++i) {
-        REQUIRE(q.try_pop(v));   // task pops; ISR-written items must be visible
+        REQUIRE(q.try_pop(v));   // every producer-written item must be visible
         CHECK_EQ(v, i);
     }
     CHECK(!q.try_pop(v));
@@ -329,7 +329,7 @@ COACT_TEST(spsc_single_producer_single_consumer_stress)
     std::atomic<bool> ok{true};
     std::atomic<uint32_t> consumed{0U};
 
-    std::thread consumer([&q, &ok, &consumed]() {
+    std::thread consumer([&q, &ok, &consumed, kN]() {
         uint32_t v = 0U;
         uint32_t expected = 0U;
         uint32_t count = 0U;

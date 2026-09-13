@@ -176,7 +176,7 @@ struct EmptyResource {};
 // Caller-provided static resources (design §7.5). Construct in static/global
 // storage or on a task stack BEFORE the RtThread that references it. The
 // members are value-initialized so a stack/struct resource never hands the PAL
-// garbage kernel objects (rt_sem_init reads the host stub's init_done flag).
+// garbage kernel objects.
 template <uint32_t StackBytes, uint16_t ContextSlots,
           uint16_t WorkerSlots = 0U, uint32_t WorkerStackBytes = 2048U>
 struct RtThreadResources : public RtThreadResourcesBase {
