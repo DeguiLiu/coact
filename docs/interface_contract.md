@@ -316,6 +316,10 @@ struct StagingSlot {
     TargetId target;
     Event* event;          // 已转移的 owned reference；dispatcher 完成后 event_gc
     uint64_t enqueue_ns;   // 用于 Low 老化计时
+    // 预约认领标记（见下），随槽位在 pop 时归还
+    enum class ReservationClaim : uint8_t {
+        None, HighOrdinary, NormalOrdinary, NormalReserved
+    } claim;
 };
 
 // 纯批处理逻辑：优先级顺序 + aging 例外 + 数量上界（BatchSizeMax）
@@ -326,19 +330,32 @@ template <typename Config, typename QueueBackend>
 class Staging {
 public:
     // 每 AO 固定 PriorityClass 决定分区；watermark 返回 0-100 使用率
+    // 4 参形式 = 普通流量；6 参形式额外表达 critical 与 admission 通道
     bool enqueue(TargetId target, Event* e, PriorityClass cls, uint64_t now_ns) noexcept;
+    bool enqueue(TargetId target, Event* e, PriorityClass cls, uint64_t now_ns,
+                 bool critical, StagingAdmission admission) noexcept;
+    bool admission_valid(PriorityClass cls, StagingAdmission admission) const noexcept;
     bool dequeue_one(StagingSlot& out) noexcept;   // 按优先级/aging 取一个
     uint8_t watermark(Partition p) const noexcept; // 50/80/95 档位
     uint16_t size(Partition p) const noexcept;
 };
 ```
 
+**容量预约（可选，零成本默认关闭）**：MPSC 后端交出的是「当前空闲的那一格」，因此保留容量不能靠划分环形区域，只能靠限制**认领数**。`enqueue` 在 `try_push` 之前先从有界计数器取一个 claim，pop 成功时归还、`try_push` 失败时回滚，故 claim 恒等于实际在队占用量。Config 未声明两个常量时 `detail::StagingReserveConfig` 经 SFINAE 取 0，所有 claim 退化为 `None`，热路径与旧行为完全一致。
+
+| 常量 | 含义 |
+|---|---|
+| `kHighCriticalReserve` | High 分区中普通（非 critical）提交不可认领的格数：High 被普通流量打满时，critical 事件仍可入队 |
+| `kNormalReservedCapacity` | Normal 分区中供 `StagingAdmission::ReservedNormal` 使用的格数 |
+
+两个常量都必须不超过所属分区容量（编译期 `static_assert`）。未开启该通道的 Config 对 `ReservedNormal` 提交**直接拒绝**（coordinator 记为 `RejectedState`）而不静默降级为普通流量，否则调用方会误以为自己持有并不存在的预约。
+
 注意：staging 是数据结构 + 批处理选择逻辑；**Dispatcher 线程循环放 core 模块**（依赖 PAL wait/signal）。
 
 ### 4.8 core（集成）— 见设计 §4/8/13
 
 - `dispatcher.hpp`：`Dispatcher`（单线程循环：drain → 取 batch → dispatch → 释放；空闲时以 acq_rel exchange 清 wake latch、复查 Ready，再调用 PAL wait）。producer 在 publish 后以 exchange 置 latch，仅 false→true 的首个 producer 发 signal，避免 missed wakeup 与逐 submit 唤醒。停止先关闭 submission admission，再等待已获 lease 的 submit 完成；Writing 槽计入 buffered，排空只读取 Ready 槽，最后一个 submission lease 负责唤醒停止等待。
-- `coordinator.hpp`：`DispatchCoordinator::submit_from_task(TargetId, Event*, const EventQos&) / try_submit_from_isr(...)`（事件引用由 submit 管理：入队则保留 ref 待 dispatcher gc，direct 则处理完 gc，drop/merge 则立即 gc），按设计 §8.1 管线：M4 → M1(C1-C7) → direct | merge | staging。统一入口，禁止绕过。
+- `coordinator.hpp`：`DispatchCoordinator::submit_from_task(TargetId, Event*, const EventQos&, StagingAdmission = Ordinary) / try_submit_from_isr(...)`（事件引用由 submit 管理：入队则保留 ref 待 dispatcher gc，direct 则处理完 gc，drop/merge 则立即 gc），按设计 §8.1 管线：C1 → admission 通道校验 → M6 → M4 → M1(C1-C7) → direct | merge | staging。统一入口，禁止绕过。`StagingAdmission` 只表达容量通道（§4.7），不是优先级；通道不可用时在取 submission lease 之前即以 `RejectedState` 拒绝。`qos.critical` 与 `admission` 一并传入 `Staging::enqueue`，由 §4.7 的 claim 机制落实为容量保留。
 - `runtime.hpp`：`Runtime<Config, Pal, Profile=HostSmpProfile>`：`initialize/bind/start/run_dispatcher/stop` 三阶段初始化。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；通用 `DispatchCoordinator`/`Dispatcher` 模板默认仍为单 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。默认 16 AO 的 Bank 约占 128 B，相对单 `Breaker` 净增约 120 B。`start()` 返回 `bool`，只有 PAL 报告 Dispatcher 启动成功才进入 started（design §7.5）；第三模板参把板级 profile 传导到 Dispatcher（单核 `RttSingleCoreProfile`→immediate reclaim，Host 默认→batched）。
 - `src/core/pal_posix.cpp`：`pal::Posix`（pthread、condvar、`clock_gettime(CLOCK_MONOTONIC)`）。
 - `src/core/pal_rtthread.cpp`：`pal::RtThread` 静态 PAL（design §7.5）：调用方提供 `RtThreadResources<StackBytes,ContextSlots>`（静态 TCB、对齐 stack、两个静态 semaphore、固定 `ContextSlot[N]`）；构造函数只保存引用；显式 `initialize()` 返回 `pal::InitError`；`start_dispatcher()` 返回 `pal::InitError`（只有 `rt_thread_startup()==RT_EOK` 才 kOk）；一次初始化/一次启动/一次停止，stop 后再次 start 返回 `kAlreadyStarted`；固定 ContextSlot 表不占 `user_data`、启动后冻结、Dispatcher 经静态 TCB 比较识别；`ClockOps` 静态函数表注入时钟（默认 RT tick，真机绑 10 MHz TIM）。

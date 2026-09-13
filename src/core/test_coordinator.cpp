@@ -42,6 +42,35 @@ struct SmallCfg {
     };
 };
 
+/* Config that carves one High cell out for critical traffic. SmallCfg
+   deliberately declares no reservation constants, so this is the only Config
+   in this file whose Staging instantiation exercises the reservation path
+   (the void_t probe in StagingReserveConfig picks up both members). */
+struct ReserveCfg {
+    enum : uint8_t {
+        kMaxAo = 2U,
+        kMaxStateDepth = 6U,
+        kMaxDirectDepth = 4U,
+        kBatchSizeMax = 4U
+    };
+    enum : uint16_t {
+        kHighCapacity = 4U,
+        kHighCriticalReserve = 1U,
+        kNormalCapacity = 8U,
+        kNormalReservedCapacity = 0U,
+        kLowCapacity = 16U,
+        kCooldownCycles = 3U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 10U
+    };
+    enum : uint64_t {
+        kDirectBudgetNs = 50000ULL,
+        kRtcBudgetNs = 1000000ULL
+    };
+};
+
 /* Mock PAL that counts Dispatcher wakeup signals instead of waking a thread. */
 struct CountingPal {
     int signals = 0;
@@ -75,11 +104,30 @@ struct Ctraits {
 using CtxHsm = coact::Hsm<Ctx>;
 using CtxAo  = coact::Ao<Ctx, CtxHsm, Ctraits>;
 
+/* High-priority AO that is never direct-eligible, so every submission reaches
+   the High staging partition (the partition the critical reserve carves out). */
+struct HighStageTraits {
+    static coact::LogicalPrio   logical_prio()   { return 20U; }
+    static coact::PriorityClass priority_class() { return coact::PriorityClass::High; }
+    static bool direct_eligible() { return false; }
+    static bool isr_direct_safe() { return false; }
+    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+};
+using HighStageAo = coact::Ao<Ctx, CtxHsm, HighStageTraits>;
+
 using StageT = coact::Staging<SmallCfg, coact::BoundedMpscQueue>;
+using ReserveStageT = coact::Staging<ReserveCfg, coact::BoundedMpscQueue>;
 
 static StageT make_staging()
 {
     return StageT(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {} });
+}
+
+static ReserveStageT make_reserve_staging()
+{
+    return ReserveStageT(coact::CriticalSection{nullptr,
         [](void*) -> coact::CriticalSection::Token { return 0U; },
         [](void*, coact::CriticalSection::Token) {} });
 }
@@ -236,6 +284,94 @@ COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
     CHECK_EQ(result.disposition, coact::SubmitDisposition::Direct);
     CHECK_EQ(breakers.level(coact::TargetId(2U)),
              coact::BreakerLevel::Normal);
+}
+
+/* =========================================================================
+ * A Config may reserve a slice of the High partition for critical traffic.
+ * Ordinary (qos.critical == false) High submissions are capped at
+ * kHighCapacity - kHighCriticalReserve, so once ordinary traffic fills its
+ * share a critical High event is still admitted into the reserved cell instead
+ * of returning RejectedFull. This is what lets a receive wakeup or a close
+ * request survive a flood of ordinary High events.
+ * ========================================================================= */
+COACT_TEST(coordinator_high_critical_reserve_admits_when_ordinary_saturated)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    HighStageAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    ReserveStageT staging = make_reserve_staging();
+    coact::AoRegistry<ReserveCfg> registry;
+    coact::Monitor<ReserveCfg> monitor;
+    ReserveCfg cfg{};
+    coact::Breaker<ReserveCfg> breaker(cfg);
+    CountingPal pal;
+    coact::DispatchCoordinator<ReserveStageT, CountingPal,
+                               coact::Breaker<ReserveCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+
+    /* kHighCapacity == 4 minus kHighCriticalReserve == 1 leaves 3 ordinary
+       cells; the 3 ordinary submissions below must all be accepted. */
+    const coact::EventQos ordinary{false, false};
+    for (int i = 0; i < 3; ++i) {
+        coact::Event e{};
+        e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+        const coact::SubmitResult r =
+            coord.submit_from_task(coact::TargetId(1U), &e, ordinary);
+        REQUIRE_EQ(r.disposition, coact::SubmitDisposition::Queued);
+    }
+
+    /* The 4th ordinary claim is refused by the reserve, not by a physically
+       full queue (one High cell is still free for critical traffic). */
+    coact::Event blocked{};
+    blocked.signal = 1U; blocked.pool_id = 0U; blocked.ref_ctr = 0U;
+    const coact::SubmitResult blocked_r =
+        coord.submit_from_task(coact::TargetId(1U), &blocked, ordinary);
+    REQUIRE_EQ(blocked_r.disposition, coact::SubmitDisposition::RejectedFull);
+
+    /* Critical High ignores both the reserve cap and the L2 overload guard
+       (the overflow above tripped L2, which drops only non-critical events),
+       so it claims the reserved cell and is genuinely queued. */
+    coact::Event critical{};
+    critical.signal = 1U; critical.pool_id = 0U; critical.ref_ctr = 0U;
+    const coact::EventQos critical_qos{true, false};
+    const coact::SubmitResult critical_r =
+        coord.submit_from_task(coact::TargetId(1U), &critical, critical_qos);
+    CHECK_EQ(critical_r.disposition, coact::SubmitDisposition::Queued);
+}
+
+/* =========================================================================
+ * A Config that declares no Normal reservation must reject a ReservedNormal
+ * submission outright instead of quietly downgrading it to ordinary traffic,
+ * which would let a caller believe it holds a reservation the Config never
+ * opened.
+ * ========================================================================= */
+COACT_TEST(coordinator_reserved_normal_rejected_without_reservation_config)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    CtxAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    StageT staging = make_staging();
+    coact::AoRegistry<SmallCfg> registry;
+    coact::Monitor<SmallCfg> monitor;
+    SmallCfg cfg{};
+    coact::Breaker<SmallCfg> breaker(cfg);
+    CountingPal pal;
+    coact::DispatchCoordinator<StageT, CountingPal,
+                               coact::Breaker<SmallCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+
+    coact::Event e{};
+    e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+    const coact::EventQos qos{false, false};
+    const coact::SubmitResult r = coord.submit_from_task(
+        coact::TargetId(1U), &e, qos, coact::StagingAdmission::ReservedNormal);
+    CHECK_EQ(r.disposition, coact::SubmitDisposition::RejectedState);
 }
 
 }  // namespace

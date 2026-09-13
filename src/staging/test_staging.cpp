@@ -59,6 +59,29 @@ struct BatchCfg {
 };
 using BatchStaging = coact::Staging<BatchCfg, coact::BoundedMpscQueue>;
 
+// A Config that opens both reservations. High physically holds 4 cells but
+// ordinary submissions may claim only 3, so one cell is always reachable by a
+// critical High event. Normal reserves 2 of its 4 cells for the ReservedNormal
+// lane. Each limit sums to its partition capacity, which is what makes the
+// claim counters a complete account of physical occupancy.
+struct ReserveCfg {
+    enum : uint8_t {
+        kBatchSizeMax = 8U
+    };
+    enum : uint16_t {
+        kHighCapacity = 4U,
+        kNormalCapacity = 4U,
+        kLowCapacity = 4U,
+        kHighCriticalReserve = 1U,
+        kNormalReservedCapacity = 2U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 1U
+    };
+};
+using ReserveStaging = coact::Staging<ReserveCfg, coact::BoundedMpscQueue>;
+
 // Deliberately use distinct capacities so this probe can hold High in a
 // reserved-but-unpublished state while Normal is published. It models the
 // observable BoundedMpscQueue contract from mpsc_reserved_slot_is_not_ready.
@@ -709,6 +732,212 @@ COACT_TEST(staging_concurrent_no_loss)
     CHECK_EQ(dup, 0);
     CHECK_EQ(oob, 0);
     CHECK_EQ(missing, 0);
+}
+
+// ---------------------------------------------------------------------------
+// High critical reserve: ordinary High submissions are capped at
+// kHighCapacity - kHighCriticalReserve even while a physical cell is still
+// free, so one cell always stays reachable by a critical High event. The
+// reserve is a claim on capacity, not a fenced region, so once that critical
+// event takes the last cell the partition is genuinely full for everyone.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_high_critical_reserve_holds_a_cell)
+{
+    ReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    const auto kOrdinaryLimit =
+        ReserveCfg::kHighCapacity - ReserveCfg::kHighCriticalReserve;
+
+    for (auto i = 0; i < kOrdinaryLimit; ++i) {
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
+                        coact::PriorityClass::High, 0U));
+    }
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(kOrdinaryLimit));
+
+    // ordinary traffic is capped one cell below physical capacity
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(70),
+                     coact::PriorityClass::High, 0U));
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(kOrdinaryLimit));
+
+    // a critical High event is the only path to the held-back cell
+    CHECK(s.enqueue(coact::TargetId(1U), seq_event(71),
+                    coact::PriorityClass::High, 0U, /*critical=*/true,
+                    coact::StagingAdmission::Ordinary));
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(ReserveCfg::kHighCapacity));
+
+    // the reserve did not add capacity: the partition is now truly full
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(72),
+                     coact::PriorityClass::High, 0U, /*critical=*/true,
+                     coact::StagingAdmission::Ordinary));
+}
+
+// ---------------------------------------------------------------------------
+// The claim must be returned when the slot is popped, not merely when it is
+// admitted. Repeat fill/drain rounds: if dequeue_one leaked the claim, the
+// High counter would stay saturated and the very first ordinary submit of
+// round 2 would fail. Passing all rounds pins the release path.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_reservation_released_on_pop)
+{
+    ReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    const auto kOrdinaryLimit =
+        ReserveCfg::kHighCapacity - ReserveCfg::kHighCriticalReserve;
+    std::vector<coact::StagingSlot> out;
+
+    for (int round = 0; round < 3; ++round) {
+        for (auto i = 0; i < kOrdinaryLimit; ++i) {
+            CHECK(s.enqueue(coact::TargetId(1U),
+                            seq_event(static_cast<uint8_t>(round * 8 + i)),
+                            coact::PriorityClass::High, 0U));
+        }
+        CHECK(!s.enqueue(coact::TargetId(1U),
+                         seq_event(static_cast<uint8_t>(round * 8 + 7)),
+                         coact::PriorityClass::High, 0U));
+        REQUIRE_EQ(drain_all(s, out), static_cast<int>(kOrdinaryLimit));
+        CHECK_EQ(s.size(coact::Partition::High), 0U);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The Normal reserved lane is a separate, bounded claim counter: ordinary
+// Normal traffic cannot dip into it, and ReservedNormal cannot exceed it. Both
+// limits together sum to kNormalCapacity, so the reserved submissions fill the
+// partition exactly and one more is refused.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_normal_reserved_lane_is_bounded)
+{
+    ReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    const auto kOrdinaryLimit =
+        ReserveCfg::kNormalCapacity - ReserveCfg::kNormalReservedCapacity;
+
+    for (auto i = 0; i < kOrdinaryLimit; ++i) {
+        CHECK(s.enqueue(coact::TargetId(2U), seq_event(static_cast<uint8_t>(i)),
+                        coact::PriorityClass::Normal, 0U));
+    }
+    // ordinary Normal stops at its own limit, leaving the lane untouched
+    CHECK(!s.enqueue(coact::TargetId(2U), seq_event(80),
+                     coact::PriorityClass::Normal, 0U));
+    CHECK_EQ(s.size(coact::Partition::Normal),
+             static_cast<uint16_t>(kOrdinaryLimit));
+
+    // the lane admits exactly its own bound, completing the partition
+    for (auto i = 0;
+         i < static_cast<int>(ReserveCfg::kNormalReservedCapacity); ++i) {
+        CHECK(s.enqueue(coact::TargetId(2U),
+                        seq_event(static_cast<uint8_t>(81 + i)),
+                        coact::PriorityClass::Normal, 0U, /*critical=*/false,
+                        coact::StagingAdmission::ReservedNormal));
+    }
+    CHECK_EQ(s.size(coact::Partition::Normal),
+             static_cast<uint16_t>(ReserveCfg::kNormalCapacity));
+
+    // the lane is bounded: one more ReservedNormal is refused
+    CHECK(!s.enqueue(coact::TargetId(2U), seq_event(83),
+                     coact::PriorityClass::Normal, 0U, /*critical=*/false,
+                     coact::StagingAdmission::ReservedNormal));
+
+    std::vector<coact::StagingSlot> out;
+    REQUIRE_EQ(drain_all(s, out),
+               static_cast<int>(ReserveCfg::kNormalCapacity));
+    CHECK_EQ(s.size(coact::Partition::Normal), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Backward compatibility: a Config that declares no reservation constants must
+// behave exactly as before. The SFINAE helper yields zero for both, so ordinary
+// High reaches physical capacity with no cell held back, and the ReservedNormal
+// lane does not exist - such a submission is rejected outright rather than
+// silently consuming an ordinary cell.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_without_reservation_config_is_unchanged)
+{
+    MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+
+    for (uint16_t i = 0U; i < TestConfig::kHighCapacity; ++i) {
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
+                        coact::PriorityClass::High, 0U));
+    }
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(TestConfig::kHighCapacity));
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(90),
+                     coact::PriorityClass::High, 0U));
+
+    CHECK(!s.enqueue(coact::TargetId(2U), seq_event(91),
+                     coact::PriorityClass::Normal, 0U, /*critical=*/false,
+                     coact::StagingAdmission::ReservedNormal));
+    CHECK_EQ(s.size(coact::Partition::Normal), 0U);
+}
+
+// ---------------------------------------------------------------------------
+// Rollback path: a claim TAKEN and then refused by try_push must be returned.
+//
+// The other tests only reach the claim-exhausted path (refused at try_claim).
+// This one forces the rarer ordering the claim/resident split makes possible:
+// ordinary High claims are capped at kHighCapacity - kHighCriticalReserve (3),
+// but critical High claims are uncapped, so critical events can fill the ring
+// beyond what ordinary claims account for. Fill 2 ordinary + 2 critical High:
+// ring physically FULL (4/4) while the ordinary claim counter is still only 2.
+// A 3rd ordinary High then passes try_claim (2 -> 3 == limit) but fails
+// try_push (no free cell), driving the `if (!queued) release_claim(claim)` path.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_claim_rolled_back_when_push_fails)
+{
+    ReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    const auto kOrdinaryLimit =
+        ReserveCfg::kHighCapacity - ReserveCfg::kHighCriticalReserve;
+
+    // 2 ordinary High: each takes a HighOrdinary claim. Counter = 2, resident 2.
+    for (auto i = 0; i < 2; ++i) {
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
+                        coact::PriorityClass::High, 0U));
+    }
+    CHECK_EQ(s.size(coact::Partition::High), 2U);
+
+    // 2 critical High: claim None (uncapped) so both are admitted despite the
+    // ordinary limit; resident climbs to 4 == kHighCapacity, ring is FULL while
+    // the ordinary claim counter is still only 2.
+    for (auto i = 0; i < 2; ++i) {
+        CHECK(s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(10 + i)),
+                        coact::PriorityClass::High, 0U, /*critical=*/true,
+                        coact::StagingAdmission::Ordinary));
+    }
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(ReserveCfg::kHighCapacity));
+
+    // 3rd ordinary High: try_claim succeeds (2 -> 3, 3 is the limit) but the
+    // ring has no free cell, so try_push fails and enqueue returns false. The
+    // rollback must release the just-taken claim.
+    CHECK(!s.enqueue(coact::TargetId(1U), seq_event(20),
+                     coact::PriorityClass::High, 0U));
+
+    // The failed push left no phantom slot: occupancy is still exactly full.
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(ReserveCfg::kHighCapacity));
+
+    // Drain. Popping the 2 ordinary residents releases their claims; the 2
+    // critical residents hold claim None and release nothing.
+    std::vector<coact::StagingSlot> out;
+    REQUIRE_EQ(drain_all(s, out), static_cast<int>(ReserveCfg::kHighCapacity));
+    CHECK_EQ(s.size(coact::Partition::High), 0U);
+
+    // Leak-vs-rollback: after the failed push a leaked claim would sit at 3.
+    // The drain returns 2 of them, leaving 1, so a refill could admit only
+    // 2 ordinary submissions before hitting limit 3. With correct rollback the
+    // drain returns the counter to 0 and ALL kOrdinaryLimit (3) submissions
+    // succeed. Asserting the exact success count (not a boolean) is what
+    // distinguishes rolled-back from leaked-by-one.
+    int admitted = 0;
+    for (auto i = 0; i < kOrdinaryLimit; ++i) {
+        if (s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(30 + i)),
+                      coact::PriorityClass::High, 0U)) {
+            ++admitted;
+        }
+    }
+    CHECK_EQ(admitted, static_cast<int>(kOrdinaryLimit));
+    CHECK_EQ(s.size(coact::Partition::High),
+             static_cast<uint16_t>(kOrdinaryLimit));
 }
 
 COACT_TEST_MAIN()

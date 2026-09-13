@@ -19,8 +19,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <type_traits>
 #include <utility>
 
+#include "coact/assert.hpp"
 #include "coact/config.hpp"
 #include "coact/event.hpp"
 #include "coact/queue.hpp"
@@ -63,7 +65,41 @@ struct StagingSlot {
     TargetId target;
     Event* event;           // transferred owned reference; dispatcher event_gc
     uint64_t enqueue_ns;    // publish time, used for Low aging
+    // A reservation is an occupancy claim, never a physical MPSC cell. The
+    // consumer releases it as soon as try_pop has freed that cell.
+    enum class ReservationClaim : uint8_t {
+        None,
+        HighOrdinary,
+        NormalOrdinary,
+        NormalReserved
+    } claim = ReservationClaim::None;
 };
+
+namespace detail {
+
+// Capacity reservations are opt-in: a Config that does not declare the two
+// constants gets zero for both, so every claim collapses to None and the
+// staging hot path is unchanged. The void_t probe keeps one Staging
+// instantiation valid for both old and reserving Configs.
+template <typename Config, typename = void>
+struct StagingReserveConfig {
+    static constexpr uint16_t kHighCritical = 0U;
+    static constexpr uint16_t kNormalReserved = 0U;
+};
+
+template <typename Config>
+struct StagingReserveConfig<
+    Config,
+    std::void_t<decltype(Config::kHighCriticalReserve),
+                decltype(Config::kNormalReservedCapacity)>>
+{
+    static constexpr uint16_t kHighCritical =
+        static_cast<uint16_t>(Config::kHighCriticalReserve);
+    static constexpr uint16_t kNormalReserved =
+        static_cast<uint16_t>(Config::kNormalReservedCapacity);
+};
+
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // Pure batch-order selection (no queue storage, fully testable). Inputs are
@@ -133,6 +169,11 @@ public:
                   "Dispatcher wake latch requires lock-free atomic<bool>");
     static_assert(std::atomic<uint32_t>::is_always_lock_free,
                   "Submission admission requires lock-free atomic<uint32_t>");
+    using ReserveConfig = detail::StagingReserveConfig<Config>;
+    static_assert(ReserveConfig::kHighCritical <= Config::kHighCapacity,
+                  "High critical reserve exceeds High capacity");
+    static_assert(ReserveConfig::kNormalReserved <= Config::kNormalCapacity,
+                  "Normal reserve exceeds Normal capacity");
     using HighQueue = QueueBackend<StagingSlot, Config::kHighCapacity>;
     using NormalQueue = QueueBackend<StagingSlot, Config::kNormalCapacity>;
     using LowQueue = QueueBackend<StagingSlot, Config::kLowCapacity>;
@@ -149,22 +190,65 @@ public:
     // false when that partition is full; the caller (coordinator) then owns
     // the decision to event_gc the Event* immediately. The reference count is
     // never touched here.
+    //
+    // This overload treats the event as ordinary (non-critical) traffic. A
+    // Config with a nonzero kHighCriticalReserve therefore caps the ordinary
+    // High claims below kHighCapacity, leaving the reserve to critical High
+    // events submitted through the five-argument form.
     bool enqueue(TargetId target, Event* e, PriorityClass cls, uint64_t now_ns) noexcept
     {
-        StagingSlot slot{target, e, now_ns};
+        return enqueue(target, e, cls, now_ns, false,
+                       StagingAdmission::Ordinary);
+    }
 
+    // True when this (partition, admission) pair is currently allowed to
+    // submit. ReservedNormal is only meaningful inside the Normal partition
+    // and only when the Config actually reserved capacity for it; otherwise the
+    // submission is refused instead of quietly becoming ordinary traffic.
+    [[nodiscard]] bool admission_valid(PriorityClass cls,
+                                       StagingAdmission admission) const noexcept
+    {
+        if (admission == StagingAdmission::Ordinary) {
+            return true;
+        }
+        return cls == PriorityClass::Normal
+            && ReserveConfig::kNormalReserved != 0U;
+    }
+
+    // Claim admission before asking the MPSC queue for an arbitrary free cell.
+    // That ordering is what makes a reservation meaningful: the queue hands out
+    // whichever cell is free, so capacity can only be held back by bounding the
+    // claims, not by fencing a region of the ring. A claim is rolled back when
+    // try_push fails, so it always tracks a slot that is actually resident.
+    bool enqueue(TargetId target, Event* e, PriorityClass cls, uint64_t now_ns,
+                 bool critical, StagingAdmission admission) noexcept
+    {
+        if (!admission_valid(cls, admission)) {
+            return false;
+        }
+
+        const StagingSlot::ReservationClaim claim =
+            classify_claim(cls, critical, admission);
+        if (!try_claim(claim)) {
+            return false;
+        }
+        StagingSlot slot{target, e, now_ns, claim};
+
+        bool queued = false;
         if (cls == PriorityClass::Low) {
-            return low_q_.try_push(std::move(slot));
+            queued = low_q_.try_push(std::move(slot));
+        }
+        else if (cls == PriorityClass::Normal) {
+            queued = normal_q_.try_push(std::move(slot));
+        }
+        else if (cls == PriorityClass::High) {
+            queued = high_q_.try_push(std::move(slot));
         }
 
-        if (cls == PriorityClass::Normal) {
-            return normal_q_.try_push(std::move(slot));
+        if (!queued) {
+            release_claim(claim);
         }
-
-        if (cls == PriorityClass::High) {
-            return high_q_.try_push(std::move(slot));
-        }
-        return false;   // unreachable: explicit default
+        return queued;
     }
 
     // Pop one slot in batch order (priority-first with the Low aging
@@ -216,6 +300,10 @@ public:
         }
 
         if (ok) {
+            // The cell is free again, so the reservation that gated it must be
+            // returned here: the claim and the resident slot are released
+            // together, on every pop path (dispatch and the stop drain alike).
+            release_claim(out.claim);
             ++batch_used_;
         }
         return ok;
@@ -387,6 +475,97 @@ private:
         }
     }
 
+    // Bounded claim counter: CAS-increments while the count is below limit.
+    // Fails once the limit is reached, which is how a reservation holds cells
+    // back from ordinary traffic without the queue knowing about it. observed is
+    // updated by the failed CAS, so the retry re-reads the true value.
+    static bool try_claim_counter(std::atomic<uint32_t>& count,
+                                  uint32_t limit) noexcept
+    {
+        uint32_t observed = count.load(std::memory_order_relaxed);
+        while (observed < limit) {
+            if (count.compare_exchange_weak(
+                    observed, observed + 1U,
+                    std::memory_order_acq_rel, std::memory_order_relaxed)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Pairs with every successful try_claim_counter. The assert catches a claim
+    // released twice (or released without being taken), which would otherwise
+    // silently inflate the reservation and let ordinary traffic eat it.
+    static void release_claim_counter(std::atomic<uint32_t>& count) noexcept
+    {
+        const uint32_t prior = count.fetch_sub(1U, std::memory_order_acq_rel);
+        COACT_ASSERT(prior > 0U);
+    }
+
+    // Which counter, if any, this submission must claim before touching a
+    // queue cell. A reservation of zero makes its counter unreachable, so a
+    // Config that opts out never returns a claim other than None.
+    static StagingSlot::ReservationClaim classify_claim(
+        PriorityClass cls, bool critical, StagingAdmission admission) noexcept
+    {
+        if (cls == PriorityClass::Normal
+            && admission == StagingAdmission::ReservedNormal) {
+            return StagingSlot::ReservationClaim::NormalReserved;
+        }
+        if (cls == PriorityClass::Normal
+            && ReserveConfig::kNormalReserved != 0U) {
+            return StagingSlot::ReservationClaim::NormalOrdinary;
+        }
+        if (cls == PriorityClass::High && !critical
+            && ReserveConfig::kHighCritical != 0U) {
+            return StagingSlot::ReservationClaim::HighOrdinary;
+        }
+        return StagingSlot::ReservationClaim::None;
+    }
+
+    bool try_claim(StagingSlot::ReservationClaim claim) noexcept
+    {
+        switch (claim) {
+        case StagingSlot::ReservationClaim::None:
+            return true;
+        case StagingSlot::ReservationClaim::HighOrdinary:
+            return try_claim_counter(
+                high_ordinary_claims_,
+                static_cast<uint32_t>(Config::kHighCapacity
+                                      - ReserveConfig::kHighCritical));
+        case StagingSlot::ReservationClaim::NormalOrdinary:
+            return try_claim_counter(
+                normal_ordinary_claims_,
+                static_cast<uint32_t>(Config::kNormalCapacity
+                                      - ReserveConfig::kNormalReserved));
+        case StagingSlot::ReservationClaim::NormalReserved:
+            return try_claim_counter(normal_reserved_claims_,
+                                     ReserveConfig::kNormalReserved);
+        default:
+            return false;
+        }
+    }
+
+    void release_claim(StagingSlot::ReservationClaim claim) noexcept
+    {
+        switch (claim) {
+        case StagingSlot::ReservationClaim::None:
+            return;
+        case StagingSlot::ReservationClaim::HighOrdinary:
+            release_claim_counter(high_ordinary_claims_);
+            return;
+        case StagingSlot::ReservationClaim::NormalOrdinary:
+            release_claim_counter(normal_ordinary_claims_);
+            return;
+        case StagingSlot::ReservationClaim::NormalReserved:
+            release_claim_counter(normal_reserved_claims_);
+            return;
+        default:
+            COACT_ASSERT(false);
+            return;
+        }
+    }
+
     // True when the Low partition has an outstanding timeout: a low event has
     // been waiting at the Low head for at least LowMaxWaitMs (unsigned
     // wrap-safe comparison). Only meaningful while Low is non-empty.
@@ -423,6 +602,9 @@ private:
     BatchSelector selector_;
     std::atomic<bool> wake_pending_{true};
     std::atomic<uint32_t> admission_{0U};
+    std::atomic<uint32_t> high_ordinary_claims_{0U};
+    std::atomic<uint32_t> normal_ordinary_claims_{0U};
+    std::atomic<uint32_t> normal_reserved_claims_{0U};
     uint64_t now_ns_ = 0U;                // cached aging clock base
     bool now_valid_ = false;
     uint8_t batch_used_ = 0U;

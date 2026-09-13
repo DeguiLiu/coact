@@ -41,6 +41,19 @@ struct ExecutionContext {
 };
 
 // ---------------------------------------------------------------------------
+// Staging capacity admission class. Ordinary keeps the historical
+// three-partition behavior. ReservedNormal opts a submission into a bounded
+// control-notification lane carved out of the Normal partition; it is not a
+// fourth queue and not a priority. Configs that do not set
+// kNormalReservedCapacity keep zero reserved capacity, and ReservedNormal
+// submissions to such a config are rejected rather than silently downgraded.
+// ---------------------------------------------------------------------------
+enum class StagingAdmission : uint8_t {
+    Ordinary,
+    ReservedNormal
+};
+
+// ---------------------------------------------------------------------------
 // Event QoS. The target AO's fixed PriorityClass is the sole authority for
 // partition selection; qos does not carry a per-event priority class.
 // See design 3.3.
@@ -129,7 +142,16 @@ struct DefaultConfig {
         kHighCapacity = 32U,
         kNormalCapacity = 64U,
         kLowCapacity = 128U,
-        kCooldownCycles = 100U
+        kCooldownCycles = 100U,
+        /* Capacity reservations carved out of an existing partition, never
+           added on top of it. kHighCriticalReserve is the number of High cells
+           ordinary (non-critical) submissions may not claim, so a critical
+           High event can still be admitted while High is saturated by ordinary
+           traffic. kNormalReservedCapacity is the corresponding lane for
+           StagingAdmission::ReservedNormal submissions. Zero (the default)
+           disables each reservation at zero cost. */
+        kHighCriticalReserve = 0U,
+        kNormalReservedCapacity = 0U
     };
 
     enum : uint32_t {

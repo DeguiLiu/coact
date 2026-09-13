@@ -53,17 +53,23 @@ public:
     }
 
     // Submit an event from a task context. Owns the reference on entry.
+    // admission selects the capacity lane; the default keeps every existing
+    // caller on the historical three-partition behavior.
     SubmitResult submit_from_task(TargetId target, Event* e,
-                                  const EventQos& qos) noexcept
+                                  const EventQos& qos,
+                                  StagingAdmission admission =
+                                      StagingAdmission::Ordinary) noexcept
     {
-        return submit_internal(target, e, qos, /*from_isr=*/false);
+        return submit_internal(target, e, qos, admission, /*from_isr=*/false);
     }
 
     // Submit an event from an ISR context. Must never block.
     SubmitResult try_submit_from_isr(TargetId target, Event* e,
-                                     const EventQos& qos) noexcept
+                                     const EventQos& qos,
+                                     StagingAdmission admission =
+                                         StagingAdmission::Ordinary) noexcept
     {
-        return submit_internal(target, e, qos, /*from_isr=*/true);
+        return submit_internal(target, e, qos, admission, /*from_isr=*/true);
     }
 
 private:
@@ -100,7 +106,9 @@ private:
     };
 
     SubmitResult submit_internal(TargetId target, Event* e,
-                                 const EventQos& qos, bool from_isr) noexcept
+                                 const EventQos& qos,
+                                 StagingAdmission admission,
+                                 bool from_isr) noexcept
     {
         /* Monotonic clock is sampled only when the M4 policy or Low-aging
            staging path needs it. Cached here so those two paths share one
@@ -112,6 +120,18 @@ private:
         AoBase* ao = registry_.lookup(target);
         if (nullptr == ao) {
             event_gc(e);
+            return {SubmitDisposition::RejectedState, 0U};
+        }
+
+        /* --- admission lane --------------------------------------------- */
+        /* Refuse a lane the Config never opened BEFORE taking a lease or
+           touching capacity accounting: an unsupported lane is a caller error,
+           and silently degrading it to ordinary traffic would let a caller
+           believe it holds a reservation it does not have. */
+        const PriorityClass priority_class = ao->priority_class();
+        if (!staging_.admission_valid(priority_class, admission)) {
+            event_gc(e);
+            monitor_.record_disposition(SubmitDisposition::RejectedState);
             return {SubmitDisposition::RejectedState, 0U};
         }
 
@@ -203,14 +223,14 @@ private:
         }
 
         /* --- staging (queued) ------------------------------------------- */
-        const PriorityClass priority_class = ao->priority_class();
         if (!now_init && PriorityClass::Low == priority_class) {
             now_ns = pal_.monotonic_ns();
             now_init = true;
         }
         PendingCounter& pending = ao->pending();
         pending.increment();
-        if (!staging_.enqueue(target, e, priority_class, now_ns)) {
+        if (!staging_.enqueue(target, e, priority_class, now_ns,
+                              qos.critical, admission)) {
             pending.decrement();
             /* The event is dropped: consume the allocation reference. */
             event_gc(e);
