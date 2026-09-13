@@ -80,14 +80,32 @@ public:
 
     // T is a fixed class-template parameter, so T&& is an rvalue reference and
     // NOT a forwarding reference: without a const T& overload an lvalue payload
-    // cannot bind at all. MSVC additionally treats static_cast<uint16_t>(an
-    // existing uint16_t) as keeping the lvalue category, which is exactly how
+    // cannot bind at all. MSVC additionally keeps the lvalue category through
+    // static_cast<uint16_t>(an existing uint16_t), which is exactly how
     // bench_spsc's warm-up loop calls this (C2664, "you cannot bind an lvalue to
     // an rvalue reference"). The other two ring classes already expose this
     // overload pair for the same reason; SpscRing was simply missed.
+    //
+    // The body is written out rather than delegating to try_push(T(value)):
+    // because MSVC treats that identity cast as an lvalue it would select THIS
+    // overload again, which it reports as C4717 "recursive on all control paths"
+    // and, with tail-call optimisation, turns into an infinite loop - the test
+    // suite hung for the full ctest timeout before this was understood. GCC
+    // picks the rvalue overload and silently does the right thing, so only the
+    // Windows build was affected. Never route the copy path back through the
+    // overload set.
     [[nodiscard]] bool try_push(const T& value) noexcept
     {
-        return try_push(T(value));
+        const uint16_t h = head_.load(std::memory_order_relaxed);
+        const uint16_t t = tail_.load(std::memory_order_acquire);
+        const uint16_t n = static_cast<uint16_t>(h - t);
+        if (n >= Capacity) {
+            return false;
+        }
+        T* slot = slot_at(h);
+        new (static_cast<void*>(slot)) T(value);
+        head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
+        return true;
     }
 
     // Push a payload. On failure (full) the caller's value is NOT consumed.
@@ -105,11 +123,21 @@ public:
         return true;
     }
 
-    // Const-reference twin of the above, for the same reason as try_push's:
-    // an lvalue payload must be able to bind. See the comment there.
+    // Const-reference twin of the above, written out for the same reason: see
+    // the comment on try_push(const T&). Delegating to try_push_observed(T(value))
+    // would recurse on MSVC.
     [[nodiscard]] QueueResult try_push_observed(const T& value) noexcept
     {
-        return try_push_observed(T(value));
+        const uint16_t h = head_.load(std::memory_order_relaxed);
+        const uint16_t t = tail_.load(std::memory_order_acquire);
+        const uint16_t n = static_cast<uint16_t>(h - t);
+        if (n >= Capacity) {
+            return QueueResult{false, n};
+        }
+        T* slot = slot_at(h);
+        new (static_cast<void*>(slot)) T(value);
+        head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
+        return QueueResult{true, static_cast<uint16_t>(n + 1U)};
     }
 
     // Fused push + size-after (design 5.4). On success size_after is the fill
