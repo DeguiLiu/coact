@@ -24,7 +24,7 @@
 //      firing is SKIPPED and counted in skipped_count() - never blocks,
 //      never faults, the task stays scheduled for its next period.
 //
-//   4. TickSource strategy (retained from newosp):
+//   4. TickSource strategy:
 //        - SteadyTickSource: real CLOCK_MONOTONIC clock plus a drift-free
 //          absolute sleep (clock_nanosleep on POSIX hosts; RT-Thread builds
 //          fall back to a coarse rt_thread_mdelay tick delay).
@@ -33,7 +33,7 @@
 //          ticks, then call poll(); no background thread is needed (and
 //          start() with a ManualTickSource would hot-spin - do not).
 //
-// Retained newosp design points: compile-time MaxTasks capacity, zero heap,
+// Design points: compile-time MaxTasks capacity, zero heap,
 // collect-release-execute lock discipline (expired-task submissions run
 // OUTSIDE the internal mutex), missed-period catch-up that collapses missed
 // periods instead of bursting, and ns_to_next_task() for external event
@@ -124,9 +124,9 @@ struct SteadyTickSource {
 };
 
 // Instance-owned virtual clock: the test driver (or a hardware timer ISR /
-// board thread) advances ticks and calls TimerScheduler::poll(). Unlike the
-// newosp static-state original, the counters live in the instance so several
-// schedulers in one test binary never share clock state.
+// board thread) advances ticks and calls TimerScheduler::poll(). The counters
+// live in the instance, so several schedulers in one test binary never share
+// clock state.
 class ManualTickSource {
 public:
     explicit ManualTickSource(uint64_t tick_period_ns = 1000000ULL) noexcept

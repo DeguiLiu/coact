@@ -63,7 +63,7 @@ target_compile_definitions(test_rtt_pal PRIVATE COACT_RTT_STUB)
 target_include_directories(test_rtt_pal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # Linux stress tests: concurrent multi-producer, overload degradation,
-# zero-heap hot path (see qpc-rtthread / newosp test intent).
+# zero-heap hot path.
 coact_add_test(test_stress
     test_stress.cpp
     pal_posix.cpp)

@@ -7,9 +7,9 @@
 
 coact (**Co**operative **Act**ive-object framework) is a header-first **C++17**
 event framework for **single-core MCUs** running RT-Thread: producers submit from
-task or ISR context and one dispatcher thread delivers to **Active Objects (AO)**
-with **Hierarchical State Machines (HSM)** — the AO + HSM discipline of **QP/C++
-(qpcpp)**, with the differences below.
+task or ISR context, one dispatcher thread delivers to **Active Objects (AO)**
+backed by **Hierarchical State Machines (HSM)**. Events replace threads; one
+dispatcher thread runs them; transition tables are static.
 
 ## Why coact
 
@@ -78,8 +78,7 @@ rt.start();
 
 On RT-Thread include the same headers, select `coact/pal_rtthread.hpp` and compile
 `src/core/pal_rtthread.cpp` into the BSP — the PAL uses caller-provided static
-resources and never allocates. Windows host: `coact/pal_windows.hpp` plus
-`src/core/pal_windows.cpp`.
+resources and never allocates.
 
 ## Modules
 
@@ -89,8 +88,9 @@ resources and never allocates. Windows host: `coact/pal_windows.hpp` plus
 
 ## Testing
 
-Host targets pass under `ctest`, TSan-clean on the pool/dispatcher paths; CI adds
-ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread 5.2.1 (single core).
+Host targets pass under `ctest` and are TSan-clean on the pool/dispatcher paths;
+CI adds ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread 5.2.1 /
+qemu-vexpress-a9 (single core).
 
 ## License
 

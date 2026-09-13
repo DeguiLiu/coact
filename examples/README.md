@@ -8,41 +8,9 @@
 | `node_manager_demo.cpp` | 进阶：多 AO | 一个 Runtime 下多主动对象、TargetId 路由、表序 guard |
 | `flash_proxy_demo.cpp` | 进阶：拥有者 AO + 硬件代理 | 设备独占串行化、非 AO worker、中断回调计时、引用计数扇出、请求/响应查询 |
 | `isp_pipeline_demo.cpp` | 综合：完整 RS500 视频系统模拟 | Preview Start 出图 + ISP 流水 + DDR 数据面 + T37 UVC 出流（Identity Zoom/提前封帧）+ 运行态重配 + 缓存一致性 + 停稳机制 + 三类画面异常 |
-| `serial_ota/` | 综合：工业级集成 | coact + newosp 混合架构、串口 OTA、桥接 Ao |
+| `serial_ota/` | 综合：工业级集成 | coact + 外部组件混合架构、串口 OTA、桥接 Ao |
 
-前四个示例单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外 newosp 头文件，为**可选构建**。
-
----
-
-## 构建与运行
-
-先构建（host）：
-
-```sh
-cmake -B build -S . -DCMAKE_BUILD_TYPE=RelWithDebInfo
-cmake --build build -j
-```
-
-生成的可执行文件位于 `build/examples/`：
-
-| 命令 | 说明 |
-|---|---|
-| `./build/examples/hsm_protocol_demo` | 运行协议状态机 demo，秒级退出 |
-| `./build/examples/node_manager_demo` | 运行节点管理 demo，秒级退出 |
-| `./build/examples/flash_proxy_demo` | 运行拥有者 AO + NAND 代理 demo，约 0.2s 退出 |
-| `./build/examples/isp_pipeline_demo` | 运行 ISP 视频流水线 demo，约 1.5s 退出（经 coact 日志通道输出） |
-| `./build/examples/serial_ota_demo` | 运行串口 OTA demo（需先开启可选构建） |
-
-`serial_ota_demo` 默认**不参与构建**，需显式开启并准备好 newosp 头文件：
-
-```sh
-cmake -B build -S . -DCOACT_BUILD_SERIAL_OTA=ON
-cmake --build build -j
-```
-
-开启后，CMake 会在 `$HOME/newosp/include/osp/hsm.hpp`（或 `/home/dgliu/newosp`）查找 newosp；找不到时打印 WARNING 并跳过该示例。它依赖 newosp 的 `StateMachine / BehaviorTree / SpscRingbuffer / TimerScheduler / AsyncBus / WorkerPool / DebugShell` 等 12 个组件。
-
-> 四个 demo 均已纳入 host 测试：`serial_ota_demo` 在可选构建下作为独立 ctest 用例，其余三个为普通可执行文件（无需断言即视为通过，返回 0 且日志正确即为验证成功）。
+前四个示例单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外头文件，为**可选构建**。
 
 ---
 
@@ -221,9 +189,9 @@ flowchart LR
 
 ---
 
-## serial_ota_demo — 串口 OTA（coact + newosp 集成，综合）
+## serial_ota_demo — 串口 OTA（coact + 外部组件集成，综合）
 
-**作用**：把 coact 接到一个完整的工业级场景——主机通过串口向设备升级固件。架构为 **coact + newosp 混合**：newosp 提供设备侧状态机、主机侧 BehaviorTree 与模拟 UART；coact 负责**主机升级流程与帧解析之间的事件桥接**。
+**作用**：把 coact 接到一个完整的工业级场景——主机通过串口向设备升级固件。架构为 **coact + 外部组件混合**：树外组件库提供设备侧状态机、主机侧 BehaviorTree 与模拟 UART；coact 负责**主机升级流程与帧解析之间的事件桥接**。
 
 **端到端数据流**：
 
@@ -279,7 +247,7 @@ OTA upgrade completed successfully!
 
 ---
 
-## 框架分层与事件交互
+## 框架使用与扩展
 
 ### 分层结构
 
@@ -379,7 +347,7 @@ sequenceDiagram
 
 ---
 
-## 如何使用本框架（从 demo 抽象出的模式）
+### 接入框架的固定步骤
 
 以下按 `hsm_protocol_demo` 的代码路径，归纳在自有工程里接入 coact 的固定步骤。
 

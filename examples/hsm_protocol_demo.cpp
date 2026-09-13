@@ -198,7 +198,7 @@ int main()
     rt.initialize();
     rt.start();
 
-    /* Scripted session (mirrors the newosp scenario). DISCONNECT in Idle has
+    /* Scripted session. DISCONNECT in Idle has
        no local transition; the parent Connected handles it. */
     const uint16_t script[] = {
         kConnect, kSynAck,

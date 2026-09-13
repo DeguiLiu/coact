@@ -1,10 +1,11 @@
 // coact bridge that carries the serial-OTA host side on the coact event chain.
 //
-// Hybrid design: newosp provides the OTA state machines (device), the
-// BehaviorTree host driver and the UART FIFOs; coact carries the *event link*
-// between the frame parser (main thread) and the OtaHost (coact Dispatcher
-// thread). Because OtaHost::OnResponse() and host.Tick() both mutate HostContext,
-// they must run on the SAME thread to avoid a data race — so the Ao owns
+// Hybrid design: an external OTA component library provides the OTA state
+// machines (device), the BehaviorTree host driver and the UART FIFOs; coact
+// carries the *event link* between the frame parser (main thread) and the
+// OtaHost (coact Dispatcher thread). Because OtaHost::OnResponse() and
+// host.Tick() both mutate HostContext, they must run on the SAME thread to
+// avoid a data race — so the Ao owns
 // OtaHost and both are confined to the coact Dispatcher thread. The device
 // stays on the main thread; the two threads communicate only through the
 // SPSC UART FIFOs (thread-safe).
@@ -27,7 +28,7 @@
 #include "coact/hsm.hpp"
 #include "coact/pool.hpp"
 
-#include "host.hpp"   // ota::OtaHost (newosp)
+#include "host.hpp"   // ota::OtaHost (external OTA component)
 #include "protocol.hpp"
 
 namespace ota_bridge {

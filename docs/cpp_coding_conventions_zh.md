@@ -5,9 +5,9 @@
 规约来源分两层：
 
 - 框架层：`include/coact/` 头文件（`ao.hpp`、`hsm.hpp`、`pool.hpp`、`coordinator.hpp`、`runtime.hpp`、`queue.hpp`、`expected.hpp`、`static_ao.hpp` 等）；
-- 示例层：`examples/isp_pipeline_demo.cpp`（本仓库最大的 C++ 落点，约 4400 行，本文绝大多数代码落点取自该文件），辅以 `examples/log_rtthread_demo.cpp`、`examples/node_manager_demo.cpp`。
+- 示例层：`examples/isp_pipeline/`（14 个源文件、约 6800 行，本仓库最大的 C++ 落点；本文绝大多数代码落点取自该目录），辅以 `examples/log_rtthread_demo.cpp`、`examples/node_manager_demo.cpp`。
 
-适用范围：`include/coact/`、`examples/`、`src/`、`test/` 下全部 C++ 代码。PAL 的 RT-Thread 适配层确实内含少量 C 接口（rt_kprintf 等），这些只在 7.2"平台适配层注意"小节收口；正文全部是 C++17 规约。
+适用范围：`include/coact/`、`examples/`、`src/`、`test/` 下全部 C++ 代码。PAL 的 RT-Thread 适配层确实内含少量 C 接口（rt_kprintf 等），这些只在 6.3"平台适配层注意"小节收口；正文全部是 C++17 规约。
 
 红线速查（详见各章）：禁止异常；禁止 `new/delete` 运行期堆分配（业务代码零堆）；禁止裸 `int/long/char`；禁止裸 `enum` 与 `#define` 常量；禁止裸指针代替引用/句柄（原始内存槽位除外，且须 launder 护住）；禁止动态分配池 / 工厂模式 / 过度抽象层；禁止跨 AO 共享可变状态；禁止 Dispatcher 上下文自提交会话级广播；禁止非平凡类型 placement new 进复用内存；禁止固定 sleep 排空；禁止为用而用任何 C++17 特性；三个相似才抽基类；组合优先于继承，静态多态优先于运行时多态。
 
@@ -21,7 +21,7 @@
 ### 1.2 双平台约束
 
 - 所有 C++ 代码必须同时可在 **RT-Thread 目标机** 与 **Linux host** 编译运行。平台差异只允许通过 `include/coact/pal.hpp` / `pal_posix.hpp` / `pal_rtthread.hpp` 的 PAL 接口隔离，禁止在业务代码里出现 `#ifdef` 平台分支。
-  - 落点：`Rt = coact::Runtime<coact::DefaultConfig, coact::pal::Posix>`（isp_pipeline_demo.cpp）；RT-Thread 侧对应 `pal_rtthread.hpp`。
+  - 落点：`Rt = coact::Runtime<coact::DefaultConfig, DemoPal>`（isp_pipeline/common.hpp）；RT-Thread 侧对应 `pal_rtthread.hpp`。
 - 池等共享结构通过 **Profile 模板参数** 区分单核/SMP 语义，而不是 if/else：
   - 落点：`coact::RttSingleCoreProfile`（irq-mask 临界区，无 CAS）与 `coact::HostSmpProfile`（32 位 tagged 原子头 + CAS），见 `include/coact/pool.hpp` 头部注释；Profile 合法性由 `EventPool` 内 `static_assert` 把关。
 
@@ -44,7 +44,7 @@
 ### 2.1 类型纪律（现代 C++ 表达）
 
 - **固定宽度整型**：优先 `<cstdint>` 体系（`uint8_t / uint16_t / uint32_t / int8_t / int32_t`），禁裸 `int / long / char / unsigned`；并把"该类型宽度即契约"交给类型萃取把关（`sizeof`/`is_standard_layout` 断言），不靠人肉记忆。
-  - 落点：`IoMeta`、`FrameGeometry`、`Payload`（isp_pipeline_demo.cpp）全部字段均为固定宽度；`kDdrCount <= 7U` 的 `static_assert` 把宽度契约钉在定义处。
+  - 落点：`IoMeta`、`FrameGeometry`、`Payload`（isp_pipeline/common.hpp）全部字段均为固定宽度；`kDdrCount <= 7U` 的 `static_assert` 把宽度契约钉在定义处。
 - **强类型代替弱转换**：领域枚举用 `enum class X : 底层类型`（禁 `#define` 常量、禁裸 `enum`）；可判空的语义类型用 `explicit operator bool()` 而不是返回裸 int/指针；错误用 `Expected`/错误码枚举而不是裸 int 返回。
   - 落点：`enum class Sig : uint16_t`（事件词汇表）、`enum class SessionState : uint8_t`、`enum class RecfgStage : uint8_t`、`enum class SrMagx : uint8_t`；框架层 `enum class TransitionKind : uint8_t`（hsm.hpp）、`enum class PriorityClass : uint8_t`（config.hpp）；`AddrCache::explicit operator bool()`。
 - **隐式转换显式标注**：任何跨宽度/跨符号赋值必须写 `static_cast<目标类型>(...)`。
@@ -59,7 +59,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - 单语句也必须 `{}`——brace-init 与花括号纪律在 C++ 里同样防 dangling-else。
   - 落点：全仓库一致；如 `if (nullptr != e) { ... }` 的每个分支。
 - **禁 `goto`**：控制流跳转由 RAII（析构保证清理）、HSM 拓扑（转移表）和提前 return 承担。
-- **禁递归**：组合/树遍历用编译期固定深度或展平循环（见 6.4）。
+- **禁递归**：组合/树遍历用编译期固定深度或展平循环（见 5.14）。
 - `switch` 必须 `default` 或穷举 + 兜底返回——编译器对 `enum class` 的穷举警告配合使用。
   - 落点：`session_state_name` 显式 `default:`；`recfg_stage_name` 穷举后 `return "?"`。
 - 手工配对释放（malloc/free、lock/unlock 的裸调用）**整体被 RAII 取代**：成对操作包成 guard 对象，任意退出路径（含提前 return）自动配对。
@@ -97,9 +97,9 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 ### 3.1 AO 事件平面（Active Object）
 
 - AO 之间**只通过事件通信**：`pool.alloc_typed` 分配事件块 → `rt.coordinator().submit_from_task(target, &e->event, ...)` 投递。禁止跨 AO 共享可变状态。
-  - 落点：isp_pipeline_demo.cpp 每个 action 函数末尾的标准三步（alloc → 填 meta/payload → submit）。
+  - 落点：isp_pipeline 各模块的每个 action 函数末尾的标准三步（alloc → 填 meta/payload → submit）。
 - 非 AO 线程（pthread worker、ISR 模拟）与 AO 的**唯一耦合是事件平面**；worker 不读 AO 内部字段。
-  - 落点：`IrscWorker`、`UsbDmaWorker`、`WorkerBase` 派生族；文件头注释 "Each worker's ONLY coupling with the AOs is the event plane"。
+  - 落点：`IrscWorker`、`UsbDmaWorker`、`WorkerBase` 派生族；注释 "The only coupling is the event plane"（isp_pipeline/sensor_irsc.hpp）。
 - **数据平面（像素字节）不走事件**：事件只携带缓冲描述符（slot id + region id），真实数据留在 DDR 由拥有者 AO 管理。
   - 落点：`Payload::ddr_slot/ddr_id` + `DdrCtx` 区域；注释 "the payload carries only the buffer descriptor"。
 
@@ -147,7 +147,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 ### 4.4 事件生命周期与运行期监控
 
 - 事件块由池分配（`alloc_typed`）后，引用计数（`Event::ref_ctr`，event.hpp）由框架管理：alloc 后为 1，每多投递一次 +1，归 0 回收。业务代码**只投递（submit）不手动回收**；demo 结束必须断言 `pool.used() == 0U`（零泄漏）。
-  - 落点：isp_pipeline_demo.cpp verification 块 "event pool fully reclaimed"。
+  - 落点：isp_pipeline/main.cpp verification 块 "event pool fully reclaimed"。
 - AO 静态属性（优先级、RTC 预算、直投资格）一律走 **Trait** 结构体（`AoTrait<Prio>`、`VideoFsmTrait`、`IrscTrait`），不通过构造参数或运行期 setter。
   - 落点：`AoTrait` 模板（`logical_prio` / `priority_class` / `direct_eligible` / `isr_direct_safe` / `kRtcBudgetNs`）；框架层 `coact::Ao<Ctx, Hsm, Trait>` 三参数形态（ao.hpp）。
 - 运行期可观测性来自 monitor（`rtc_timeouts` / `disposition_overload` / `pending()` 计数器），不往业务代码里加打印探针。
@@ -161,9 +161,9 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - AO 上限由配置约束（`kMaxAo = 16`，config.hpp），AO 合并（如两个流并入一个 HSM 的状态乘积）是达标手段；合并后状态命名编码各流相位。
   - 落点：`kVfII..kVfGT`（PIC × TEMP 9 态乘积表）与 `kPackBA..kPackBS`（2×2 写回窗口乘积）及 "closed product table" 注释。
 
-### 5. C++17 特性使用规约
+## 5. C++17 特性与设计模式使用边界
 
-每特性三段式：何时用 / 红线 / 代码落点。
+本章分两部分：5.1–5.9 逐特性展开，每特性三段式（何时用 / 红线 / 代码落点）；5.10–5.15 给出四个允许的设计模式及其准入条件与红线。
 
 ### 5.1 `if constexpr`
 
@@ -187,7 +187,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 
 - **何时用**：凡是"该类型必须满足 X"的假设，一律在定义处或模板内断言（`is_standard_layout` / `is_trivially_copyable` / `is_nothrow_move_constructible` / `atomic<T>::is_always_lock_free` / `is_same`）。违约必须编译失败，不许到现场才炸。
 - **红线**：禁止断言显然为真的平凡事实凑数（如 `static_assert(sizeof(char) == 1)`）。
-- **落点**：isp_pipeline_demo.cpp "Compile-time ABI / layout / move-behavior contracts" 块（10 余条断言、每条带失败原因文案）；`EventPool` 内 Profile 合法性与 CAS lock-free 断言（pool.hpp）；T37 证据断言 `static_assert(kX1FrameBytes == 655360U, ...)`。
+- **落点**：isp_pipeline/common.hpp "Compile-time ABI / layout / move-behavior contracts" 块（10 余条断言、每条带失败原因文案）；`EventPool` 内 Profile 合法性与 CAS lock-free 断言（pool.hpp）；T37 证据断言 `static_assert(kX1FrameBytes == 655360U, ...)`。
 
 ### 5.5 `[[nodiscard]]` / `noexcept` / `explicit`
 
@@ -202,7 +202,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 
 - **何时用**：仅当需要**"取旧值 + 置新值"一体的原子语义交接**——即旧值确实被消费（移走、打印、作为提交值），且置新值是交接的一部分。所有权跨窗口移动（AO ctx 槽位 → 出向事件）是典型场景。
 - **红线**：单纯赋值不得硬改成 `std::exchange`；不消费返回值时写 `static_cast<void>(std::exchange(...))` 并保留注释，证明旧值曾被有意丢弃。
-- **落点**（isp_pipeline_demo.cpp 全文件 14 处，代码态 9 处）：`Job j = std::exchange(job, Job{})`（`UsbDmaWorker::run`，取走任务重置槽位）；`done->meta = std::exchange(ctx.pending_meta, IoMeta{})` + `std::exchange(ctx.pending_slot, 0U)`（`FusedNodeBase::complete_irq`，IRQ 窗口所有权移出）；`std::exchange(ctx.pic_pending, IoMeta{})` / `temp_pending`（`PicPackNode::on_sout_done` / `TempPackNode::on_sout_done`）；`const uint32_t previous = std::exchange(ctx.layout_version, ctx.layout_version + 1U)`（`rcEnterSync`）；`ctx.active_magx = std::exchange(ctx.target_magx, ...)`、`active_geom`（`rcEnterCommit`，最后提交）；`static_cast<void>(std::exchange(r.slot_frame[slot], ...))`（`DdrCtx::write`，弃旧值的规范写法）。
+- **落点**（isp_pipeline 全目录 14 处：代码 8 处 + 注释 6 处）：`Job j = std::exchange(job, Job{})`（`UsbDmaWorker::run`，取走任务重置槽位）；`done->meta = std::exchange(ctx.pending_meta, IoMeta{})` + `std::exchange(ctx.pending_slot, 0U)`（`FusedNodeBase::complete_irq`，IRQ 窗口所有权移出）；`std::exchange(ctx.pic_pending, IoMeta{})` / `temp_pending`（`PicPackNode::on_sout_done` / `TempPackNode::on_sout_done`）；`const uint32_t previous = std::exchange(ctx.layout_version, ctx.layout_version + 1U)`（`rcEnterSync`）；`ctx.active_magx = std::exchange(ctx.target_magx, ...)`、`active_geom`（`rcEnterCommit`，最后提交）；`static_cast<void>(std::exchange(r.slot_frame[slot], ...))`（`DdrCtx::write`，弃旧值的规范写法）。
 
 ### 5.7 placement new + 对齐存储
 
@@ -223,11 +223,11 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - **禁过度设计**：helper / util / 抽象层最小化；宁可局部直白，不要全局优雅。
 - 三处以上相似的 HSM 表可用宏压缩（`COACT_HSM_STATES` / `COACT_HSM_TRANS`），但宏必须保持"表即数据"（只拼表项，不嵌控制流），用后 `#undef`（见 `VF_ARC` ... `#undef VF_ARC`）。
 
-### 6. 设计模式使用边界
+### 5.10 设计模式使用边界（总则与准入）
 
 四个允许的模式，各自有明确的准入条件与红线。通用红线：**每个模式引入前必须能指出"三个相似实例"或等价的复用证据**（`WorkerBase` 服务 5 个 worker；`VideoFsmNode` 服务 2 个流 + 已知第三流在路上属临界情况，需注释说明）。
 
-### 6.1 CRTP（骨架 + 钩子）
+### 5.11 CRTP（骨架 + 钩子）
 
 - **准入**：一个骨架类承载固定生命周期/流程（启停、环、计数、阶段流），各派生类只提供少量钩子；需要编译期分发、拒绝 vtable。
 - **红线**：钩子数量失控（>7 个）说明骨架在猜未来，退回普通函数组合；CRTP 基类不得持有 per-instance 状态（静态钩子风格时）。
@@ -237,25 +237,25 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
   - `VideoPackNode<PicPackNode>` / `VideoPackNode<TempPackNode>`：钩子面为 `kPathId/in_region/pack_latency_us/pack/account/park/count_sub/count_reject/on_sout_done`（该文件最大钩子面，处于红线内但不再扩）。
   - 框架层 `make_static_ao_entry`（static_ao.hpp）：captureless lambda 擦除 dispatch 调用，const 函数指针表。
 
-### 6.2 策略（Policy，算法族参数化）
+### 5.12 策略（Policy，算法族参数化）
 
 - **准入**：同一算法骨架 × 可替换的无状态算法，策略是**只有静态 `apply()`（或等价静态方法）的无状态 struct**——`std::allocator` / `std::hash` 的定制点风格。
 - **红线**：策略禁止携带状态（有状态策略改用 CRTP 或独立类）；策略方法必须 `noexcept`（可 `constexpr`）。
 - **落点**：`LowGainPolicy::apply` / `HighGainPolicy::apply` + `GainNodeBase<Policy>`（`using LowGainNode = GainNodeBase<LowGainPolicy>`）；`EnhancePolicy` / `TempPolicy` + `FusedNodeBase<Policy>`；`EventQuiesce::wait` / `PollQuiesce::wait` + `QuiescePolicy<HasIdleIrq>` 门面；`StaleFraming::frame` / `AlignedFraming::frame`。
 
-### 6.3 命令（延迟执行 / 顺序契约）
+### 5.13 命令（延迟执行 / 顺序契约）
 
 - **准入**：(a) 操作需要携带自身身份/参数延迟投递执行；或 (b) 操作序列的**顺序本身是契约**，必须以数据表形式固化可审。
 - **红线**：命令对象必须自包含（自带 tag/参数，不依赖调用点上下文）；禁止把命令表当成变相 if 链（每个命令一个几乎相同的 handler）。
-- **落点**：`IrscCmd`（step + tag + `stamp(Layout&)` 把身份写进事件块）+ `constexpr IrscCmd kIrscCmdSequence[]`（init → start → ctrl → output_enable，"order IS the contract"）；完成姿态表 `kIrscDoneStep kIrscDoneTable[]` + `irsc_done_action_of(step)`（"the table, not an if-chain, is the driver's semantics"——表驱动取代 if 链是正面示例）。
+- **落点**：`IrscCmd`（step + tag + `stamp(Layout&)` 把身份写进事件块）+ `constexpr IrscCmd kIrscCmdSequence[]`（init → start → ctrl → output_enable，"order IS the contract"）；完成姿态表 `IrscDoneStep kIrscDoneTable[]` + `irsc_done_action_of(step)`（"the table, not an if-chain, is the driver's semantics"——表驱动取代 if 链是正面示例）。
 
-### 6.4 组合（树形结构传播）
+### 5.14 组合（树形结构传播）
 
 - **准入**：需要向固定成员集合传播同一操作（init/deinit/状态广播）。
 - **红线**：**编译期固定成员、禁递归**——组合被展平为固定数组的普通循环（demo 明确"flattened to plain iteration (no recursion; the tree has exactly two levels)"）；成员集合运行期不可变。
 - **落点**：`SessionEventComposite`——固定 `TargetId targets[kMaxTargets]` 数组，boot 期 `add` 一次，之后 `publish()` 顺序迭代广播（每个观察者经自身 AO 队列序列化，无需锁）；init 正向 / deinit 逆向的顺序契约另见 `VideoFsmNode::on_init`（正序循环）与 `on_deinit`（`for (int8_t i = count-1; i >= 0; --i)` 逆序循环）。
 
-### 6.5 模式选择决策表
+### 5.15 模式选择决策表
 
 | 场景特征 | 选 CRTP | 选策略 | 选命令 | 选组合 |
 |---|---|---|---|---|
@@ -271,12 +271,14 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 
 无法对号入座时：先写两个直接的普通函数/struct，等第三个相似实例出现再回到本表。
 
-### 7. 风格与注释
+## 6. 风格、错误处理与检查清单
+
+### 6.1 风格与命名
 
 - **Allman 大括号**、4 空格缩进、**120 列**。
 - 英文注释、`/* */` 风格（行尾短注释可用 `//`，现有代码以 `//` 分节横线为主，保持一致即可）。
 - 文件头：模块一句话定位 + 与真实系统的映射表（若为示例）+ `SPDX-License-Identifier: MIT`。
-  - 落点：isp_pipeline_demo.cpp 头部 "Mapping to RS500" 表。
+  - 落点：各业务模块头部 "对应 RS500 module/..." 映射注释（如 `isp_pipeline/sensor_irsc.hpp`、`isp_pipeline/isp_chain.hpp`、`isp_pipeline/video_stream.hpp`）；`examples/isp_pipeline/README.md` 另附文件分层与 RS500 模块对照。
 - **决策注释义务**：反直觉的选择（不加锁、丢弃语义、单槽深度、黑板禁令、entry 而非 action 发硬件命令）必须在代码处写明"为什么"，且注释要能被下一个人单独读懂。
 - 命名：
   - 类型/函数 `PascalCase`；变量/字段 `snake_case`；常量/枚举值 `k` 前缀（`kFrameCount`、`Sig::kBoot`、`kDdrDn`）；
@@ -285,7 +287,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - **RAII 装饰器**：成对操作（进入/退出必须同时发生）包成 guard 对象，拷贝/赋值 `= delete`；显式 `start/stop`、`init/deinit` 生命周期用于跨事件边界的长寿命资源（配对语义写头注释，见 3.3 drain-on-stop）。
   - 落点：`BypassGuard`（进入置 `cache_bypass`，任意退出路径 resync——"an early return cannot skip the resync"）；框架层 `CriticalSection::Token`（queue.hpp，临界区进入即取 token、作用域结束即释放）。
 
-### 7.1 错误处理：`Expected` 与错误码
+### 6.2 错误处理：`Expected` 与错误码
 
 - **禁用异常**（`RT_ASSERT` 同禁，断言只用于框架内部不变量）。错误用值语义返回：
   - 简单场景：bool / 错误码枚举（`enum class InitError : uint8_t`，pal_rtthread.hpp / config.hpp）；
@@ -293,7 +295,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
   - 落点：`AddrCache::query(uint32_t&)` 返回 bool（出参携带值——旧 API 风格，新代码优先 Expected）；`magx_supported` 返回 bool；`QueueResult` 融合结果（config.hpp，push 成败 + 队列水位一次返回，免二次进临界区）。
 - 错误路径不得静默：返回值被消费或被计数（reject 弧计数器、`rejected_count()`），无"丢弃返回值且无注释"的调用点。
 
-### 7.2 平台适配层注意（PAL 边界收口）
+### 6.3 平台适配层注意（PAL 边界收口）
 
 以下条目**只适用于** `pal_rtthread.hpp` 及直接对接 RT-Thread C API 的适配代码，不进入业务/框架其余部分：
 
@@ -303,88 +305,102 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - 适配层若使用 `rt_malloc`，必须配对 `rt_free` 且释放后置 `nullptr`；但框架/示例的业务路径零堆，不存在此调用。
 - host 侧示例可用 `std::printf`；面向 RT-Thread 打印通道时按上一条约束。
 
-### 7.3 其他
+### 6.4 其他
 
 - 自验证：示例程序结尾必须断言全部不变量并以退出码给出结论（ctest 可门控）。
-  - 落点：isp_pipeline_demo.cpp 末尾 verification 块 + `RESULT: ALL PASS`。
+  - 落点：isp_pipeline/main.cpp 末尾 verification 块（`check()` 断言 + `RESULT: ALL PASS`）。
 
-## 8. 检查清单（review checklist）
+### 6.5 检查清单（review checklist）
 
-逐项打勾；任一"否"即 review 不通过。
+逐项打勾；任一"否"即 review 不通过。本清单为唯一出处，评审记录等其他文档不再重复维护同一份条目。
 
-### 总则
+#### 总则
 
 1. [ ] 仅使用 C++17 特性，未引入 C++20 语法/库？
 2. [ ] 无 `#ifdef` 平台分支（平台差异全部经 PAL / Profile 模板参数）？
 3. [ ] 业务代码零堆分配（无 `new`/`malloc`），存储为静态/栈上/编译期容量容器？
 4. [ ] 代码与注释为英文，无中文混入？
-5. [ ] rt_kprintf/POSIX I/O 等 C 接口只出现在 PAL/演示打印层，未渗入业务代码（7.2 收口）？
+5. [ ] rt_kprintf/POSIX I/O 等 C 接口只出现在 PAL/演示打印层，未渗入业务代码（6.3 收口）？
+6. [ ] coro 与 RT-Thread 编译期隔离彻底（coro 头文件不泄漏进 RT-Thread 编译单元）？
+7. [ ] PAL 的 install/take/release/deinit 生命周期配对对称？
 
-### 类型与内存
+#### 类型与内存
 
-6. [ ] 无裸 `int/long/char`；全部 `<cstdint>` 固定宽度整型？
-7. [ ] 宽度/符号转换处均有显式 `static_cast`？
-8. [ ] 比较表达式常量在左（`0 == x`、`nullptr == p`）？
-9. [ ] 新枚举均为 `enum class` + 底层类型；无 `#define` 常量、无裸 `enum`？
-10. [ ] 单语句分支也带 `{}`；全文件无 `goto`、无递归？
-11. [ ] `switch` 有 `default` 或穷举 + 兜底返回？
-12. [ ] 无动态分配池/工厂模式；行为多态走模板（CRTP/Policy），确需擦除时用 const 函数表并说明理由？
-13. [ ] 跨边界结构体在定义处有 `is_standard_layout`/`is_trivially_copyable`/`is_nothrow_move_constructible` 断言？
-14. [ ] placement new 仅用于平凡可析构类型，读侧经 `std::launder`？
-15. [ ] 原始未构造存储为 `std::byte` 数组 + `alignas(alignof(T))`，非 `char`/`uint8_t` 双关？
-16. [ ] 跨边界连接用值语义 id（`TargetId` 等）或引用，非裸指针 + 所有权注释？
-17. [ ] 成对操作已包成 RAII guard（拷贝 `= delete`），无裸 lock/unlock 配对调用？
+8. [ ] 无裸 `int/long/char`；全部 `<cstdint>` 固定宽度整型？
+9. [ ] 宽度/符号转换处均有显式 `static_cast`？
+10. [ ] 比较表达式常量在左（`0 == x`、`nullptr == p`）？
+11. [ ] 新枚举均为 `enum class` + 底层类型；无 `#define` 常量、无裸 `enum`？
+12. [ ] 单语句分支也带 `{}`；全文件无 `goto`、无递归？
+13. [ ] `switch` 有 `default` 或穷举 + 兜底返回？
+14. [ ] 无动态分配池/工厂模式；行为多态走模板（CRTP/Policy），确需擦除时用 const 函数表并说明理由？
+15. [ ] 跨边界结构体在定义处有 `is_standard_layout`/`is_trivially_copyable`/`is_nothrow_move_constructible` 断言？
+16. [ ] placement new 仅用于平凡可析构类型，读侧经 `std::launder`？
+17. [ ] 原始未构造存储为 `std::byte` 数组 + `alignas(alignof(T))`，非 `char`/`uint8_t` 双关？
+18. [ ] 跨边界连接用值语义 id（`TargetId` 等）或引用，非裸指针 + 所有权注释？
+19. [ ] 成对操作已包成 RAII guard（拷贝 `= delete`），无裸 lock/unlock 配对调用？
+20. [ ] 头文件卫生：非模板、非 inline 的定义无 ODR 风险；无过度设计（helper/util/抽象层最小化）？
 
-### 线程与并发
+#### 线程与并发
 
-18. [ ] AO 间仅事件通信，无共享可变状态跨越 AO 边界？
-19. [ ] 数据平面字节留在 DDR/owner，事件只带描述符（零拷贝）？
-20. [ ] 锁层级 L1→L2→L3，无反向获取？
-21. [ ] 每处"不加锁"的决定都有注释论证（最弱足够原则）？
-22. [ ] 跨线程标志/枚举为 `std::atomic` 且断言 `is_always_lock_free`？
-23. [ ] worker 交接为单槽/浅环、忙则拒绝 + 计数，无阻塞排队？
-24. [ ] `stop()` 语义（drain vs 丢弃）已声明且被注释论证？
-25. [ ] 关键区内无硬件延迟/长操作？
+21. [ ] AO 间仅事件通信，无共享可变状态跨越 AO 边界？
+22. [ ] AO/worker 边界纯度：AO 只做事件驱动状态推进，worker 只产生完成事件（`submit_from_task`），不做状态决策？
+23. [ ] 数据平面字节留在 DDR/owner，事件只带描述符（零拷贝）？
+24. [ ] 锁层级 L1→L2→L3，无反向获取？
+25. [ ] 每处"不加锁"的决定都有注释论证（最弱足够原则）？
+26. [ ] 跨线程标志/枚举为 `std::atomic` 且断言 `is_always_lock_free`？
+27. [ ] `EventPool` tagged-CAS 的 ABA 防护成立；`submit_from_task` 与 `submit_from_isr` 选用恰当？
+28. [ ] 三块黑板（`DdrCtx` / 硬件状态域 / 寄存器镜像域）五要素闭环：写者/读者/同步/失效/所有权均可指认？
+29. [ ] `DdrCtx` 槽位 claim→release 窗口无竞态；协程切点处对象生命周期有效？
+30. [ ] worker 交接为单槽/浅环、忙则拒绝 + 计数，无阻塞排队？
+31. [ ] `stop()` 语义（drain vs 丢弃）已声明且被注释论证？
+32. [ ] 关键区内无硬件延迟/长操作？
 
-### 函数与控制流
+#### 函数与控制流
 
-26. [ ] 每个函数 return 数 ≤ 5？
-27. [ ] guard 均为纯函数（只读、`noexcept`、无副作用）？
-28. [ ] 硬件命令在 entry、清理在 exit、事件响应在 action，未错层？
-29. [ ] 状态机为静态表驱动，非法 (状态, 事件) 有显式 reject 弧？
-30. [ ] 事件块只 submit 不手动回收；程序结束时 `pool.used() == 0` 可验证零泄漏？
-31. [ ] AO 属性走 Trait 结构体；运行期观测走 monitor，无散装打印探针？
-32. [ ] 排空逻辑用 `pending()`/终态条件，无固定 sleep 赌时序？
+33. [ ] 每个函数 return 数 ≤ 5？
+34. [ ] guard 均为纯函数（只读、`noexcept`、无副作用）？
+35. [ ] 硬件命令在 entry、清理在 exit、事件响应在 action，未错层？
+36. [ ] 状态机为静态表驱动，非法 (状态, 事件) 有显式 reject 弧？
+37. [ ] 会话门控 / 重配编排器的终局弧覆盖全部终局，无可达而无弧处理的状态？
+38. [ ] 事件块只 submit 不手动回收；程序结束时 `pool.used() == 0` 可验证零泄漏？
+39. [ ] AO 属性走 Trait 结构体；运行期观测走 monitor，无散装打印探针？
+40. [ ] 排空逻辑用 `pending()`/终态条件，无固定 sleep 赌时序？
+41. [ ] 断言无恒真/弱断言：每条断言都能独立失败并携带失败原因文案？
 
-### C++17 特性
+#### C++17 特性
 
-33. [ ] `if constexpr` 只用于"未选分支不该被实例化"的场景？
-34. [ ] 常量表为 `constexpr`/`inline constexpr`，且非为 constexpr 而 constexpr？
-35. [ ] `[[nodiscard]]`/`noexcept`/`explicit` 按语义使用，未机械全标？
-36. [ ] `std::exchange` 仅用于"取旧+置新"一体交接；弃返回值处写 `static_cast<void>`？
-37. [ ] 跨槽位/跨线程交接用 `T&&` + `std::move`；失败路径不消费调用者的值；move 后源不再读？
+42. [ ] `if constexpr` 只用于"未选分支不该被实例化"的场景？
+43. [ ] 常量表为 `constexpr`/`inline constexpr`，且非为 constexpr 而 constexpr？
+44. [ ] `[[nodiscard]]`/`noexcept`/`explicit` 按语义使用，未机械全标？
+45. [ ] `std::exchange` 仅用于"取旧+置新"一体交接；弃返回值处写 `static_cast<void>`？
+46. [ ] 跨槽位/跨线程交接用 `T&&` + `std::move`；失败路径不消费调用者的值；move 后源不再读？
 
-### 设计模式
+#### 设计模式
 
-38. [ ] 每个模式（CRTP/策略/命令/组合）的引入满足第 6 章准入条件，可指出三个相似实例或等价证据？
-39. [ ] CRTP 钩子面 ≤ 7 个且基类未滥用状态？
-40. [ ] 策略无状态、方法 `noexcept`？
-41. [ ] 命令对象自包含；顺序契约以数据表固化而非 if 链？
-42. [ ] 组合为编译期固定集合 + 展平循环，无递归？
-43. [ ] 静态多态优先于 vtable；组合优先于继承，未引入非必要类层次？
+47. [ ] 每个模式（CRTP/策略/命令/组合）的引入满足第 5 章准入条件，可指出三个相似实例或等价证据？
+48. [ ] CRTP 钩子面 ≤ 7 个且基类未滥用状态？
+49. [ ] 策略无状态、方法 `noexcept`？
+50. [ ] 命令对象自包含；顺序契约以数据表固化而非 if 链？
+51. [ ] 组合为编译期固定集合 + 展平循环，无递归？
+52. [ ] 静态多态优先于 vtable；组合优先于继承，未引入非必要类层次？
 
-### 风格
+#### 测试与文档
 
-44. [ ] Allman / 4 空格 / 120 列；命名符合第 7 章前缀约定？
-45. [ ] 反直觉决策处均有"为什么"注释？
-46. [ ] 错误路径有消费或计数（Expected/错误码被处理），无静默丢弃返回值？
-47. [ ] （示例程序）结尾自验证不变量并以退出码给出结论？
+53. [ ] ctest 覆盖无已知缺口（新增分支/拒绝路径有对应用例）？
+54. [ ] 架构/设计文档与代码漂移抽查 3–5 处一致？
 
-## 附：规约与代码落点速查
+#### 风格
+
+55. [ ] Allman / 4 空格 / 120 列；命名符合 6.1 前缀约定？
+56. [ ] 反直觉决策处均有"为什么"注释？
+57. [ ] 错误路径有消费或计数（Expected/错误码被处理），无静默丢弃返回值？
+58. [ ] （示例程序）结尾自验证不变量并以退出码给出结论？
+
+### 6.6 规约与代码落点速查
 
 | 规约条目 | 代码落点 | 一行说明 |
 |---|---|---|
-| CRTP 骨架+钩子 | `WorkerBase` (isp_pipeline_demo.cpp) | 互斥环+drain+计数骨架，派生只写 `execute` |
+| CRTP 骨架+钩子 | `WorkerBase`（isp_pipeline/sensor_irsc.hpp） | 互斥环+drain+计数骨架，派生只写 `execute` |
 | CRTP 静态钩子 | `VideoFsmNode<PicFsmNode>` | 双流 FSM 共享骨架，差异全在钩子 |
 | 策略参数化 | `GainNodeBase<LowGainPolicy>` 等 | 无状态 `apply()` 定制点，编译期分发 |
 | 策略门面 + if constexpr | `QuiescePolicy<HasIdleIrq>` | 中断/轮询两实现，未选者不实例化 |
@@ -413,6 +429,6 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 | TransitionKind 语义 | `TransitionKind`（hsm.hpp）Internal/Self/External | guard 决定种类，action 不感知 |
 | 事件驱动排空 | main 两处 drain 循环（`pending().load()` 归零） | 禁固定 sleep 赌时序 |
 | 主线程发起会话广播 | `request_recfg` lambda 注释 | Dispatcher 上下文自提交会丢唤醒 |
-| 自验证退出码 | isp_pipeline_demo.cpp verification 块 | ctest 可门控的 PASS/FAIL |
+| 自验证退出码 | isp_pipeline/main.cpp verification 块 | ctest 可门控的 PASS/FAIL |
 
 （完）

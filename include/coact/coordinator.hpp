@@ -22,7 +22,7 @@ namespace coact {
 // DispatchCoordinator: the single entry point for all event submissions.
 // Enforces the M4 -> M1 -> (direct | merge | staging) pipeline.
 //
-// Event reference-count contract (QF semantics):
+// Event reference-count contract (reference-counting semantics):
 //   submit_from_task / try_submit_from_isr own the reference passed in.
 //   - Staged:       allocation reference transfers to staging; Dispatcher
 //                   calls event_gc after dispatch.
