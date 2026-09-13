@@ -25,8 +25,14 @@ inline void fatal_assert(const char* file, int line) noexcept {
     } while (0)
 
 // Static branch hints for the hot path (event_gc, pool alloc, batch select).
-// __builtin_expect is supported by GCC/Clang (host Linux and Xuantie RISC-V
-// GCC); on single-core Cortex-M it compiles to a no-op. Hint only the branches
-// whose direction is stable under load - never sprinkle.
-#define COACT_LIKELY(x)     __builtin_expect((x), 1)
-#define COACT_UNLIKELY(x)   __builtin_expect((x), 0)
+// __builtin_expect is a GCC/Clang extension (host Linux, Xuantie RISC-V GCC,
+// and MSVC's clang-cl); plain MSVC has no equivalent, so the expression is
+// used unchanged there. Hint only the branches whose direction is stable under
+// load - never sprinkle.
+#if defined(__clang__) || defined(__GNUC__)
+#define COACT_LIKELY(x)     __builtin_expect(!!(x), 1)
+#define COACT_UNLIKELY(x)   __builtin_expect(!!(x), 0)
+#else
+#define COACT_LIKELY(x)     (x)
+#define COACT_UNLIKELY(x)   (x)
+#endif
