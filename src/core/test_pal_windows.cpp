@@ -10,6 +10,11 @@
 //     SleepConditionVariableCS 0 meaning) — the hand-off test exercises this.
 //   - SoftIrqOps: 8-slot SPSC FIFO, 9th raise rejected, N distinct raises ->
 //     N distinct payloads (no coalescing), timeout returns -1.
+//
+// COACT_ENABLE_WINDOWS_TEST_HOOKS must be defined before pal_windows.hpp to
+// expose the test-only start-handshake timeout accessor; production TUs do not
+// define it and therefore cannot zero the production bound.
+#define COACT_ENABLE_WINDOWS_TEST_HOOKS
 #include "test/test_harness.hpp"
 
 #include <atomic>
@@ -190,7 +195,7 @@ COACT_TEST(windows_start_dispatcher_success_runs_entry)
 COACT_TEST(windows_start_dispatcher_timeout_never_runs_entry)
 {
     Windows pal;
-    pal.set_dispatcher_start_timeout_ms(0U);   // force the handshake timeout
+    pal.set_start_timeout_for_test(0U);        // force the handshake timeout
     std::atomic<int32_t> ran{0};
     struct Ctx { std::atomic<int32_t>* ran; } ctx{&ran};
     const bool ok = pal.start_dispatcher([](void* a) {
@@ -212,11 +217,11 @@ COACT_TEST(windows_start_dispatcher_abort_then_restart)
     Windows pal;
     std::atomic<int32_t> ran{0};
     struct Ctx { std::atomic<int32_t>* ran; } ctx{&ran};
-    pal.set_dispatcher_start_timeout_ms(0U);
+    pal.set_start_timeout_for_test(0U);
     CHECK(!pal.start_dispatcher([](void* a) {
         static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
     }, &ctx));
-    pal.set_dispatcher_start_timeout_ms(1000U);
+    pal.set_start_timeout_for_test(1000U);
     const bool ok = pal.start_dispatcher([](void* a) {
         static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
     }, &ctx);
@@ -225,6 +230,54 @@ COACT_TEST(windows_start_dispatcher_abort_then_restart)
         pal.sleep_us(500U);
     }
     CHECK_EQ(1, ran.load(std::memory_order_acquire));
+    pal.join_dispatcher();
+}
+
+// Stale-signal regression. A timed-out attempt abandons its entry, but that
+// entry still executes SetEvent(started_event_) before it observes
+// start_abandoned_ and returns, so the auto-reset started_event_ is left
+// signaled. A later attempt must NOT consume that stale signal and report
+// success before its own entry has reached the gate.
+//
+// Reproduces without the per-attempt ResetEvent: attempt #2 with a zero-length
+// bound returns true in ~0 ms while ran is still 0, i.e. success reported
+// before the dispatcher ran at all.
+COACT_TEST(windows_start_dispatcher_stale_signal_not_reused)
+{
+    Windows pal;
+    std::atomic<int32_t> ran{0};
+    struct Ctx { std::atomic<int32_t>* ran; } ctx{&ran};
+    const auto entry = [](void* a) {
+        static_cast<Ctx*>(a)->ran->fetch_add(1, std::memory_order_release);
+    };
+
+    // Attempt #1: a zero-length handshake bound forces the timeout path and
+    // guarantees a stale start signal is left pending (the entry signals before
+    // it can be joined).
+    pal.set_start_timeout_for_test(0U);
+    CHECK(!pal.start_dispatcher(entry, &ctx));
+    pal.join_dispatcher();
+
+    // Attempt #2 with the same zero-length bound. A stale signal would make
+    // this return true instantly; with the fix the event was reset at the top
+    // of this attempt, so its own not-yet-scheduled entry cannot signal in time
+    // and the attempt must fail exactly like attempt #1.
+    const bool ok = pal.start_dispatcher(entry, &ctx);
+    CHECK(!ok);
+    pal.join_dispatcher();
+
+    // Positive control: a real attempt still succeeds and returns promptly
+    // (well inside its own 1000 ms bound), and the entry it started runs.
+    pal.set_start_timeout_for_test(1000U);
+    const uint64_t t0 = pal.monotonic_ns();
+    const bool ok2 = pal.start_dispatcher(entry, &ctx);
+    const uint64_t elapsed_ms = (pal.monotonic_ns() - t0) / 1000000ULL;
+    CHECK(ok2);
+    CHECK(elapsed_ms < 500ULL);            // not a timeout-returned-as-success
+    for (int i = 0; i < 2000 && ran.load(std::memory_order_acquire) == 0; ++i) {
+        pal.sleep_us(500U);
+    }
+    CHECK_EQ(1, ran.load(std::memory_order_acquire));  // only attempt #3 ran
     pal.join_dispatcher();
 }
 

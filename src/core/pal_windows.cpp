@@ -186,8 +186,11 @@ void Windows::set_dispatcher_stack_bytes(uint32_t /*bytes*/) noexcept
 
 void Windows::set_dispatcher_start_timeout_ms(uint32_t ms) noexcept
 {
-    // Host-test hook; see the declaration. No upper clamp is needed because
-    // WaitForSingleObject accepts any DWORD millisecond value.
+    // Private host-test hook; the only caller is the macro-gated test accessor
+    // in the header. No upper clamp is needed because WaitForSingleObject
+    // accepts any DWORD millisecond value; 0 is meaningful here (a zero-length
+    // poll) and is what makes a start-handshake timeout deterministic in tests.
+    // Production code cannot reach this: the declaration is private.
     start_timeout_ms_ = ms;
 }
 
@@ -258,6 +261,27 @@ bool Windows::start_dispatcher(ThreadEntry entry, void* context) noexcept
     // thread_valid_ is false here, so no entry thread from a previous start can
     // still be live and observe this reset.
     start_abandoned_.store(false, std::memory_order_relaxed);
+    /* Drain any start signal a PREVIOUS attempt left behind. started_event_ is
+       auto-reset, so a signal is retained until someone consumes it. An attempt
+       that timed out abandons its entry, but that entry still runs SetEvent
+       (started_event_) before it observes start_abandoned_ and returns — so the
+       timed-out attempt leaves the event signaled. Without this reset the next
+       attempt's WaitForSingleObject would consume that stale signal and report
+       success before its own entry had even been scheduled: a silent lie of
+       exactly the kind the gate exists to prevent.
+
+       Correctness of resetting HERE: the guard above established
+       thread_valid_ == false, and thread_valid_ only becomes false after a
+       successful join (in the timeout path) or join_dispatcher(). A join
+       returns only once the entry thread has terminated, and dispatcher_entry
+       executes its one and only SetEvent(started_event_) before it can reach
+       the gate or terminate. So no past producer can signal again, and the new
+       producer (_beginthreadex) does not exist yet — ResetEvent cannot race a
+       signal. Any signal observed during the wait below therefore belongs to
+       THIS attempt's entry. Resetting before _beginthreadex (not after) is also
+       required: the new thread may reach SetEvent before _beginthreadex even
+       returns, and a later reset would erase that legitimate signal. */
+    (void)ResetEvent(started_event_);
     // _beginthreadex returns 0 (null handle) on failure — no C++ exceptions,
     // which matters because coact_core is built with -fno-exceptions.
     const uintptr_t raw = _beginthreadex(

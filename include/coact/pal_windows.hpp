@@ -173,8 +173,15 @@ public:
     // Host-test hook (same spirit as set_tick_hz): bound the start_dispatcher
     // entry handshake, default 1000 ms. Setting 0 forces the handshake-timeout
     // path deterministically so a test can prove a failed start never runs the
-    // entry. Production leaves the default untouched.
-    void set_dispatcher_start_timeout_ms(uint32_t ms) noexcept;
+    // entry. The raw setter is private (below); production cannot reach it —
+    // only a test TU that defines COACT_ENABLE_WINDOWS_TEST_HOOKS before
+    // including this header gets the accessor.
+#if defined(COACT_ENABLE_WINDOWS_TEST_HOOKS)
+    void set_start_timeout_for_test(uint32_t ms) noexcept
+    {
+        set_dispatcher_start_timeout_ms(ms);
+    }
+#endif
 
     // Block up to timeout_ms for a dispatcher signal (0 = wait forever).
     void wait_dispatcher(uint32_t timeout_ms) noexcept;
@@ -245,7 +252,9 @@ private:
     static unsigned int __stdcall thread_trampoline(void* arg) noexcept;
 
     HANDLE      wake_event_;       // auto-reset Dispatcher wake
-    HANDLE      started_event_;    // auto-reset start handshake (entry -> starter)
+    HANDLE      started_event_;    // auto-reset start handshake (entry -> starter);
+                                   // reset at the top of every start_dispatcher
+                                   // attempt so a stale signal cannot fake a start
     HANDLE      start_gate_event_; // auto-reset start gate (starter -> entry)
     bool        thread_valid_;
     HANDLE      dispatcher_thread_;  // _beginthreadex handle, closed on join
@@ -259,6 +268,12 @@ private:
     uint32_t    tick_hz_;         // 0 = no quantization (QPC native)
     uint64_t    ns_per_tick_;     // 1e9 / tick_hz_, valid when tick_hz_ != 0
     static thread_local ExecutionContext tls_ctx_;
+
+    // Private host-test hook (definition in pal_windows.cpp), reachable only via
+    // set_start_timeout_for_test() above under COACT_ENABLE_WINDOWS_TEST_HOOKS.
+    // Kept private and out of the public API so no production call site can pass
+    // 0 and force every start to fail.
+    void set_dispatcher_start_timeout_ms(uint32_t ms) noexcept;
 };
 
 // ---------------------------------------------------------------------------
