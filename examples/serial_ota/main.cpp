@@ -1,12 +1,12 @@
 /**
  * @file main.cpp
- * @brief Serial OTA demo -- showcasing newosp component integration.
+ * @brief Serial OTA demo -- showcasing external OTA component integration.
  *
  * Architecture (loopback for demo):
  *   Host sends raw bytes -> Device parser -> DeviceHandler -> response bytes
  *   Device response bytes -> Host parser -> OtaHost::OnResponse
  *
- * newosp components used (12):
+ * External components used (12):
  *   - osp::StateMachine     -- Device OTA state machine + frame parser HSM
  *   - osp::BehaviorTree     -- Host upgrade flow (Sequence of actions)
  *   - osp::DebugShell       -- Telnet debug commands (OSP_SHELL_CMD)

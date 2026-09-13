@@ -107,13 +107,13 @@ target_compile_definitions(log_rtthread_demo PRIVATE COACT_RTT_STUB)
 target_include_directories(log_rtthread_demo PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME log_rtthread_demo COMMAND log_rtthread_demo)
 
-# serial_ota_demo: multi-file industrial example (Serial OTA upgrade) ported
-# from ~/newosp/examples/serial_ota. It depends on the header-only newosp
-# library (osp::StateMachine/BehaviorTree/SpscRingbuffer/TimerScheduler/...) for
+# serial_ota_demo: multi-file industrial example (Serial OTA upgrade). It
+# depends on an external, out-of-tree, header-only component library
+# (osp::StateMachine/BehaviorTree/SpscRingbuffer/TimerScheduler/...) for
 # the device OTA state machine, host BehaviorTree and UART FIFOs, while coact
 # carries the frame-parser -> OtaHost event link on its Dispatcher thread.
-# newosp is a separate out-of-tree repo, so this example is opt-in.
-option(COACT_BUILD_SERIAL_OTA "Build the serial_ota_demo (requires newosp headers)" OFF)
+# That library is a separate out-of-tree repo, so this example is opt-in.
+option(COACT_BUILD_SERIAL_OTA "Build the serial_ota_demo (requires the external OTA headers)" OFF)
 if(COACT_BUILD_SERIAL_OTA)
     if(EXISTS "$ENV{HOME}/newosp/include/osp/hsm.hpp")
         set(NEWOSP_ROOT "$ENV{HOME}/newosp")
@@ -121,7 +121,7 @@ if(COACT_BUILD_SERIAL_OTA)
         set(NEWOSP_ROOT "/home/dgliu/newosp")
     endif()
     if(NOT EXISTS "${NEWOSP_ROOT}/include/osp/hsm.hpp")
-        message(WARNING "COACT_BUILD_SERIAL_OTA=ON but newosp headers not found at ${NEWOSP_ROOT}; serial_ota_demo skipped")
+        message(WARNING "COACT_BUILD_SERIAL_OTA=ON but external OTA headers not found at ${NEWOSP_ROOT}; serial_ota_demo skipped")
     else()
         add_executable(serial_ota_demo
             serial_ota/main.cpp

@@ -305,7 +305,7 @@ inline constexpr size_t event_block_payload_offset() noexcept
     return offsetof(Layout, payload);
 }
 
-// Reference-count helpers (QP QF semantics, see contract 4.1). Call
+// Reference-count helpers (reference-counting semantics, see contract 4.1). Call
 // event_ref_inc for every additional post and event_gc when an owner releases
 // its reference. The last gc (a decrement reaching 0) returns a pool event to
 // its original pool; static events (pool_id == 0) are never touched.

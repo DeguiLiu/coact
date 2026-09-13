@@ -37,8 +37,7 @@ struct PoolRecord {
     // free_head is the only write-contended atomic (every alloc/reclaim CAS
     // targets it). Give it its own cache line so concurrent producers and the
     // reclaiming thread never invalidate each other's copy of the used/hwm
-    // stats, which also change on every operation. newosp isolates the same
-    // way (data_dispatcher.hpp: alignas(kCacheLineSize) free_head_ etc.).
+    // stats, which also change on every operation.
     alignas(64) std::atomic<uint32_t> free_head{0};   // [31:16]=ABA tag, [15:0]=free index
     uintptr_t base;                       // aligned base of the block area
     uint16_t block_size;                  // aligned stride between blocks

@@ -1,5 +1,5 @@
 // coact Linux stress tests, adapted from qpc-rtthread multithread_test /
-// stress_overload_test and newosp host-test intent: concurrent multi-producer
+// stress_overload_test: concurrent multi-producer
 // correctness, overload degradation, and zero-heap hot path.
 // SPDX-License-Identifier: MIT
 #include "test/test_harness.hpp"
