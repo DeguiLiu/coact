@@ -55,6 +55,17 @@ inline Partition partition_from_class(PriorityClass cls) noexcept
     }
 }
 
+namespace detail {
+
+// Reference layout without the claim, used only to pin StagingSlot's size.
+struct StagingSlotNoClaim {
+    TargetId target;
+    Event* event;
+    uint64_t enqueue_ns;
+};
+
+}  // namespace detail
+
 // ---------------------------------------------------------------------------
 // One buffered event. The wrapped Event* carries the allocation reference
 // transferred by the producer; the consumer (dispatcher) is responsible for
@@ -63,17 +74,27 @@ inline Partition partition_from_class(PriorityClass cls) noexcept
 // ---------------------------------------------------------------------------
 struct StagingSlot {
     TargetId target;
-    Event* event;           // transferred owned reference; dispatcher event_gc
-    uint64_t enqueue_ns;    // publish time, used for Low aging
     // A reservation is an occupancy claim, never a physical MPSC cell. The
     // consumer releases it as soon as try_pop has freed that cell.
+    //
+    // Declared HERE, between target and event, rather than appended at the end:
+    // TargetId's alignment padding already leaves seven bytes before Event*, so
+    // the claim byte costs no additional stride. Appending it instead pushes the
+    // slot from 24 to 32 bytes, and every Config pays that - including the ones
+    // that reserve nothing - because the ring is sized by slot count.
     enum class ReservationClaim : uint8_t {
         None,
         HighOrdinary,
         NormalOrdinary,
         NormalReserved
     } claim = ReservationClaim::None;
+    Event* event;           // transferred owned reference; dispatcher event_gc
+    uint64_t enqueue_ns;    // publish time, used for Low aging
 };
+
+static_assert(sizeof(StagingSlot) == sizeof(detail::StagingSlotNoClaim),
+              "coact: StagingSlot must not grow - the claim rides in TargetId's "
+              "padding, and the stride is paid by every Config");
 
 namespace detail {
 
@@ -232,7 +253,7 @@ public:
         if (!try_claim(claim)) {
             return false;
         }
-        StagingSlot slot{target, e, now_ns, claim};
+        StagingSlot slot{target, claim, e, now_ns};
 
         bool queued = false;
         if (cls == PriorityClass::Low) {

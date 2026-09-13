@@ -376,7 +376,9 @@ struct ReservedFrontStaging {
         if (!front_ready_ || consumed_) {
             return false;
         }
-        out = coact::StagingSlot{coact::kInvalidTarget, &event_, 0U};
+        out = coact::StagingSlot{coact::kInvalidTarget,
+                                 coact::StagingSlot::ReservationClaim::None,
+                                 &event_, 0U};
         consumed_ = true;
         ++batch_used_;
         return true;
