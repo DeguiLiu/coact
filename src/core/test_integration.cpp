@@ -4,7 +4,9 @@
 #include "test/test_harness.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
+#include <thread>
 #include <unistd.h>
 
 #include "coact/ao.hpp"
@@ -67,10 +69,20 @@ struct TraitsB {
     static bool isr_direct_safe() { return false; }
     static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
 };
+/* Low-priority, non-direct: every submit is staged in the Low partition, so
+   the event can only be served after the Dispatcher wakes from its idle wait. */
+struct TraitsLow {
+    static coact::LogicalPrio   logical_prio()   { return 12U; }
+    static coact::PriorityClass priority_class() { return coact::PriorityClass::Low; }
+    static bool direct_eligible() { return false; }
+    static bool isr_direct_safe() { return false; }
+    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+};
 
 using IntHsm = coact::Hsm<IntCtx>;
 using AoA    = coact::Ao<IntCtx, IntHsm, TraitsA>;
 using AoB    = coact::Ao<IntCtx, IntHsm, TraitsB>;
+using AoLow  = coact::Ao<IntCtx, IntHsm, TraitsLow>;
 
 /* Block size must match pool_block_align result (alignof(max_align_t)=16 on
    x86_64) so that kCAP blocks actually fit in the storage array. */
@@ -135,6 +147,62 @@ COACT_TEST(integration_two_ao_fifty_events_each)
     CHECK_EQ(kN, g_counter_a.load());
     CHECK_EQ(kN, g_counter_b.load());
     CHECK_EQ(0U, pool.used());  /* all events gc'd back */
+}
+
+/* =========================================================================
+ * Idle-wait wakeup: a Low event submitted while the Dispatcher is parked in
+ * its (now truly blocking) idle wait must still be served inside
+ * kLowMaxWaitMs. Before the fix the idle path polled every kBatchTimeoutMs,
+ * which masked a lost wake; after the fix the arm/any_ready latch protocol is
+ * the only thing that can wake it, so this is the regression guard.
+ * ========================================================================= */
+COACT_TEST(dispatcher_idle_wakes_low_event_within_low_max_wait)
+{
+    g_counter_a.store(0);
+
+    AoLow ao(kStates, 2U, kTransA, 1U, 1, 4U);
+    coact::Event init_e;
+    init_e.signal  = 0U;
+    init_e.pool_id = 0U;
+    init_e.ref_ctr = 0U;
+    ao.init(init_e);
+
+    IntPool pool;
+    pool.init(g_pool_storage, sizeof(g_pool_storage));
+
+    coact::pal::Posix pal;
+    coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
+    CHECK(rt.bind(&ao));
+    CHECK(rt.initialize());
+    CHECK(rt.start());
+
+    /* Park the Dispatcher in the idle branch with every queue empty. Under the
+       fixed code that is an unbounded PAL wait; a lost wake would strand the
+       event below for the whole ctest timeout. */
+    usleep(50000);
+
+    coact::Event* e = pool.alloc(1U);
+    REQUIRE(e != nullptr);
+    const auto t0 = std::chrono::steady_clock::now();
+    const coact::SubmitResult r = rt.coordinator().submit_from_task(
+        coact::TargetId(1U), e, coact::EventQos{false, false});
+    CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+             static_cast<int>(r.disposition));
+
+    const auto budget =
+        std::chrono::milliseconds(coact::DefaultConfig::kLowMaxWaitMs);
+    const auto deadline = t0 + budget;
+    while ((1 != g_counter_a.load(std::memory_order_acquire))
+           && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::yield();
+    }
+    const auto served_after = std::chrono::steady_clock::now() - t0;
+
+    rt.stop();
+
+    CHECK_EQ(1, g_counter_a.load());
+    CHECK(served_after < budget);
+    CHECK_EQ(0U, pool.used());
 }
 
 }  // namespace

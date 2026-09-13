@@ -5,11 +5,17 @@
 // SPDX-License-Identifier: MIT
 #include "test/test_harness.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
+#include <thread>
 
 #include "coact/ao.hpp"
 #include "coact/config.hpp"
 #include "coact/coordinator.hpp"
+#include "coact/dispatcher.hpp"
 #include "coact/event.hpp"
 #include "coact/hsm.hpp"
 #include "coact/monitor.hpp"
@@ -236,6 +242,162 @@ COACT_TEST(coordinator_target_breaker_does_not_block_other_ao)
     CHECK_EQ(result.disposition, coact::SubmitDisposition::Direct);
     CHECK_EQ(breakers.level(coact::TargetId(2U)),
              coact::BreakerLevel::Normal);
+}
+
+/* =========================================================================
+ * Idle-wait wakeup: a Low event submitted while the Dispatcher is parked in
+ * its unbounded idle wait must still be served inside kLowMaxWaitMs, and it
+ * must be served on EVERY idle entry - not only the first. The integration TU
+ * covers this against the POSIX PAL, but it is skipped under
+ * COACT_PORTABLE_ONLY, so this is the copy that runs on the shipping Windows
+ * runner. The second round is what catches a latch that is armed once and
+ * never re-armed.
+ *
+ * BlockingPal parks the Dispatcher thread on a condition variable, so a lost
+ * wake strands the event for the whole ctest timeout exactly as on the real
+ * PALs. timeout_ms == 0 follows the PAL convention of waiting forever; the
+ * deferred and stop-drain paths still use bounded nonzero waits.
+ * ========================================================================= */
+struct BlockingPal {
+    std::mutex mtx;
+    std::condition_variable cv;
+    bool wake_pending = false;
+    std::atomic<unsigned> idle_entries{0U};
+
+    uint64_t monotonic_ns() const noexcept
+    {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+    void signal_dispatcher_from_task() noexcept { wake(); }
+    void signal_dispatcher_from_isr() noexcept  { wake(); }
+    void enter_direct() noexcept {}
+    void leave_direct() noexcept  {}
+
+    void wait_dispatcher(uint32_t timeout_ms) noexcept
+    {
+        std::unique_lock<std::mutex> lock(mtx);
+        if (0U == timeout_ms) {
+            idle_entries.fetch_add(1U, std::memory_order_release);
+            cv.wait(lock, [this]() { return wake_pending; });
+        }
+        else {
+            cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                        [this]() { return wake_pending; });
+        }
+        wake_pending = false;
+    }
+
+private:
+    void wake() noexcept
+    {
+        std::lock_guard<std::mutex> lock(mtx);
+        wake_pending = true;
+        cv.notify_one();
+    }
+};
+
+/* Low-priority, non-direct-eligible AO: every submit is staged in the Low
+   partition, so it can only be served after the Dispatcher wakes from its idle
+   wait. Mirrors TraitsLow in test_integration.cpp. */
+struct IdleLowTraits {
+    static coact::LogicalPrio   logical_prio()   { return 30U; }
+    static coact::PriorityClass priority_class() { return coact::PriorityClass::Low; }
+    static bool direct_eligible() { return false; }
+    static bool isr_direct_safe() { return false; }
+    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+};
+using IdleLowAo = coact::Ao<Ctx, CtxHsm, IdleLowTraits>;
+
+static std::atomic<int> g_idle_low_count{0};
+static void idle_low_action(Ctx&, const coact::Event&)
+{
+    g_idle_low_count.fetch_add(1, std::memory_order_relaxed);
+}
+static const coact::TransitionDef<Ctx> kIdleLowTrans[] = {
+    { 1, 1U, 1, coact::TransitionKind::Internal, c_ok, idle_low_action },
+};
+
+using IdleStageT = coact::Staging<coact::DefaultConfig, coact::BoundedMpscQueue>;
+
+static IdleStageT make_idle_staging()
+{
+    return IdleStageT(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {}});
+}
+
+/* Bounded wait for the Dispatcher to have parked in the unbounded idle wait at
+   least `target` times. */
+static bool wait_for_idle_entries(BlockingPal& pal, unsigned target,
+                                  std::chrono::milliseconds budget)
+{
+    const auto deadline = std::chrono::steady_clock::now() + budget;
+    while ((pal.idle_entries.load(std::memory_order_acquire) < target)
+           && (std::chrono::steady_clock::now() < deadline)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return pal.idle_entries.load(std::memory_order_acquire) >= target;
+}
+
+COACT_TEST(dispatcher_idle_wait_wakes_low_event_on_each_idle_entry)
+{
+    g_idle_low_count.store(0);
+
+    coact::Event init_e{};
+    init_e.signal = 0U;
+    init_e.pool_id = 0U;
+    init_e.ref_ctr = 0U;
+    IdleLowAo ao(kStates, 2U, kIdleLowTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    IdleStageT staging = make_idle_staging();
+    coact::AoRegistry<coact::DefaultConfig> registry;
+    coact::Monitor<coact::DefaultConfig> monitor;
+    coact::DefaultConfig cfg{};
+    coact::Breaker<coact::DefaultConfig> breaker(cfg);
+    BlockingPal pal;
+    coact::DispatchCoordinator<IdleStageT, BlockingPal,
+                               coact::Breaker<coact::DefaultConfig>> coord(
+        staging, registry, monitor, breaker, pal);
+    coact::Dispatcher<IdleStageT, BlockingPal, coact::HostSmpProfile,
+                      coact::Breaker<coact::DefaultConfig>> dispatcher(
+        staging, registry, monitor, breaker, pal);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+
+    std::thread runner([&dispatcher]() { dispatcher.run(); });
+
+    const auto budget = std::chrono::milliseconds(
+        coact::DefaultConfig::kLowMaxWaitMs);
+    const coact::EventQos qos{false, false};
+    coact::Event e{};
+    e.signal = 1U;
+    e.pool_id = 0U;   /* static event: the reclaimer never touches it */
+    e.ref_ctr = 0U;
+
+    for (int round = 0; round < 2; ++round) {
+        const unsigned idle_target = static_cast<unsigned>(round) + 1U;
+        CHECK(wait_for_idle_entries(pal, idle_target, budget));
+
+        const auto t0 = std::chrono::steady_clock::now();
+        const coact::SubmitResult r =
+            coord.submit_from_task(coact::TargetId(1U), &e, qos);
+        CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued),
+                 static_cast<int>(r.disposition));
+
+        const int want = round + 1;
+        while ((g_idle_low_count.load(std::memory_order_acquire) != want)
+               && (std::chrono::steady_clock::now() < t0 + budget)) {
+            std::this_thread::yield();
+        }
+        const auto served_after = std::chrono::steady_clock::now() - t0;
+        CHECK_EQ(want, g_idle_low_count.load(std::memory_order_acquire));
+        CHECK(served_after < budget);
+    }
+
+    dispatcher.request_stop();
+    runner.join();
 }
 
 }  // namespace
