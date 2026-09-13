@@ -37,17 +37,14 @@ flowchart LR
     classDef prod fill:#FFE0B2,stroke:#E65100,color:#000
     classDef core fill:#BBDEFB,stroke:#0D47A1,color:#000
     classDef app fill:#E1BEE7,stroke:#4A148C,color:#000
-    PR["生产者 — 任务或 ISR"]:::prod
-    C["Coordinator — 提交管线"]:::core
-    S["Staging — High / Normal / Low"]:::core
-    D["Dispatcher — 单线程"]:::core
-    A["主动对象 + HSM"]:::app
-    P[("EventPool — 定容 · 引用计数")]:::prod
-    PR --> C
-    C --> S --> D --> A
-    A -->|回收| P
-    P -.->|分配| C
-    C -.->|S6 快路径| A
+    PR["生产者<br/>任务 / ISR 提交"]:::prod
+    C["Coordinator<br/>提交管线"]:::core
+    S["Staging<br/>High · Normal · Low"]:::core
+    D["Dispatcher<br/>单线程"]:::core
+    A["主动对象<br/>+ HSM"]:::app
+    P[("EventPool<br/>定容 · 引用计数")]:::prod
+    PR --> C --> S --> D --> A --> P
+    P -.->|回收 / 分配| PR
 ```
 
 ```mermaid
@@ -55,10 +52,10 @@ flowchart TB
     classDef app fill:#E1BEE7,stroke:#4A148C,color:#000
     classDef core fill:#BBDEFB,stroke:#0D47A1,color:#000
     classDef pal fill:#FFE0B2,stroke:#E65100,color:#000
-    L4["应用层 — 主动对象、HSM、Context"]:::app
-    L3["core/ — Coordinator、Dispatcher、Runtime"]:::core
-    L2["构件层 — staging、event/pool、queue、monitor、policy、coro"]:::core
-    L1["平台层 pal/ — RtThread、Posix、Windows"]:::pal
+    L4["应用层<br/>主动对象 · HSM · Context"]:::app
+    L3["core/<br/>Coordinator · Dispatcher · Runtime"]:::core
+    L2["构件层<br/>staging · event/pool · queue · monitor · policy · coro"]:::core
+    L1["平台层 pal/<br/>RtThread · Posix · Windows"]:::pal
     L4 --> L3 --> L2 --> L1
 ```
 
