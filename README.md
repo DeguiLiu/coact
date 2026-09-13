@@ -37,17 +37,14 @@ flowchart LR
     classDef prod fill:#FFE0B2,stroke:#E65100,color:#000
     classDef core fill:#BBDEFB,stroke:#0D47A1,color:#000
     classDef app fill:#E1BEE7,stroke:#4A148C,color:#000
-    PR["producer — task or ISR"]:::prod
-    C["Coordinator — submit pipeline"]:::core
-    S["Staging — High / Normal / Low"]:::core
-    D["Dispatcher — single thread"]:::core
-    A["Active Object + HSM"]:::app
-    P[("EventPool — fixed, ref-counted")]:::prod
-    PR --> C
-    C --> S --> D --> A
-    A -->|recycle| P
-    P -.->|alloc| C
-    C -.->|S6 fast path| A
+    PR["producer<br/>task / ISR submit"]:::prod
+    C["Coordinator<br/>submit pipeline"]:::core
+    S["Staging<br/>High · Normal · Low"]:::core
+    D["Dispatcher<br/>single thread"]:::core
+    A["Active Object<br/>+ HSM"]:::app
+    P[("EventPool<br/>fixed · ref-counted")]:::prod
+    PR --> C --> S --> D --> A --> P
+    P -.->|recycle / alloc| PR
 ```
 
 ```mermaid
@@ -55,10 +52,10 @@ flowchart TB
     classDef app fill:#E1BEE7,stroke:#4A148C,color:#000
     classDef core fill:#BBDEFB,stroke:#0D47A1,color:#000
     classDef pal fill:#FFE0B2,stroke:#E65100,color:#000
-    L4["application — Active Object, HSM, Context"]:::app
-    L3["core/ — Coordinator, Dispatcher, Runtime"]:::core
-    L2["blocks — staging, event/pool, queue, monitor, policy, coro"]:::core
-    L1["pal/ — RtThread, Posix"]:::pal
+    L4["application<br/>Active Object · HSM · Context"]:::app
+    L3["core/<br/>Coordinator · Dispatcher · Runtime"]:::core
+    L2["blocks<br/>staging · event/pool · queue · monitor · policy · coro"]:::core
+    L1["pal/<br/>RtThread · Posix"]:::pal
     L4 --> L3 --> L2 --> L1
 ```
 
