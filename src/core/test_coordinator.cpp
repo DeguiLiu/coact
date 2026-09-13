@@ -374,6 +374,88 @@ COACT_TEST(coordinator_reserved_normal_rejected_without_reservation_config)
     CHECK_EQ(r.disposition, coact::SubmitDisposition::RejectedState);
 }
 
+/* =========================================================================
+ * A Config that actually opens a reserved Normal lane (ReserveCfg above leaves
+ * kNormalReservedCapacity at zero, so it cannot exercise the lane). Filling the
+ * ordinary Normal cap and then submitting ReservedNormal proves the coordinator
+ * threads the admission through to staging_.enqueue: if it passed
+ * StagingAdmission::Ordinary instead, the submission would consume an ordinary
+ * claim and be RejectedFull, never reaching the reserved lane.
+ * ========================================================================= */
+struct NormalLaneReserveCfg {
+    enum : uint8_t {
+        kMaxAo = 2U,
+        kMaxStateDepth = 6U,
+        kMaxDirectDepth = 4U,
+        kBatchSizeMax = 4U
+    };
+    enum : uint16_t {
+        kHighCapacity = 4U,
+        kHighCriticalReserve = 0U,
+        kNormalCapacity = 4U,
+        kNormalReservedCapacity = 1U,
+        kLowCapacity = 16U,
+        kCooldownCycles = 3U
+    };
+    enum : uint32_t {
+        kBatchTimeoutMs = 1U,
+        kLowMaxWaitMs = 10U
+    };
+    enum : uint64_t {
+        kDirectBudgetNs = 50000ULL,
+        kRtcBudgetNs = 1000000ULL
+    };
+};
+using NormalLaneStageT =
+    coact::Staging<NormalLaneReserveCfg, coact::BoundedMpscQueue>;
+
+static NormalLaneStageT make_normal_lane_staging()
+{
+    return NormalLaneStageT(coact::CriticalSection{nullptr,
+        [](void*) -> coact::CriticalSection::Token { return 0U; },
+        [](void*, coact::CriticalSection::Token) {}});
+}
+
+COACT_TEST(coordinator_reserved_normal_uses_reserved_lane)
+{
+    coact::Event init_e{};
+    init_e.signal = 0U; init_e.pool_id = 0U; init_e.ref_ctr = 0U;
+    CtxAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+    ao.init(init_e);
+
+    NormalLaneStageT staging = make_normal_lane_staging();
+    coact::AoRegistry<NormalLaneReserveCfg> registry;
+    coact::Monitor<NormalLaneReserveCfg> monitor;
+    NormalLaneReserveCfg cfg{};
+    coact::Breaker<NormalLaneReserveCfg> breaker(cfg);
+    CountingPal pal;
+    coact::DispatchCoordinator<NormalLaneStageT, CountingPal,
+                               coact::Breaker<NormalLaneReserveCfg>> coord(
+        staging, registry, monitor, breaker, pal);
+    REQUIRE(registry.bind(&ao, ao.logical_prio()));
+
+    // Fill the ordinary Normal lane exactly to its cap (capacity - reserved).
+    const coact::EventQos ordinary{false, false};
+    const unsigned kOrdinaryLimit = NormalLaneReserveCfg::kNormalCapacity
+                                  - NormalLaneReserveCfg::kNormalReservedCapacity;
+    for (unsigned i = 0U; i < kOrdinaryLimit; ++i) {
+        coact::Event e{};
+        e.signal = 1U; e.pool_id = 0U; e.ref_ctr = 0U;
+        const coact::SubmitResult r =
+            coord.submit_from_task(coact::TargetId(1U), &e, ordinary);
+        REQUIRE_EQ(r.disposition, coact::SubmitDisposition::Queued);
+    }
+
+    // Ordinary lane is full; the reserved lane must still admit this. Under a
+    // coordinator that dropped the admission argument it would be RejectedFull.
+    coact::Event rn{};
+    rn.signal = 1U; rn.pool_id = 0U; rn.ref_ctr = 0U;
+    const coact::SubmitResult rr = coord.submit_from_task(
+        coact::TargetId(1U), &rn, ordinary,
+        coact::StagingAdmission::ReservedNormal);
+    CHECK_EQ(rr.disposition, coact::SubmitDisposition::Queued);
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

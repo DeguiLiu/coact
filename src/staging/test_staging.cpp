@@ -940,4 +940,130 @@ COACT_TEST(staging_claim_rolled_back_when_push_fails)
              static_cast<uint16_t>(kOrdinaryLimit));
 }
 
+// ---------------------------------------------------------------------------
+// The reserved Normal lane bound must come from its own claim counter, not from
+// the ring running out of cells. Fill ONLY the reserved lane on an EMPTY Normal
+// partition so the two are distinguishable: with ordinary(2)+reserved(2) both
+// summing to kNormalCapacity, staging_normal_reserved_lane_is_bounded cannot
+// tell them apart. Here the ring still has kNormalCapacity - kNormalReserved
+// free cells, and the strict size inequality below is asserted explicitly: if
+// the bound were widened to kNormalCapacity this test fails at the refused
+// enqueue (the extra ReservedNormal would land in a free cell), whereas the
+// existing test would still pass because its ring is already physically full.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_normal_reserved_lane_bound_is_not_ring_full)
+{
+    ReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+
+    for (unsigned i = 0U; i < ReserveCfg::kNormalReservedCapacity; ++i) {
+        CHECK(s.enqueue(coact::TargetId(2U), seq_event(static_cast<uint8_t>(100U + i)),
+                        coact::PriorityClass::Normal, 0U, /*critical=*/false,
+                        coact::StagingAdmission::ReservedNormal));
+    }
+    CHECK_EQ(s.size(coact::Partition::Normal),
+             static_cast<uint16_t>(ReserveCfg::kNormalReservedCapacity));
+
+    // The lane is exhausted while the partition is demonstrably NOT full.
+    CHECK(s.size(coact::Partition::Normal) < ReserveCfg::kNormalCapacity);
+    CHECK(!s.enqueue(coact::TargetId(2U), seq_event(120U),
+                     coact::PriorityClass::Normal, 0U, /*critical=*/false,
+                     coact::StagingAdmission::ReservedNormal));
+    CHECK(s.size(coact::Partition::Normal) < ReserveCfg::kNormalCapacity);
+}
+
+// ---------------------------------------------------------------------------
+// Concurrent claim machinery. N producers mix ordinary and critical High
+// submissions against ReserveStaging while one consumer drains, so the atomic
+// claim counters, the rollback on a failed try_push and the release on pop all
+// run under contention. Every enqueue is retried until it succeeds, so the
+// successful-enqueue count and the popped count must match exactly; a leaked or
+// double-released claim either trips release_claim_counter's assert (the test
+// aborts, non-zero exit) or leaves the ordinary counter short of zero, which
+// the post-drain refill detects. Deterministic: an atomic start gate, bounded
+// per-producer work, no sleeps, and count-based invariants only.
+// ---------------------------------------------------------------------------
+COACT_TEST(staging_reserved_claims_hold_under_concurrency)
+{
+    constexpr int kProducers = 3;
+    constexpr int kPerProducer = 80;                    // 240 distinct tags, fits uint8_t
+    constexpr int kTotal = kProducers * kPerProducer;   // even -> equal mix
+    constexpr int kOrdinaryLimit =
+        static_cast<int>(ReserveCfg::kHighCapacity - ReserveCfg::kHighCriticalReserve);
+
+    ReserveStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+    std::atomic<int> done{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> threads;
+
+    for (int p = 0; p < kProducers; ++p) {
+        threads.emplace_back([&s, &done, &start, p]() {
+            const int base = p * kPerProducer;   // disjoint tag range per producer
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (int i = 0; i < kPerProducer; ++i) {
+                const bool critical = (0 != (i & 1));
+                // Retry until admitted: an ordinary claim refused by the bound,
+                // or a try_push refused because a critical event filled the
+                // last cell, must be retried and must not leak its claim.
+                while (!s.enqueue(coact::TargetId(1U),
+                                  seq_event(static_cast<uint8_t>(base + i)),
+                                  coact::PriorityClass::High, 0U, critical,
+                                  coact::StagingAdmission::Ordinary)) {
+                    std::this_thread::yield();
+                }
+            }
+            done.fetch_add(1, std::memory_order_release);
+        });
+    }
+
+    s.begin_batch();
+    s.tick(0U);
+    start.store(true, std::memory_order_release);
+
+    int popped = 0;
+    bool producers_done = false;
+    coact::StagingSlot slot;
+    for (;;) {
+        if (s.dequeue_one(slot)) {
+            ++popped;
+            s.begin_batch();
+            continue;
+        }
+        s.begin_batch();
+        if (!producers_done) {
+            if (done.load(std::memory_order_acquire) == kProducers) {
+                producers_done = true;
+            }
+            else {
+                std::this_thread::yield();
+                continue;
+            }
+        }
+        if (!s.dequeue_one(slot)) {
+            break;   // producers done and a full drain pass found nothing
+        }
+        ++popped;
+        s.begin_batch();
+    }
+    for (std::thread& t : threads) {
+        t.join();
+    }
+
+    CHECK_EQ(popped, kTotal);
+    CHECK_EQ(s.size(coact::Partition::High), 0U);
+
+    // The drain returned every ordinary claim: the empty partition must accept
+    // exactly kOrdinaryLimit fresh ordinary submissions. A single leaked claim
+    // leaves the counter at the limit and admits only kOrdinaryLimit - 1.
+    int admitted = 0;
+    for (int i = 0; i < kTotal; ++i) {
+        if (s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(i)),
+                      coact::PriorityClass::High, 0U)) {
+            ++admitted;
+        }
+    }
+    CHECK_EQ(admitted, kOrdinaryLimit);
+}
+
 COACT_TEST_MAIN()
