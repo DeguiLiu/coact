@@ -51,21 +51,20 @@ else
 fi
 
 # Step 3: Build
+# coact's tests and examples are always added by the root CMakeLists (it calls
+# enable_testing() and add_subdirectory unconditionally), so there is no
+# test/example option to pass here.
 BUILD_DIR="$PROJECT_ROOT/build"
 if $SANITIZER; then
   BUILD_DIR="$PROJECT_ROOT/build-asan"
   run_step "CMake Configure (ASan+UBSan)" \
     cmake -B "$BUILD_DIR" -S "$PROJECT_ROOT" \
       -DCMAKE_BUILD_TYPE=Debug \
-      -DOSP_BUILD_TESTS=ON \
-      -DOSP_BUILD_EXAMPLES=ON \
       -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
 else
   run_step "CMake Configure" \
     cmake -B "$BUILD_DIR" -S "$PROJECT_ROOT" \
-      -DCMAKE_BUILD_TYPE=Debug \
-      -DOSP_BUILD_TESTS=ON \
-      -DOSP_BUILD_EXAMPLES=ON
+      -DCMAKE_BUILD_TYPE=Debug
 fi
 
 NPROC=$(nproc 2>/dev/null || echo 4)

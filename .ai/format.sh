@@ -2,12 +2,17 @@
 # .ai/format.sh -- Format all C++ source files using clang-format
 # Usage: .ai/format.sh [--check] [path...]
 #   --check   Dry-run mode, exit 1 if any file needs formatting
-#   path...   Specific files/dirs to format (default: include/ tests/ examples/)
+#   path...   Specific files/dirs to format (default: include/ src/ test/,
+#             resolved from the project root)
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 STYLE_FILE="$SCRIPT_DIR/.clang-format"
+
+# Paths are resolved from the project root, so the defaults below and any
+# path a caller passes mean the same thing regardless of the current directory.
+cd "$PROJECT_ROOT"
 
 CHECK_MODE=false
 TARGETS=()
@@ -21,7 +26,7 @@ done
 
 # Default targets
 if [ ${#TARGETS[@]} -eq 0 ]; then
-  TARGETS=("/include" "/src" "/test")
+  TARGETS=("include" "src" "test")
 fi
 
 # Find all C++ files
