@@ -23,7 +23,7 @@
 //     is the resume argument (completion result, timer expiry).
 //   - The ucontext stack preserves the execution position, so worker execute
 //     logic is written as natural sequential code (send command -> wait for
-//     IRQ -> continue) - the same shape as real RS500 driver code, unlike
+//     IRQ -> continue) - the same shape as ordinary driver code, unlike
 //     the stackless HSM decomposition.
 //   - Stacks are STATIC (compile-time array of aligned std::byte), never
 //     heap-allocated: zero-heap holds.

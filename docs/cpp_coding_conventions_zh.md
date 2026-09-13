@@ -5,7 +5,7 @@
 规约来源分两层：
 
 - 框架层：`include/coact/` 头文件（`ao.hpp`、`hsm.hpp`、`pool.hpp`、`coordinator.hpp`、`runtime.hpp`、`queue.hpp`、`expected.hpp`、`static_ao.hpp` 等）；
-- 示例层：`examples/isp_pipeline/`（14 个源文件、约 6800 行，本仓库最大的 C++ 落点；本文绝大多数代码落点取自该目录），辅以 `examples/log_rtthread_demo.cpp`、`examples/node_manager_demo.cpp`。
+- 示例层：`examples/hsm_protocol_demo.cpp`、`examples/node_manager_demo.cpp`、`examples/flash_proxy_demo.cpp`、`examples/serial_ota/`、`examples/msh_monitor_demo.cpp`、`examples/log_rtthread_demo.cpp`、`examples/coact_coro_demo.cpp`、`examples/coact_coro_posix.cpp` 等示例程序（本文多数代码落点取自 `examples/msh_monitor_demo.cpp` 与 `examples/flash_proxy_demo.cpp`）。
 
 适用范围：`include/coact/`、`examples/`、`src/`、`test/` 下全部 C++ 代码。PAL 的 RT-Thread 适配层确实内含少量 C 接口（rt_kprintf 等），这些只在 6.3"平台适配层注意"小节收口；正文全部是 C++17 规约。
 
@@ -21,7 +21,7 @@
 ### 1.2 双平台约束
 
 - 所有 C++ 代码必须同时可在 **RT-Thread 目标机** 与 **Linux host** 编译运行。平台差异只允许通过 `include/coact/pal.hpp` / `pal_posix.hpp` / `pal_rtthread.hpp` 的 PAL 接口隔离，禁止在业务代码里出现 `#ifdef` 平台分支。
-  - 落点：`Rt = coact::Runtime<coact::DefaultConfig, DemoPal>`（isp_pipeline/common.hpp）；RT-Thread 侧对应 `pal_rtthread.hpp`。
+  - 落点：`Rt = coact::Runtime<coact::DefaultConfig, coact::pal::Posix>`（`examples/msh_monitor_demo.cpp`、`examples/flash_proxy_demo.cpp`）；RT-Thread 侧对应 `pal_rtthread.hpp`。
 - 池等共享结构通过 **Profile 模板参数** 区分单核/SMP 语义，而不是 if/else：
   - 落点：`coact::RttSingleCoreProfile`（irq-mask 临界区，无 CAS）与 `coact::HostSmpProfile`（32 位 tagged 原子头 + CAS），见 `include/coact/pool.hpp` 头部注释；Profile 合法性由 `EventPool` 内 `static_assert` 把关。
 
@@ -44,7 +44,7 @@
 ### 2.1 类型纪律（现代 C++ 表达）
 
 - **固定宽度整型**：优先 `<cstdint>` 体系（`uint8_t / uint16_t / uint32_t / int8_t / int32_t`），禁裸 `int / long / char / unsigned`；并把"该类型宽度即契约"交给类型萃取把关（`sizeof`/`is_standard_layout` 断言），不靠人肉记忆。
-  - 落点：`IoMeta`、`FrameGeometry`、`Payload`（isp_pipeline/common.hpp）全部字段均为固定宽度；`kDdrCount <= 7U` 的 `static_assert` 把宽度契约钉在定义处。
+  - 落点：`IoMeta`、`Payload`（`examples/msh_monitor_demo.cpp`、`examples/flash_proxy_demo.cpp`）的全部字段均为固定宽度整型（`TargetId`/`uint16_t`/`uint32_t`/`int32_t`），宽度即契约。
 - **强类型代替弱转换**：领域枚举用 `enum class X : 底层类型`（禁 `#define` 常量、禁裸 `enum`）；可判空的语义类型用 `explicit operator bool()` 而不是返回裸 int/指针；错误用 `Expected`/错误码枚举而不是裸 int 返回。
   - 落点：`enum class Sig : uint16_t`（事件词汇表）、`enum class SessionState : uint8_t`、`enum class RecfgStage : uint8_t`、`enum class SrMagx : uint8_t`；框架层 `enum class TransitionKind : uint8_t`（hsm.hpp）、`enum class PriorityClass : uint8_t`（config.hpp）；`AddrCache::explicit operator bool()`。
 - **隐式转换显式标注**：任何跨宽度/跨符号赋值必须写 `static_cast<目标类型>(...)`。
@@ -97,9 +97,9 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 ### 3.1 AO 事件平面（Active Object）
 
 - AO 之间**只通过事件通信**：`pool.alloc_typed` 分配事件块 → `rt.coordinator().submit_from_task(target, &e->event, ...)` 投递。禁止跨 AO 共享可变状态。
-  - 落点：isp_pipeline 各模块的每个 action 函数末尾的标准三步（alloc → 填 meta/payload → submit）。
+  - 落点：`examples/msh_monitor_demo.cpp` 各模块的每个 action 函数末尾的标准三步（`alloc_typed` → 填 meta/payload → `submit_from_task`），如 `onIrscDmaDone`。
 - 非 AO 线程（pthread worker、ISR 模拟）与 AO 的**唯一耦合是事件平面**；worker 不读 AO 内部字段。
-  - 落点：`IrscWorker`、`UsbDmaWorker`、`WorkerBase` 派生族；注释 "The only coupling is the event plane"（isp_pipeline/sensor_irsc.hpp）。
+  - 落点：`examples/msh_monitor_demo.cpp` 的 `CmdWorker` / `FrameProducer`（非 AO 线程）；注释 "the event plane is their ONLY coupling with the AOs"。
 - **数据平面（像素字节）不走事件**：事件只携带缓冲描述符（slot id + region id），真实数据留在 DDR 由拥有者 AO 管理。
   - 落点：`Payload::ddr_slot/ddr_id` + `DdrCtx` 区域；注释 "the payload carries only the buffer descriptor"。
 
@@ -126,7 +126,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 ### 4.1 return 预算
 
 - **单个函数的 return 语句不超过 5 个**；能不提前 return 就不提前 return。错误路径可提前返回，但超过 5 个 return 说明函数职责过多，应拆分。
-  - 落点：`onIspCmd`、`HlCtx::maybe_fuse`（2 个前置 guard + 主路径）、`onIrscDmaDone`（1 个 guard）。
+  - 落点：`HlCtx::maybe_fuse`（2 个前置 guard + 主路径）、`onIrscDmaDone`（1 个 guard）。
 
 ### 4.2 guard / entry / exit / action 分层
 
@@ -147,7 +147,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 ### 4.4 事件生命周期与运行期监控
 
 - 事件块由池分配（`alloc_typed`）后，引用计数（`Event::ref_ctr`，event.hpp）由框架管理：alloc 后为 1，每多投递一次 +1，归 0 回收。业务代码**只投递（submit）不手动回收**；demo 结束必须断言 `pool.used() == 0U`（零泄漏）。
-  - 落点：isp_pipeline/main.cpp verification 块 "event pool fully reclaimed"。
+  - 落点：`examples/msh_monitor_demo.cpp` 末尾 verification 块 `check(pool.used() == 0U, "event pool fully reclaimed (zero leak)")`。
 - AO 静态属性（优先级、RTC 预算、直投资格）一律走 **Trait** 结构体（`AoTrait<Prio>`、`VideoFsmTrait`、`IrscTrait`），不通过构造参数或运行期 setter。
   - 落点：`AoTrait` 模板（`logical_prio` / `priority_class` / `direct_eligible` / `isr_direct_safe` / `kRtcBudgetNs`）；框架层 `coact::Ao<Ctx, Hsm, Trait>` 三参数形态（ao.hpp）。
 - 运行期可观测性来自 monitor（`rtc_timeouts` / `disposition_overload` / `pending()` 计数器），不往业务代码里加打印探针。
@@ -187,7 +187,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 
 - **何时用**：凡是"该类型必须满足 X"的假设，一律在定义处或模板内断言（`is_standard_layout` / `is_trivially_copyable` / `is_nothrow_move_constructible` / `atomic<T>::is_always_lock_free` / `is_same`）。违约必须编译失败，不许到现场才炸。
 - **红线**：禁止断言显然为真的平凡事实凑数（如 `static_assert(sizeof(char) == 1)`）。
-- **落点**：isp_pipeline/common.hpp "Compile-time ABI / layout / move-behavior contracts" 块（10 余条断言、每条带失败原因文案）；`EventPool` 内 Profile 合法性与 CAS lock-free 断言（pool.hpp）；T37 证据断言 `static_assert(kX1FrameBytes == 655360U, ...)`。
+- **落点**：`EventPool` 内 Profile 合法性与 CAS lock-free 断言（`pool.hpp`，每条带失败原因文案）；`examples/msh_monitor_demo.cpp` 的 `static_assert(std::atomic<SessionState>::is_always_lock_free, ...)` 把跨线程枚举的无锁契约钉在定义处。
 
 ### 5.5 `[[nodiscard]]` / `noexcept` / `explicit`
 
@@ -202,7 +202,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 
 - **何时用**：仅当需要**"取旧值 + 置新值"一体的原子语义交接**——即旧值确实被消费（移走、打印、作为提交值），且置新值是交接的一部分。所有权跨窗口移动（AO ctx 槽位 → 出向事件）是典型场景。
 - **红线**：单纯赋值不得硬改成 `std::exchange`；不消费返回值时写 `static_cast<void>(std::exchange(...))` 并保留注释，证明旧值曾被有意丢弃。
-- **落点**（isp_pipeline 全目录 14 处：代码 8 处 + 注释 6 处）：`Job j = std::exchange(job, Job{})`（`UsbDmaWorker::run`，取走任务重置槽位）；`done->meta = std::exchange(ctx.pending_meta, IoMeta{})` + `std::exchange(ctx.pending_slot, 0U)`（`FusedNodeBase::complete_irq`，IRQ 窗口所有权移出）；`std::exchange(ctx.pic_pending, IoMeta{})` / `temp_pending`（`PicPackNode::on_sout_done` / `TempPackNode::on_sout_done`）；`const uint32_t previous = std::exchange(ctx.layout_version, ctx.layout_version + 1U)`（`rcEnterSync`）；`ctx.active_magx = std::exchange(ctx.target_magx, ...)`、`active_geom`（`rcEnterCommit`，最后提交）；`static_cast<void>(std::exchange(r.slot_frame[slot], ...))`（`DdrCtx::write`，弃旧值的规范写法）。
+- **落点**：`const uint16_t count = std::exchange(count_, 0U)` + `const uint16_t write_index = std::exchange(write_index_, 0U)`（`SingleCoreCriticalRing::~SingleCoreCriticalRing`，queue.hpp，取走旧计数并归零）；`(void)std::exchange(has_value_, false)`（`Expected<V,E>::Storage::destroy_value`，expected.hpp，弃旧值的规范写法）。
 
 ### 5.7 placement new + 对齐存储
 
@@ -232,7 +232,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - **准入**：一个骨架类承载固定生命周期/流程（启停、环、计数、阶段流），各派生类只提供少量钩子；需要编译期分发、拒绝 vtable。
 - **红线**：钩子数量失控（>7 个）说明骨架在猜未来，退回普通函数组合；CRTP 基类不得持有 per-instance 状态（静态钩子风格时）。
 - **落点**：
-  - `WorkerBase<Derived, Job, kDepthV>`：互斥交接环 + drain-on-stop + executed/rejected 计数；`derived()` 经 `static_cast<Derived*>(this)` 编译期调 `execute` 钩子；派生 `CmdDmaWorker` / `IspIrqWorker` / `SoutDmaWorker` / `MipiIrqWorker` 各只写 `execute`。
+  - `WorkerBase<Derived, Job, kDepthV>`：互斥交接环 + drain-on-stop + executed/rejected 计数；`derived()` 经 `static_cast<Derived*>(this)` 编译期调 `execute` 钩子；派生 `CmdDmaWorker` / `SoutDmaWorker` / `MipiIrqWorker` 各只写 `execute`。
   - `VideoFsmNode<PicFsmNode>` / `VideoFsmNode<TempFsmNode>`：静态钩子（`mirror_of` / `label` / `kind_value` / `ack`）。
   - `VideoPackNode<PicPackNode>` / `VideoPackNode<TempPackNode>`：钩子面为 `kPathId/in_region/pack_latency_us/pack/account/park/count_sub/count_reject/on_sout_done`（该文件最大钩子面，处于红线内但不再扩）。
   - 框架层 `make_static_ao_entry`（static_ao.hpp）：captureless lambda 擦除 dispatch 调用，const 函数指针表。
@@ -278,7 +278,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 - **Allman 大括号**、4 空格缩进、**120 列**。
 - 英文注释、`/* */` 风格（行尾短注释可用 `//`，现有代码以 `//` 分节横线为主，保持一致即可）。
 - 文件头：模块一句话定位 + 与真实系统的映射表（若为示例）+ `SPDX-License-Identifier: MIT`。
-  - 落点：各业务模块头部 "对应 RS500 module/..." 映射注释（如 `isp_pipeline/sensor_irsc.hpp`、`isp_pipeline/isp_chain.hpp`、`isp_pipeline/video_stream.hpp`）；`examples/isp_pipeline/README.md` 另附文件分层与 RS500 模块对照。
+  - 落点：框架与示例源文件头部的模块定位注释与 `SPDX-License-Identifier: MIT` 标识（如 `include/coact/pool.hpp`、`examples/flash_proxy_demo.cpp`）。
 - **决策注释义务**：反直觉的选择（不加锁、丢弃语义、单槽深度、黑板禁令、entry 而非 action 发硬件命令）必须在代码处写明"为什么"，且注释要能被下一个人单独读懂。
 - 命名：
   - 类型/函数 `PascalCase`；变量/字段 `snake_case`；常量/枚举值 `k` 前缀（`kFrameCount`、`Sig::kBoot`、`kDdrDn`）；
@@ -308,7 +308,7 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 ### 6.4 其他
 
 - 自验证：示例程序结尾必须断言全部不变量并以退出码给出结论（ctest 可门控）。
-  - 落点：isp_pipeline/main.cpp 末尾 verification 块（`check()` 断言 + `RESULT: ALL PASS`）。
+  - 落点：`examples/msh_monitor_demo.cpp` 末尾 verification 块（`check()` 断言 + `RESULT: ALL PASS`）。
 
 ### 6.5 检查清单（review checklist）
 
@@ -400,7 +400,6 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 
 | 规约条目 | 代码落点 | 一行说明 |
 |---|---|---|
-| CRTP 骨架+钩子 | `WorkerBase`（isp_pipeline/sensor_irsc.hpp） | 互斥环+drain+计数骨架，派生只写 `execute` |
 | CRTP 静态钩子 | `VideoFsmNode<PicFsmNode>` | 双流 FSM 共享骨架，差异全在钩子 |
 | 策略参数化 | `GainNodeBase<LowGainPolicy>` 等 | 无状态 `apply()` 定制点，编译期分发 |
 | 策略门面 + if constexpr | `QuiescePolicy<HasIdleIrq>` | 中断/轮询两实现，未选者不实例化 |
@@ -429,6 +428,6 @@ MISRA C:2012 在本仓库不再逐条适用；它的精神已翻译成 C++17 表
 | TransitionKind 语义 | `TransitionKind`（hsm.hpp）Internal/Self/External | guard 决定种类，action 不感知 |
 | 事件驱动排空 | main 两处 drain 循环（`pending().load()` 归零） | 禁固定 sleep 赌时序 |
 | 主线程发起会话广播 | `request_recfg` lambda 注释 | Dispatcher 上下文自提交会丢唤醒 |
-| 自验证退出码 | isp_pipeline/main.cpp verification 块 | ctest 可门控的 PASS/FAIL |
+| 自验证退出码 | `examples/msh_monitor_demo.cpp` verification 块 | ctest 可门控的 PASS/FAIL |
 
 （完）

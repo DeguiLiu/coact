@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Static ban-list for coact::coro sources (plan Task 8). Scoped to the coro
-# landing files so isp_pipeline demo text does not trip the gate.
+# landing files so unrelated example text does not trip the gate.
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
 cd "$root"

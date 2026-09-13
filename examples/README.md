@@ -1,16 +1,15 @@
 # examples — 示例说明
 
-本目录包含 coact 的 4 个 host 端示例（POSIX PAL）。它们由浅入深，共同走通框架的完整事件管线：**EventPool 分配 → Coordinator 提交 → Staging 三级队列 → Dispatcher 单线程派发 → Ao 分发 → HSM 转移 → 回收入池**，是理解与上手本框架的最佳入口。
+本目录包含 coact 的 host 端示例（POSIX PAL）。它们由浅入深，共同走通框架的完整事件管线：**EventPool 分配 → Coordinator 提交 → Staging 三级队列 → Dispatcher 单线程派发 → Ao 分发 → HSM 转移 → 回收入池**，是理解与上手本框架的最佳入口。
 
 | 示例 | 定位 | 展示的核心能力 |
 |---|---|---|
 | `hsm_protocol_demo.cpp` | 入门：单 AO | 层次状态机父状态事件继承、全事件管线 |
 | `node_manager_demo.cpp` | 进阶：多 AO | 一个 Runtime 下多主动对象、TargetId 路由、表序 guard |
 | `flash_proxy_demo.cpp` | 进阶：拥有者 AO + 硬件代理 | 设备独占串行化、非 AO worker、中断回调计时、引用计数扇出、请求/响应查询 |
-| `isp_pipeline_demo.cpp` | 综合：完整 RS500 视频系统模拟 | Preview Start 出图 + ISP 流水 + DDR 数据面 + T37 UVC 出流（Identity Zoom/提前封帧）+ 运行态重配 + 缓存一致性 + 停稳机制 + 三类画面异常 |
 | `serial_ota/` | 综合：工业级集成 | coact + 外部组件混合架构、串口 OTA、桥接 Ao |
 
-前四个示例单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外头文件，为**可选构建**。
+前三者单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外头文件，为**可选构建**。
 
 ---
 
@@ -126,68 +125,6 @@ writer: writes=2 updates=2
 reader: reads=2 updates=2
 pool.used=0          <- 事件全部回收入池
 ```
-
----
-
-## isp_pipeline_demo — ISP 视频流水线模拟（红外主链 + PIC/TEMP + Video 打包，综合）
-
-**定位**：由 RS500 业务场景驱动的 Host 端架构模型与故障注入演示——验证 coact 的 AO/HSM/异步事件/一致性协议表达能力，**非复刻 RS500 业务实现**。模拟深度为"消息发生级"：命令流/数据流/事件流三条链路按 RS500 结构建模（含 T37/WRAPE 故障边界的字节级精确复现），但控制时序、参数内容、图像算法为代理模型（ISP 节点为伪完成事件、增益为数学变换、帧为 8x8 玩具尺寸）。
-
-**架构**：
-
-```mermaid
-flowchart LR
-    IR["IRSC producer<br/>pthread · 30fps 产帧"] -->|kFrameIrscOut| LG["LowGain AO<br/>KBC/BPVHBC/RMVC/TNR/HBCDPC/VBC"]
-    IR -->|kFrameIrscOut| HG["HighGain AO<br/>KBC/BPVHBC/RMVC×2/TNR/HBCDPC/DDBP/VBC"]
-    LG -->|kLowGainDone| HL["HL 融合 AO<br/>fan-in 两路"]
-    HG -->|kHighGainDone| HL
-    HL -->|kHlFused| EN["Enhance AO<br/>SNR/AGC/LAG/DDEP/EE/BC/GAMMA/MIRROR"]
-    HL -->|kHlFused| TPD["TPD 链 AO<br/>TECLESS/TPD/CORRECT/TNR/SNR"]
-    EN -->|kEnhanceDone| PV["PIC Video AO<br/>Cut/Zoom→PSD→OSD→SOUT→OUT"]
-    TPD -->|kTempChainDone| TV["TEMP Video AO<br/>Cut/Zoom→PSD→OUT"]
-    PV -->|kPicPacked| US["USB sink AO<br/>UVC"]
-    TV -->|kTempPacked| MI["MIPI sink AO<br/>CSI TX"]
-```
-
-**RS500 → coact 映射**：
-
-| RS500 实体 | coact 形态 |
-|---|---|
-| `app_start_preview_sync` / `camera_stream_config_service` | 主线程 `Orchestrator`：Phase1/3/4 管道 |
-| IRSC 4 步命令 init/start/ctrl/output_enable | `IrscDriverAo` 分别处理 + ack 回 `OrchestratorAo` |
-| ISP Pipeline + 节点 init 正序 | Orchestrator 合成 8 个 `kIspReady` ack |
-| Video FSM `IDLE→READY→RUNNING` 逆序 deinit | `VideoFsmPicAo` / `VideoFsmTempAo`（`VideoCtx`） |
-| 三帧循环 DMA 缓冲 | `StreamDmaBuffer`（`address0/1/2` + `length` + atomic 索引） |
-| ISP stream / SOUT 节点链 | `PicVideoAo` / `TempVideoAo` 拥有者 AO |
-| 高/低增益双路并行 + HL 融合 | `LowGainAo`+`HighGainAo` 并行 → `HlFuseAo` fan-in |
-| KBC→IRSC output enable 关键顺序 | Orchestrator 固定两步先后 |
-
-**展示的框架能力**：
-- 11 个 AO + 1 个 pthread worker，主流水线实时出流 30 帧
-- **高/低增益双路并行 + HL 融合**（fan-in：等两路同 frame 对齐）
-- 三帧循环缓冲 + 拥有者 AO，DMA 域零共享
-- **coact::diag 日志通道**：运行时事件经 `g_log.record_from_task<Level,kEvt*>` 写入静态日志线程，异步渲染为 `e=<id> a0=..` 行
-
-**验证输出要点**：
-
-```text
-[video/PIC] IDLE -> READY (7 nodes)      <- Video FSM init forward
-[video/TEMP] READY -> RUNNING            <- stream enable
-[usb(uvc)] first PIC frame: id=0 buf=0    <- 主图出流
-[mipi(csi)] first TEMP frame: id=0 buf=0  <- 测温出流
-[video/PIC] RUNNING -> READY -> IDLE     <- 逆序 deinit
-=== per-node latency ===
-  low_gain  : frames=30 avg=464 (sim=400) <- 每节点处理 30 帧，avg 贴合 sim
-  high_gain : frames=30 avg=666 (sim=600)
-  hl_fuse   : frames=30 avg=262
-  usb_sink  : frames=30 first=0 last=29
-  mipi_sink : frames=30 tag_mismatch=0
-  orch      : irsc_ready=4 isp_ready=8 pic_video_ready=1 temp_video_ready=1
-  video_fsm : pic=IDLE temp=IDLE
-  pool.used=0          <- 事件全部回收入池
-```
-
----
 
 ## serial_ota_demo — 串口 OTA（coact + 外部组件集成，综合）
 

@@ -1,5 +1,5 @@
 # coact::coro demos (plan Task 7). Standalone include so parallel example
-# edits (msh_monitor / isp_pipeline) only conflict on one include line.
+# edits only conflict on one include line.
 # SPDX-License-Identifier: MIT
 
 add_executable(coact_coro_demo

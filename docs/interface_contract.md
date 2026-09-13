@@ -56,7 +56,7 @@
 - `src/<module>/`：每个模块一个目录，模块自身的头文件放 `include/coact/`，目录内是模块测试与 `CMakeLists.txt`。现有模块目录：`event`、`hsm`、`queue`、`ao`、`staging`、`policy`、`monitor`、`core`、`diag`。
 - `src/core/`：装配与集成所在，含 `pal_posix.cpp`、`pal_rtthread.cpp`、`coordinator` / `integration` / `stress` / `static_lifetime` / `bitfield` / `config` / `expected` / `timer` / `softirq` / `pal_sync` / `rtt_pal` 等测试，以及协程测试（`test_coro_*.cpp`）与热点基准（`bench_hotpath.cpp`）。
 - `test/`：`test_harness.hpp` 测试框架；RT-Thread 主机桩（`rtthread_stub.h`、`rtthread_gate_smp/`、`rtthread_gate_multicore/`）；`tsan_classify.sh` / `asan_classify.sh` / `elf_audit.sh` 卫生脚本。
-- `examples/`：主机示例（`isp_pipeline/`、`serial_ota/`、协程 demo、`flash_proxy_demo`、`hsm_protocol_demo`、`node_manager_demo` 等），见 `examples/README.md`。
+- `examples/`：主机示例（`serial_ota/`、协程 demo、`flash_proxy_demo`、`hsm_protocol_demo`、`node_manager_demo` 等），见 `examples/README.md`。
 - `tools/`：开发辅助脚本（`flamegraph_svg.py`）。
 
 ### 1.3 模块依赖

@@ -412,7 +412,7 @@ void RtThread::join_dispatcher() noexcept
 
 void RtThread::watchdog_progress(uint32_t /*marker*/) noexcept
 {
-    /* No-op: RS500 watchdog management is handled at the BSP layer. */
+    /* No-op: watchdog management is handled at the BSP layer. */
 }
 
 void RtThread::enter_direct() noexcept
