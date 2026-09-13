@@ -70,7 +70,7 @@ ctest --test-dir build -R 'coro|coact_coro' --output-on-failure
 
 相关测试：`test_coro_registry`、`test_coro_combinators`、`test_coro_posix`、`test_coro_awaitable`、`test_coro_scheduler`、`test_coro_integration`。示例：`examples/coact_coro_demo`、`examples/coact_coro_posix`。退出前断言 `pool.used() == 0U`。
 
-源码门禁（仅扫 coro 落点，避免误伤 isp_pipeline 演示代码）：
+源码门禁（仅扫 coro 落点，避免误伤其他示例代码）：
 
 ```bash
 rg -n '\but::|exception_ptr|#include <coroutine>' include/coact/coro src/core/test_coro_*.cpp examples/coact_coro_*.cpp

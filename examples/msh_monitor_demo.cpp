@@ -136,7 +136,7 @@ inline void session_advance(SessionState s, const char* why)
 // ---------------------------------------------------------------------------
 // Mini hardware blackboard (register-group domain): geometry, zoom step,
 // output frame length. Kept deliberately TINY — the query demo only needs a
-// snapshot view; the fault-injection scenarios live in isp_pipeline.
+// snapshot view; the fault-injection scenarios live elsewhere.
 //
 //   W (writer): the recfg AO on the Dispatcher thread ONLY, at transaction
 //       boundaries (register writes belong on the event plane).
@@ -611,7 +611,7 @@ inline void rc_self_submit(RecfgCtx& ctx, Sig sig)
 // Terminal action: close the transaction window on the transaction's own arc
 // (self-driven, never by an external observer), then the HSM topology walks
 // home to Idle. Stage-guarded mirror updates keep stale events from aborting
-// a live transaction (the same interleaving the isp stress runs exposed).
+// a live transaction (the same interleaving the stress runs exposed).
 inline void rc_go_home(RecfgCtx& ctx, const Event&)
 {
     if (SessionState::kRecfgTxn == g_session.load(std::memory_order_relaxed)) {
@@ -1254,7 +1254,7 @@ int main()
     producer.stop();
     // Drain: every AO queue empty AND the observer saw the last frame (the
     // event-driven contract; a fixed sleep would race the Dispatcher — the
-    // isp_pipeline stress-run lesson).
+    // stress-run lesson).
     coact::AoBase* aos[kAoCount] = { &orch, &irsc, &gain, &fuse, &enh,
                                      &recfg, &observer };
     for (int w = 0; w < 2000; ++w) {

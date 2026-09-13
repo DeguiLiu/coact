@@ -88,7 +88,7 @@ target_include_directories(test_timer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # BitFieldView: compile-time mask/shift boundaries, RMW isolation, and
 # end-to-end integration with PeriphRegCache's three-flag protocol through
-# the field-level write_field / read_field entry (the demo's regmap layer).
+# the field-level write_field / read_field entry.
 coact_add_test(test_bitfield
     test_bitfield.cpp
     pal_posix.cpp
@@ -96,8 +96,7 @@ coact_add_test(test_bitfield
 target_link_libraries(test_bitfield PRIVATE Threads::Threads)
 target_compile_definitions(test_bitfield PRIVATE COACT_RTT_STUB)
 target_include_directories(test_bitfield PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    ${CMAKE_SOURCE_DIR}/examples)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # Static-lifetime Runtime test (review P1): global .bss Runtime runs end-to-end
 # under the RT-Thread stub; Config->PAL stack pass-through; memory footprint.

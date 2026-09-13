@@ -155,8 +155,8 @@ using ThreadEntry = void (*)(void* context);
 // Sync-primitive extension (SemOps family, see below): a concrete PAL also
 // provides sem_init/sem_take/sem_release/sem_release_from_isr/sem_deinit,
 // mutex_init/lock/unlock/deinit, cond_init/wait/signal/broadcast/deinit and
-// thread_create/thread_join so examples with worker threads (isp_pipeline)
-// run unmodified on Linux host and RT-Thread targets. The handle types
+// thread_create/thread_join so examples with worker threads run unmodified
+// on Linux host and RT-Thread targets. The handle types
 // (SemHandle / MutexHandle / CondHandle / ThreadHandle) are per-PAL; only the
 // method names are contract. The SoftIrqOps family (below) extends the same
 // contract with software-interrupt simulation for the ISR completion path.

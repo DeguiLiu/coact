@@ -8,12 +8,14 @@
 #include <cstdint>
 
 #include "coact/bitfield.hpp"
-#include "isp_pipeline/recfg_session.hpp"
+#include "coact/reg_cache.hpp"
 
 namespace {
 
 using coact::BitFieldView;
+using coact::BypassGuard;
 using coact::fields_disjoint;
+using coact::PeriphRegCache;
 
 // ---------------------------------------------------------------------------
 // Boundary fields: width 1 (a single bit), width 32 (the whole register),
@@ -27,6 +29,34 @@ using XFull32  = BitFieldView<RegX, 0U, 32U>;  // width 32 (full register)
 using XHigh4   = BitFieldView<RegX, 28U, 4U>;  // offset 28, width 4
 using XMid4    = BitFieldView<RegX, 4U, 4U>;   // offset 4, width 4
 using XWhole   = BitFieldView<RegX, 0U, 32U>;  // alias for full-width
+
+// ---------------------------------------------------------------------------
+// Toy register block for the PeriphRegCache integration test: two words,
+// each shared by fields that must not disturb one another.
+//   word 0: [0] enable, [4:7] opcode, [8:9] mode
+//   word 1: [0] bypass, [1:2] magx
+// ---------------------------------------------------------------------------
+struct Word0Tag {};
+struct Word1Tag {};
+
+using FEnable = BitFieldView<Word0Tag, 0U, 1U>;
+using FOpcode = BitFieldView<Word0Tag, 4U, 4U>;
+using FMode   = BitFieldView<Word0Tag, 8U, 2U>;
+using FBypass = BitFieldView<Word1Tag, 0U, 1U>;
+using FMagx   = BitFieldView<Word1Tag, 1U, 2U>;
+
+static_assert(fields_disjoint<FEnable, FOpcode>(), "enable/opcode overlap");
+static_assert(fields_disjoint<FEnable, FMode>(),   "enable/mode overlap");
+static_assert(fields_disjoint<FOpcode, FMode>(),   "opcode/mode overlap");
+static_assert(fields_disjoint<FBypass, FMagx>(),   "bypass/magx overlap");
+
+inline constexpr std::uint32_t kOpcodeFrame = 0x2U;
+inline constexpr std::uint32_t kOpcodeRecfg = 0xAU;
+inline constexpr std::uint32_t kModeActive  = 0x2U;
+inline constexpr std::uint32_t kEnableOn    = 0x1U;
+
+inline constexpr std::uint16_t kRegWord0 = 6U;
+inline constexpr std::uint16_t kRegWord1 = 7U;
 
 // ---------------------------------------------------------------------------
 // Test: mask / shift boundaries compile to the right constants and read /
@@ -118,82 +148,79 @@ COACT_TEST(bitfield_rmw_isolation)
 // ---------------------------------------------------------------------------
 COACT_TEST(bitfield_cache_integration)
 {
-    using namespace isp_demo;
-
     PeriphRegCache regs{};
     // Default write-through: both copies carry the field RMW; adjacent
-    // lanes in the same word (SoutCtrlEnable [0], SoutCtrlMode [8:9])
-    // untouched.
-    regs.write_field<SoutCtrlEnable>(kRegSoutCtrl, kSoutEnableOn);
-    regs.write_field<SoutCtrlMode>(kRegSoutCtrl, kSoutModeActive);
-    regs.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeFrame);
-    regs.write_field<AiCtrlBypass>(kRegAiCtrl, 0U);
-    regs.write_field<AiCtrlMagx>(kRegAiCtrl, 1U);
+    // lanes in word 0 (enable [0], mode [8:9]) untouched.
+    regs.write_field<FEnable>(kRegWord0, kEnableOn);
+    regs.write_field<FMode>(kRegWord0, kModeActive);
+    regs.write_field<FOpcode>(kRegWord0, kOpcodeFrame);
+    regs.write_field<FBypass>(kRegWord1, 0U);
+    regs.write_field<FMagx>(kRegWord1, 1U);
 
     // Snapshot neighbors.
-    const std::uint32_t mode_before   = regs.read_field<SoutCtrlMode>(kRegSoutCtrl);
-    const std::uint32_t enable_before = regs.read_field<SoutCtrlEnable>(kRegSoutCtrl);
-    const std::uint32_t bypass_before = regs.read_field<AiCtrlBypass>(kRegAiCtrl);
+    const std::uint32_t mode_before   = regs.read_field<FMode>(kRegWord0);
+    const std::uint32_t enable_before = regs.read_field<FEnable>(kRegWord0);
+    const std::uint32_t bypass_before = regs.read_field<FBypass>(kRegWord1);
 
     // The isolation RMWs through the field-level entry.
-    regs.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeRecfg);
-    regs.write_field<AiCtrlMagx>(kRegAiCtrl, 2U);
+    regs.write_field<FOpcode>(kRegWord0, kOpcodeRecfg);
+    regs.write_field<FMagx>(kRegWord1, 2U);
 
     // Single-entry coherency: shadow == hardware for both toy registers
     // (write-through path keeps both copies equal on every write).
-    CHECK_EQ(regs.st.shadow[kRegSoutCtrl], regs.st.hardware[kRegSoutCtrl]);
-    CHECK_EQ(regs.st.shadow[kRegAiCtrl],   regs.st.hardware[kRegAiCtrl]);
+    CHECK_EQ(regs.st.shadow[kRegWord0], regs.st.hardware[kRegWord0]);
+    CHECK_EQ(regs.st.shadow[kRegWord1], regs.st.hardware[kRegWord1]);
     // Neighbors untouched in BOTH copies.
-    CHECK_EQ(SoutCtrlMode::read(regs.st.shadow[kRegSoutCtrl]), mode_before);
-    CHECK_EQ(SoutCtrlMode::read(regs.st.hardware[kRegSoutCtrl]), mode_before);
-    CHECK_EQ(SoutCtrlEnable::read(regs.st.shadow[kRegSoutCtrl]), enable_before);
-    CHECK_EQ(SoutCtrlEnable::read(regs.st.hardware[kRegSoutCtrl]), enable_before);
-    CHECK_EQ(AiCtrlBypass::read(regs.st.shadow[kRegAiCtrl]), bypass_before);
-    CHECK_EQ(AiCtrlBypass::read(regs.st.hardware[kRegAiCtrl]), bypass_before);
+    CHECK_EQ(FMode::read(regs.st.shadow[kRegWord0]), mode_before);
+    CHECK_EQ(FMode::read(regs.st.hardware[kRegWord0]), mode_before);
+    CHECK_EQ(FEnable::read(regs.st.shadow[kRegWord0]), enable_before);
+    CHECK_EQ(FEnable::read(regs.st.hardware[kRegWord0]), enable_before);
+    CHECK_EQ(FBypass::read(regs.st.shadow[kRegWord1]), bypass_before);
+    CHECK_EQ(FBypass::read(regs.st.hardware[kRegWord1]), bypass_before);
     // The moved fields moved to the new values.
-    CHECK_EQ(SoutCtrlOpcode::read(regs.st.shadow[kRegSoutCtrl]), kSoutOpcodeRecfg);
-    CHECK_EQ(AiCtrlMagx::read(regs.st.shadow[kRegAiCtrl]), 2U);
+    CHECK_EQ(FOpcode::read(regs.st.shadow[kRegWord0]), kOpcodeRecfg);
+    CHECK_EQ(FMagx::read(regs.st.shadow[kRegWord1]), 2U);
 
     // cache_only path: write_field freezes hardware, marks dirty, commits
     // on sync. The same neighbor-isolation guarantee must hold.
     regs.cache_only = true;
-    regs.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeFrame); // dirty
+    regs.write_field<FOpcode>(kRegWord0, kOpcodeFrame); // dirty
     CHECK(regs.cache_dirty);
-    CHECK(regs.dirty_regs[kRegSoutCtrl]);
-    CHECK_EQ(SoutCtrlMode::read(regs.st.shadow[kRegSoutCtrl]), mode_before);
+    CHECK(regs.dirty_regs[kRegWord0]);
+    CHECK_EQ(FMode::read(regs.st.shadow[kRegWord0]), mode_before);
     // sync() refuses while still cache_only.
     CHECK_EQ(regs.sync(), false);
     regs.cache_only = false;
     CHECK_EQ(regs.sync(), true);
     // After sync the dirty word landed in hardware and neighbors survive.
-    CHECK_EQ(SoutCtrlOpcode::read(regs.st.hardware[kRegSoutCtrl]), kSoutOpcodeFrame);
-    CHECK_EQ(SoutCtrlMode::read(regs.st.hardware[kRegSoutCtrl]), mode_before);
+    CHECK_EQ(FOpcode::read(regs.st.hardware[kRegWord0]), kOpcodeFrame);
+    CHECK_EQ(FMode::read(regs.st.hardware[kRegWord0]), mode_before);
     CHECK(!regs.cache_dirty);
-    CHECK(!regs.dirty_regs[kRegSoutCtrl]);
+    CHECK(!regs.dirty_regs[kRegWord0]);
 
     // cache_bypass path: write_field touches hardware only; resync on
     // guard exit must capture the field-RMWed value into the shadow.
     {
         PeriphRegCache regs2{};
-        regs2.write_field<SoutCtrlEnable>(kRegSoutCtrl, kSoutEnableOn);
-        regs2.write_field<SoutCtrlMode>(kRegSoutCtrl, kSoutModeActive);
-        regs2.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeFrame);
-        const std::uint32_t shadow_pre = regs2.st.shadow[kRegSoutCtrl];
+        regs2.write_field<FEnable>(kRegWord0, kEnableOn);
+        regs2.write_field<FMode>(kRegWord0, kModeActive);
+        regs2.write_field<FOpcode>(kRegWord0, kOpcodeFrame);
+        const std::uint32_t shadow_pre = regs2.st.shadow[kRegWord0];
         {
             BypassGuard guard(regs2);                    // flips cache_bypass
-            regs2.write_field<SoutCtrlOpcode>(kRegSoutCtrl, kSoutOpcodeRecfg);
+            regs2.write_field<FOpcode>(kRegWord0, kOpcodeRecfg);
             // During bypass, shadow unchanged, hardware moved.
-            CHECK_EQ(regs2.st.shadow[kRegSoutCtrl], shadow_pre);
-            CHECK_EQ(SoutCtrlOpcode::read(regs2.st.hardware[kRegSoutCtrl]),
-                      kSoutOpcodeRecfg);
+            CHECK_EQ(regs2.st.shadow[kRegWord0], shadow_pre);
+            CHECK_EQ(FOpcode::read(regs2.st.hardware[kRegWord0]),
+                      kOpcodeRecfg);
         }                                               // resync on exit
         // After resync, shadow agrees with hardware again.
-        CHECK_EQ(regs2.st.shadow[kRegSoutCtrl],
-                  regs2.st.hardware[kRegSoutCtrl]);
-        CHECK_EQ(SoutCtrlOpcode::read(regs2.st.shadow[kRegSoutCtrl]),
-                  kSoutOpcodeRecfg);
-        CHECK_EQ(SoutCtrlMode::read(regs2.st.shadow[kRegSoutCtrl]), kSoutModeActive);
-        CHECK_EQ(SoutCtrlEnable::read(regs2.st.shadow[kRegSoutCtrl]), kSoutEnableOn);
+        CHECK_EQ(regs2.st.shadow[kRegWord0],
+                  regs2.st.hardware[kRegWord0]);
+        CHECK_EQ(FOpcode::read(regs2.st.shadow[kRegWord0]),
+                  kOpcodeRecfg);
+        CHECK_EQ(FMode::read(regs2.st.shadow[kRegWord0]), kModeActive);
+        CHECK_EQ(FEnable::read(regs2.st.shadow[kRegWord0]), kEnableOn);
     }
 }
 
