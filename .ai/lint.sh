@@ -9,6 +9,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 CPPLINT_CFG="$SCRIPT_DIR/CPPLINT.cfg"
 
+# Paths are resolved from the project root, so the defaults below and any
+# path a caller passes mean the same thing regardless of the current directory.
+cd "$PROJECT_ROOT"
+
 AUTO_FIX=false
 TARGETS=()
 
@@ -20,7 +24,7 @@ for arg in "$@"; do
 done
 
 if [ ${#TARGETS[@]} -eq 0 ]; then
-  TARGETS=("/include" "/src" "/test")
+  TARGETS=("include" "src" "test")
 fi
 
 # Locate cpplint
