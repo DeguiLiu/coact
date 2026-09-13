@@ -357,6 +357,39 @@ COACT_TEST(spsc_single_producer_single_consumer_stress)
     CHECK_EQ(q.size(), 0);
 }
 
+/* SpscRing's payload parameter is T&&, and T is a fixed class-template
+   parameter, so that is a plain rvalue reference and NOT a forwarding
+   reference: an lvalue payload can only bind through a const T& overload. This
+   case exists because SpscRing shipped without one while the other two ring
+   classes had it - GCC accepted the benchmark's arguments and MSVC did not, and
+   MSVC additionally keeps the lvalue category through
+   static_cast<uint16_t>(an existing uint16_t), which is how bench_spsc's
+   warm-up loop calls it (C2664). A compiler-level regression, so the assertion
+   is that this compiles and round-trips. */
+COACT_TEST(spsc_lvalue_push_binds)
+{
+    coact::SpscRing<uint16_t, 4U> q;
+
+    uint16_t lvalue = 7U;
+    CHECK(q.try_push(lvalue));                       /* lvalue -> const T& */
+    CHECK(q.try_push(static_cast<uint16_t>(lvalue))); /* identity cast, MSVC's case */
+    CHECK(q.try_push(uint16_t{9U}));                 /* rvalue -> T&& */
+
+    uint16_t out = 0U;
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out, 7U);
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out, 7U);
+    CHECK(q.try_pop(out));
+    CHECK_EQ(out, 9U);
+    CHECK_EQ(q.size(), 0);
+
+    /* try_push_observed must accept an lvalue too. */
+    coact::QueueResult r = q.try_push_observed(lvalue);
+    CHECK(r.success);
+    CHECK(r.size_after == 1U);
+}
+
 }  // namespace
 
 COACT_TEST_MAIN()

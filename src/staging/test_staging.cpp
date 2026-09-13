@@ -638,7 +638,7 @@ COACT_TEST(staging_concurrent_no_loss)
     std::vector<unsigned char> seen(static_cast<size_t>(kSlots), 0U);
 
     for (int p = 0; p < kProducers; ++p) {
-        threads.emplace_back([&s, p, &done]() {
+        threads.emplace_back([&s, p, &done, kPerProducer]() {
             const int base = p * kPerProducer;
             for (int i = 0; i < kPerProducer; ++i) {
                 while (!s.enqueue(coact::TargetId(1U), seq_event(static_cast<uint8_t>(base + i)),

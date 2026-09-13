@@ -78,6 +78,18 @@ public:
     SpscRing(const SpscRing&) = delete;
     SpscRing& operator=(const SpscRing&) = delete;
 
+    // T is a fixed class-template parameter, so T&& is an rvalue reference and
+    // NOT a forwarding reference: without a const T& overload an lvalue payload
+    // cannot bind at all. MSVC additionally treats static_cast<uint16_t>(an
+    // existing uint16_t) as keeping the lvalue category, which is exactly how
+    // bench_spsc's warm-up loop calls this (C2664, "you cannot bind an lvalue to
+    // an rvalue reference"). The other two ring classes already expose this
+    // overload pair for the same reason; SpscRing was simply missed.
+    [[nodiscard]] bool try_push(const T& value) noexcept
+    {
+        return try_push(T(value));
+    }
+
     // Push a payload. On failure (full) the caller's value is NOT consumed.
     [[nodiscard]] bool try_push(T&& value) noexcept
     {
@@ -91,6 +103,13 @@ public:
         new (static_cast<void*>(slot)) T(std::move(value));
         head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
         return true;
+    }
+
+    // Const-reference twin of the above, for the same reason as try_push's:
+    // an lvalue payload must be able to bind. See the comment there.
+    [[nodiscard]] QueueResult try_push_observed(const T& value) noexcept
+    {
+        return try_push_observed(T(value));
     }
 
     // Fused push + size-after (design 5.4). On success size_after is the fill
