@@ -65,14 +65,14 @@ trap cleanup EXIT
 ERRORS=0
 echo "$FILES" | xargs "$CPPLINT" --root="$PROJECT_ROOT/include" 2>&1 | tee /tmp/cpplint_output.txt || ERRORS=$?
 
-ERROR_COUNT=$(grep -c "Total errors found:" /tmp/cpplint_output.txt 2>/dev/null || echo "0")
-
 if [ $ERRORS -ne 0 ]; then
   echo ""
   echo "cpplint found issues (exit code: $ERRORS)"
   if $AUTO_FIX; then
-    echo "Running clang-format to fix whitespace issues..."
-    "$SCRIPT_DIR/format.sh" "${TARGETS[@]}"
+    echo "Running clang-format --write to fix whitespace issues..."
+    # --write is required: format.sh is check-only by default so that a bare
+    # invocation cannot rewrite the tree behind the caller's back.
+    "$SCRIPT_DIR/format.sh" --write "${TARGETS[@]}"
     echo "Re-running cpplint..."
     echo "$FILES" | xargs "$CPPLINT" --root="$PROJECT_ROOT/include" 2>&1 || true
   fi
