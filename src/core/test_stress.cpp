@@ -123,7 +123,7 @@ COACT_TEST(stress_multiproducer_concurrent)
 
     std::vector<std::thread> threads;
     for (int p = 0; p < kProducers; ++p) {
-        threads.emplace_back([&rt, &pool, &qos]() {
+        threads.emplace_back([&rt, &pool, &qos, kPerProducer]() {
             for (int i = 0; i < kPerProducer; ++i) {
                 coact::Event* e = pool.alloc(1U);
                 if (nullptr == e) {

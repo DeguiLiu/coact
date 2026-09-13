@@ -21,6 +21,10 @@ target_include_directories(coact_core INTERFACE
 # former unconditional GCC/Clang flags made every MSVC configure fail before
 # compiling a single TU, which is why the Windows product's branch had no CI.
 if(MSVC)
+    # Usage requirements for consumers only: a header-only INTERFACE library has
+    # no TUs, so it cannot set the warning level of code it does not compile -
+    # these flags reach whoever links coact_core, and the xcom_lua product (which
+    # compiles these headers without linking it) sets its own /W4.
     target_compile_options(coact_core INTERFACE /W4 /GR- /EHs-c-)
 else()
     target_compile_options(coact_core INTERFACE

@@ -244,8 +244,17 @@ public:
     SingleCoreCriticalRing(const SingleCoreCriticalRing&) = delete;
     SingleCoreCriticalRing& operator=(const SingleCoreCriticalRing&) = delete;
 
+    // T is a fixed class-template parameter, so T&& is an rvalue reference and
+    // NOT a forwarding reference: without the const T& overload an lvalue
+    // payload cannot bind (MSVC reports C2664 "you cannot bind an lvalue to an
+    // rvalue reference"). This mirrors BoundedMpscQueue's overload set; the
+    // rvalue path still moves, the lvalue path copies.
+    bool try_push(const T& v) noexcept {
+        return push_observed_impl(v).success;
+    }
+
     bool try_push(T&& v) noexcept {
-        return try_push_observed(std::move(v)).success;
+        return push_observed_impl(std::move(v)).success;
     }
 
     // Fused push + size-after (design 5.4): capacity check, payload move and
@@ -256,20 +265,12 @@ public:
     // failure it equals the current (full) level. A failed push does NOT
     // consume the caller's value: the payload is only moved once capacity is
     // known to be available.
+    [[nodiscard]] QueueResult try_push_observed(const T& v) noexcept {
+        return push_observed_impl(v);
+    }
+
     [[nodiscard]] QueueResult try_push_observed(T&& v) noexcept {
-        const CriticalSection::Token token = cs_.save(cs_.ctx);
-        bool ok = false;
-        if (count_ < Capacity) {
-            const uint32_t index = static_cast<uint32_t>(write_index_)
-                                 + static_cast<uint32_t>(count_);
-            T* slot = detail::slot_ptr(cells_[index % Capacity]);
-            ::new (slot) T(std::move(v));
-            ++count_;
-            ok = true;
-        }
-        const uint16_t size_after = count_;
-        cs_.restore(cs_.ctx, token);
-        return QueueResult{ok, size_after};
+        return push_observed_impl(std::move(v));
     }
 
     bool try_pop(T& out) noexcept {
@@ -320,6 +321,25 @@ public:
     uint16_t size_locked() const noexcept { return count_; }
 
 private:
+    // Shared fused push body. U is deduced so the const T& overload copies and
+    // the T&& overload moves, with no extra move for rvalue callers.
+    template <typename U>
+    [[nodiscard]] QueueResult push_observed_impl(U&& v) noexcept {
+        const CriticalSection::Token token = cs_.save(cs_.ctx);
+        bool ok = false;
+        if (count_ < Capacity) {
+            const uint32_t index = static_cast<uint32_t>(write_index_)
+                                 + static_cast<uint32_t>(count_);
+            T* slot = detail::slot_ptr(cells_[index % Capacity]);
+            ::new (slot) T(std::forward<U>(v));
+            ++count_;
+            ok = true;
+        }
+        const uint16_t size_after = count_;
+        cs_.restore(cs_.ctx, token);
+        return QueueResult{ok, size_after};
+    }
+
     CriticalSection cs_;
     uint16_t write_index_ = 0U;
     uint16_t count_ = 0U;

@@ -104,6 +104,14 @@ struct Rig {
         (void)rt.initialize();
         rt.start();
     }
+
+    /* The Dispatcher thread holds references to pal_/staging_/registry_ and
+       must be joined before any member is destructed. Tests that never reach
+       drain() (error-path test, or an early REQUIRE return) would otherwise
+       leave the thread running into freed members and fault inside
+       Posix::dispatcher_entry (null user_entry_). stop() is idempotent, so
+       tests that already stopped are unaffected. */
+    ~Rig() { rt.stop(); }
 };
 
 /* Periodic: register a 10 ms periodic task, advance 4 periods -> exactly

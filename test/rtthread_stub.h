@@ -72,11 +72,18 @@ inline uint8_t rt_interrupt_get_nest() noexcept { return g_isr_nest; }
 inline void stub_set_isr_nest(uint8_t n) noexcept { g_isr_nest = n; }
 
 /* --- Semaphore ---------------------------------------------------------- */
+/* rt_sem_init/rt_sem_create initialize these pthread primitives
+   UNCONDITIONALLY, exactly like the real RT-Thread kernel: the object is
+   caller-provided storage that may be indeterminate, so init must not try to
+   read a prior state out of it. (A caller-owned "already initialized" flag
+   here used to make rt_sem_init skip pthread_mutex_init/pthread_cond_init
+   whenever the storage happened to hold a nonzero byte, leaving the handle
+   backed by uninitialized primitives - the host-test deadlock/abort root
+   cause.) Re-initializing a live object remains a caller error, as on target. */
 struct rt_semaphore {
     pthread_mutex_t mtx;
     pthread_cond_t  cond;
     uint32_t        count;
-    bool            init_done;   /* host-only: guard against double pthread init */
 };
 typedef struct rt_semaphore *rt_sem_t;
 
@@ -115,18 +122,16 @@ inline rt_sem_t rt_sem_create(const char*, rt_uint32_t val, rt_uint8_t) noexcept
     pthread_mutex_init(&s->mtx, nullptr);
     pthread_cond_init(&s->cond, nullptr);
     s->count = val;
-    s->init_done = true;
     return s;
 }
 inline rt_err_t rt_sem_init(rt_sem_t s, const char*, rt_uint32_t val, rt_uint8_t) noexcept
 {
     if (nullptr == s) { return -RT_EINVAL; }
     if (RT_EOK != stub_sem_init_fault()) { return stub_sem_init_fault(); }
-    if (!s->init_done) {
-        pthread_mutex_init(&s->mtx, nullptr);
-        pthread_cond_init(&s->cond, nullptr);
-        s->init_done = true;
-    }
+    /* Unconditional init (see rt_semaphore comment): never consult prior
+       storage, which the caller may hand over uninitialized. */
+    pthread_mutex_init(&s->mtx, nullptr);
+    pthread_cond_init(&s->cond, nullptr);
     s->count = val;
     return RT_EOK;
 }
@@ -135,7 +140,6 @@ inline rt_err_t rt_sem_detach(rt_sem_t s) noexcept
     if (nullptr == s) { return -RT_EINVAL; }
     pthread_mutex_destroy(&s->mtx);
     pthread_cond_destroy(&s->cond);
-    s->init_done = false;
     return RT_EOK;
 }
 inline rt_err_t rt_sem_delete(rt_sem_t s) noexcept
@@ -187,26 +191,22 @@ inline rt_err_t rt_sem_release(rt_sem_t s) noexcept
 }
 
 /* --- Mutex (SemOps MutexOps support) ------------------------------------- */
+/* Same unconditional-init contract as rt_semaphore above. */
 struct rt_mutex {
     pthread_mutex_t mtx;
-    bool            init_done;   /* host-only: guard against double pthread init */
 };
 typedef struct rt_mutex *rt_mutex_t;
 
 inline rt_err_t rt_mutex_init(rt_mutex_t m, const char*, rt_uint8_t) noexcept
 {
     if (nullptr == m) { return -RT_EINVAL; }
-    if (!m->init_done) {
-        pthread_mutex_init(&m->mtx, nullptr);
-        m->init_done = true;
-    }
+    pthread_mutex_init(&m->mtx, nullptr);
     return RT_EOK;
 }
 inline rt_err_t rt_mutex_detach(rt_mutex_t m) noexcept
 {
     if (nullptr == m) { return -RT_EINVAL; }
     pthread_mutex_destroy(&m->mtx);
-    m->init_done = false;
     return RT_EOK;
 }
 inline rt_err_t rt_mutex_take(rt_mutex_t m, rt_int32_t ticks) noexcept

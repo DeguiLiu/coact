@@ -14,6 +14,10 @@
 #include <thread>
 #include <vector>
 
+#if defined(_MSC_VER)
+#include <intrin.h>   // __rdtsc
+#endif
+
 #include "coact/queue.hpp"
 #include "coact/spsc_ring.hpp"
 
@@ -36,10 +40,16 @@ coact::CriticalSection noop_cs()
 
 inline uint64_t rdtsc()
 {
+#if defined(_MSC_VER)
+    /* MSVC has no GCC inline asm; __rdtsc() is the intrinsic form of the same
+       x86/x64 time-stamp-counter read (returns the identical 64-bit TSC). */
+    return static_cast<uint64_t>(__rdtsc());
+#else
     unsigned lo = 0U;
     unsigned hi = 0U;
     __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
     return (static_cast<uint64_t>(hi) << 32U) | static_cast<uint64_t>(lo);
+#endif
 }
 
 void report(const char* name, const std::vector<uint64_t>& samples)
@@ -131,7 +141,7 @@ int main()
         coact::SpscRing<uint32_t, 256> q;
         std::atomic<uint32_t> consumed{0U};
         auto t0 = std::chrono::steady_clock::now();
-        std::thread consumer([&q, &consumed]() {
+        std::thread consumer([&q, &consumed, kN]() {
             uint32_t v = 0U;
             uint32_t count = 0U;
             while (count < kN) {
