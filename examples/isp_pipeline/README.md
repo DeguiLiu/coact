@@ -77,7 +77,6 @@ flowchart LR
 | recfg_session.hpp/.cpp | 747/43 | RecfgOrchAo 8 态 + PeriphRegCache + BitFieldView 字段 |
 | main.cpp | ~1300 | 场景编排 + 66 项断言 |
 | heartbeat.hpp | 243 | 心跳骨架（`BeatLoop` 打点 / `ScanLoop` 扫描）+ 定容槽表 |
-| test_heartbeat.cpp | 259 | 骨架与槽表自测（独立二进制，27 项断言，退出码即判决） |
 | coro_mode.hpp / coro_pal.hpp | 168/182 | coro 执行拓扑（可选编译） |
 
 ## 五、心跳与独立构建
@@ -90,10 +89,6 @@ flowchart LR
 本目录不参与 CMake 构建，手工编译：
 
 ```sh
-# 骨架自测
-g++ -std=c++17 -O0 -g -Wall -Wextra -I . -I include -I examples -pthread \
-    examples/isp_pipeline/test_heartbeat.cpp -o /tmp/test_hb && /tmp/test_hb
-
 # 完整例子（-DCOACT_RTT_STUB 必需：log_rtthread.hpp 在非 stub 路径下要 rtthread.h）
 g++ -std=c++17 -O1 -g -DCOACT_RTT_STUB -I . -I include -I examples -pthread \
     examples/isp_pipeline/main.cpp examples/isp_pipeline/isp_chain.cpp \

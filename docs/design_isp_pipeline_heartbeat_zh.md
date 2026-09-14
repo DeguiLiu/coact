@@ -360,7 +360,6 @@ worker 线程数同样具名（`kWorkerThreadCount`），并用
 | 文件 | 改动 |
 |---|---|
 | `examples/isp_pipeline/heartbeat.hpp` | 新增，约 200 行（两个骨架、打点原语、槽表、并发契约注释） |
-| `examples/isp_pipeline/test_heartbeat.cpp` | 新增，骨架与槽表的独立自测（12 个用例 / 27 条断言，退出码即判决） |
 | `examples/isp_pipeline/sensor_irsc.hpp` | 单位具名常量；`WorkerBase` 加 `beat_` 与注册/注销，内层等待换 `BeatLoop` 并有界化；`UsbDmaWorker` 同形改动；`IrscWorker::run()` 改套 `BeatLoop` |
 | `examples/isp_pipeline/main.cpp` | 心跳装配与回调；8 处等待循环改套 `ScanLoop`（含 `break`→`return false`、函数级 `return` 用标志、`++w` 移位）；2 项 `check()` 断言 |
 | `examples/isp_pipeline/README.md` | 文件清单与拓扑图补一行说明 |
@@ -368,14 +367,9 @@ worker 线程数同样具名（`kWorkerThreadCount`），并用
 ### 8.1 构建与验证
 
 `examples/isp_pipeline` 没有 CMake 注册（`examples/CMakeLists.txt` 里没有它），
-且整个目录在 `.gitignore:27` 内，属于"不上发布"的本地材料。因此本次交付**不会
-进 git**，构建也走手工命令：
+所以构建走手工命令。本次交付已随 `examples/isp_pipeline/` 一并入库：
 
 ```sh
-# 骨架自测（约 1s 编译）
-g++ -std=c++17 -O0 -g -Wall -Wextra -I . -I include -I examples -pthread \
-    examples/isp_pipeline/test_heartbeat.cpp -o /tmp/test_hb && /tmp/test_hb
-
 # 完整例子（约 16s 编译，运行约 1.3s）
 g++ -std=c++17 -O1 -g -DCOACT_RTT_STUB -I . -I include -I examples -pthread \
     examples/isp_pipeline/main.cpp examples/isp_pipeline/isp_chain.cpp \
@@ -391,7 +385,7 @@ g++ -std=c++17 -O1 -g -DCOACT_RTT_STUB -I . -I include -I examples -pthread \
 
 | 验证项 | 结果 |
 |---|---|
-| 骨架自测 | `ALL PASS (passed=27 failed=0)`，`-Wall -Wextra` 无告警 |
+| 骨架自测（开发期，不随仓库发布） | `ALL PASS (passed=27 failed=0)`，`-Wall -Wextra` 无告警 |
 | 完整例子 | `RESULT: ALL PASS (fails=0)`，含心跳两项断言 |
 | 心跳误报 | 全程 0 次 `[hb] TIMEOUT` |
 | 回归 | 原有 66 项断言全部仍通过 |

@@ -24,3 +24,7 @@ docs/**/*.bak
 # published (they describe a specific product bring-up, not the framework)
 docs/example_isp_pipeline_design_zh.md
 docs/isp_pipeline_document_editing_guide_zh.md
+
+# Local-only material: tests belong in test/ wired through coact_add_test().
+# The skeleton self-test stays on disk as a development aid.
+examples/isp_pipeline/test_heartbeat.cpp
