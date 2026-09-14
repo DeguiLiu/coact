@@ -20,8 +20,7 @@ docs/blogs/
 docs/*run_log*.txt
 docs/**/*.bak
 
-# Local-only material: the pipeline walkthrough stays on disk but is not
-# published (it describes a specific product bring-up, not the framework)
+# Local-only material: the pipeline design docs stay on disk but are not
+# published (they describe a specific product bring-up, not the framework)
 docs/example_isp_pipeline_design_zh.md
 docs/isp_pipeline_document_editing_guide_zh.md
-examples/isp_pipeline/
