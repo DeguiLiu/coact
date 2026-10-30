@@ -1,6 +1,6 @@
-# coact 实现契约（Interface Contract）v0.5.0
+# coact 实现契约（Interface Contract）v0.6.0
 
-本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。版本号与顶层构建一致（`CMakeLists.txt` 中 `project(coact VERSION 0.5.0)`）。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
+本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。版本号与顶层构建一致（`CMakeLists.txt` 中 `project(coact VERSION 0.6.0)`）。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
 
 读者可先读 `README.md` 与 `docs/cpp17_coact_usage_zh.md` 建立使用视图，再回到本文核对契约细节。本文中的签名以当前 `include/coact/` 下的实现为准；凡与本机代码不一致之处，以代码为准。
 
