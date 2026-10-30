@@ -3,8 +3,12 @@
 #include "test/test_harness.hpp"
 
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "coact/ao.hpp"
 #include "coact/assert.hpp"
@@ -73,6 +77,11 @@ static coact::Event static_evt(uint16_t sig)
     return e;
 }
 
+static void exit_with_42(const char*, int)
+{
+    std::_Exit(42);
+}
+
 /* Pool storage for tests that need dynamic events. */
 static constexpr uint16_t kBlk = 8U;
 static constexpr uint16_t kCap = 32U;
@@ -94,6 +103,25 @@ static StageT make_staging()
 }
 
 namespace {
+
+COACT_TEST(fatal_handler_is_invoked)
+{
+    const coact::FatalHandler previous = coact::set_fatal_handler(&exit_with_42);
+    const pid_t child = fork();
+    if (0 == child) {
+        coact::fatal_assert(__FILE__, __LINE__);
+        std::_Exit(0);  // reached only if the handler did not terminate
+    }
+    if (child < 0) {
+        coact::set_fatal_handler(previous);
+    }
+    REQUIRE(child > 0);
+    int status = 0;
+    CHECK_EQ(waitpid(child, &status, 0), child);
+    coact::set_fatal_handler(previous);
+    CHECK(WIFEXITED(status));
+    CHECK_EQ(WEXITSTATUS(status), 42);
+}
 
 COACT_TEST(posix_pal_isr_signal_wakes_waiter)
 {
@@ -284,6 +312,21 @@ COACT_TEST(runtime_lifecycle)
     rt.start();
     rt.stop();
     CHECK(true);
+}
+
+COACT_TEST(runtime_initialize_initializes_bound_hsm)
+{
+    coact::pal::Posix pal;
+    coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
+
+    AoStage ao(kStates, 3U, kTrans, 2U, 1, 4U);
+    CHECK_EQ(ao.hsm_current_state(), -1);
+    CHECK(rt.bind(&ao));
+    CHECK(rt.initialize());
+    CHECK_EQ(ao.hsm_current_state(), 1);
+
+    rt.start();
+    rt.stop();
 }
 
 COACT_TEST(runtime_bind_at_keeps_static_target_before_initialization)

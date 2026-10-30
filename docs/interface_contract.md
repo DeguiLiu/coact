@@ -174,7 +174,7 @@ uint8_t     register_pool(PoolRecord* rec) noexcept;    // 幂等；满则返回
 void        unregister_pool(PoolRecord* rec) noexcept;  // 幂等；注销前须已回收全部事件
 
 void event_ref_inc(Event* e) noexcept;  // 仅池事件；静态事件为 no-op
-void event_gc(Event* e) noexcept;       // 递减；归 0 且 pool_id!=0 时经 pool_record 回池
+void event_gc(Event* e) noexcept;       // 递减；归 0 且 pool_id!=0 时经 pool_record 回池；ref_ctr==0 为硬故障
 
 template <uint16_t BlockSize, uint16_t Capacity,
           class Profile = HostSmpProfile,
@@ -209,7 +209,7 @@ template <uint16_t MaxPending> using BatchedReclaimer = ReclaimBatcher<MaxPendin
 - 编译期约束（`static_assert`）：`Capacity > 0` 且 `< 0xFFFF`（16 位索引哨兵）；`BlockSize >= sizeof(Event)`；`BlockAlign` 非零、为 2 的幂、不小于 `alignof(Event)`，且对齐后步长可被 `uint16_t` 表示。`HostSmpProfile` 额外要求 32 位 CAS 无锁。
 - 空闲链表头是单个打包 32 位字（索引 + ABA tag），每次成功 alloc/reclaim 递增 tag 以拒绝过期弹出；`HostSmpProfile` 用 acquire/release CAS，`RttSingleCoreProfile` 在单个 irq 掩码临界区内做普通索引操作，无 CAS / tag / 退避。
 - `alloc_typed` 要求（编译期 `event_layout_complies_v`）：`Layout` 标准布局、首成员为精确的 `coact::Event`（offset 0）、`sizeof(Layout) <= BlockSize`、`sizeof(Payload)` 容于 payload 区、`alignof(Payload) <= PayloadAlign` 且 payload 偏移对齐、`Layout` 与 `Payload` 可无异常默认构造且可平凡复制/析构。池无析构回调，回收时不运行应用类型析构函数。
-- 引用计数生命周期：`alloc` 返回 `ref_ctr==1` 的池事件；首次 submit 转移该 allocation reference（不额外 inc）；多播或自留须先 `event_ref_inc`；消费者 `dispatch` 后 `event_gc`；最后一个引用归 0 时经 `pool_id` 回原池。静态事件（`pool_id==0`）永不被回收。生产者投递后不得再访问事件，除非已 `event_ref_inc` 自留。
+- 引用计数生命周期：`alloc` 返回 `ref_ctr==1` 的池事件；首次 submit 转移该 allocation reference（不额外 inc）；多播或自留须先 `event_ref_inc`；消费者 `dispatch` 后 `event_gc`；最后一个引用归 0 时经 `pool_id` 回原池。静态事件（`pool_id==0`）永不被回收。生产者投递后不得再访问事件，除非已 `event_ref_inc` 自留。对池事件在 `ref_ctr==0` 时再次 `event_gc` 是重复释放/陈旧句柄，属于硬故障（`COACT_ASSERT`），不会被静默忽略。
 - 回收策略由 profile 选择：`RttSingleCoreProfile::kUseBatchedReclaim == false`（`ImmediateReclaimer`），`HostSmpProfile` 为 `true`（`ReclaimBatcher`）。`ReclaimBatcher` 仅限单一回收线程使用；链上每块的 `next` 写入与头 CAS 必须在同一临界区，SMP 下须注入 `make_spin_critical_section`（POSIX 的 `irq_save` 是 no-op，无法序列化 next 字段竞争）；批次数超过容量时降级为即时单块回收，不 assert。
 
 ### 3.2 hsm（层次状态机，L2）
@@ -404,6 +404,8 @@ public:
     explicit AoBase(uint64_t rtc_budget_ns) noexcept;
     virtual void dispatch(const Event& event) noexcept = 0;            // RunningDispatcher；重入硬故障
     virtual bool try_dispatch_queued(const Event& event) noexcept = 0; // lease 忙返回 false，事件不动
+    virtual void init_default() noexcept;                              // Runtime::initialize() 生命周期钩子
+    virtual uint32_t unhandled_events() const noexcept;                // 未匹配 HSM 迁移的事件计数
     virtual bool dispatch_direct(const Event& event) noexcept = 0;     // RunningDirect；输掉竞争返回 false
     virtual LogicalPrio logical_prio() const noexcept = 0;
     virtual PriorityClass priority_class() const noexcept = 0;
@@ -422,6 +424,8 @@ class Ao : public AoBase {
        const TransitionDef<Context>* transitions, uint16_t num_transitions,
        int8_t initial_state, uint8_t max_depth) noexcept;
     void init(const Event& init_evt) noexcept;
+    void init_default() noexcept override;                  // 幂等；显式 init() 后为 no-op
+    uint32_t unhandled_events() const noexcept override;
     Context& context() noexcept;
     int8_t hsm_current_state() const noexcept;
     const char* hsm_current_state_name() const noexcept;
@@ -448,7 +452,7 @@ constexpr StaticAoEntry make_static_ao_entry(AoT& ao) noexcept;
 ```
 
 - AO 一律静态或自动存储期；`AoRegistry` 与 `Runtime` 只保存**非拥有** `AoBase*`，永不 `delete`。`AoBase` 析构受保护且非虚，使经基类删除成为编译期契约违例，并避免符号表引入 deleting destructor。
-- `dispatch()` 是保留非法重入硬断言的单执行权入口；`try_dispatch_queued()` 与 `dispatch_direct()` 用同一 `Idle -> Running*` CAS，差别只在记录的状态（供 C5 区分 direct / dispatcher 路径）。`dispatch_direct()` 输掉竞争返回 `false`，事件未被触碰。
+- `dispatch()` 是保留非法重入硬断言的单执行权入口；`try_dispatch_queued()` 与 `dispatch_direct()` 用同一 `Idle -> Running*` CAS，差别只在记录的状态（供 C5 区分 direct / dispatcher 路径）。`dispatch_direct()` 输掉竞争返回 `false`，事件未被触碰。HSM 未匹配的事件不再静默消失：两条派发路径都递增 `unhandled_events()`。
 - `Traits` 静态提供 `logical_prio()` / `priority_class()` / `direct_eligible()` / `isr_direct_safe()` / `kRtcBudgetNs`；`Ao` 只存 `Context + Hsm + lease + pending`，不分配。
 - `isr_direct_safe()` 暴露于基类与 Traits，但**当前 coordinator 不消费它**（ISR 路径 `from_isr==true` 直接跳过 direct），仅为板级策略保留。
 
@@ -541,7 +545,7 @@ public:
 - **事件引用所有权**：`submit_from_task` / `try_submit_from_isr` 接管传入引用。staged：allocation reference 转交 staging，dispatcher 派发后 `event_gc`；direct：派发后立即消费；drop / merge：立即消费。调用方在提交返回后**不得**再访问事件。
 - direct 路径由 `Ao::dispatch_direct()` 内部持有 `RunningDirect` lease；派发完成后若 `pending>0`，经 `request_dispatcher_wake()` 决定是否 `signal_dispatcher_from_task`，与 dispatcher 的 arm-then-CAS 重试共同关闭“释放先于等待”窗口。
 - `Dispatcher` 单线程批循环：`begin_batch` -> 逐条 `dequeue_one(now)` -> `try_dispatch_slot` -> 批次结束 `reclaim.flush()`。queued 派发只用 `Ao::try_dispatch_queued()`；lease 忙时保留**一个** deferred slot，不减 pending、不释放事件，随后 `arm -> CAS 重试 -> PAL wait`。全部队列为空且无 deferred 时进入真正的阻塞等待 `wait_dispatcher(0)`（PAL 约定 0 == 永久），其余路径用有界的 `kBatchTimeoutMs` 等待。停机先 `close_admission()`，再在 `drain_queued_on_stop()` 中无派发地排空剩余事件，保证每事件恰好一次 pending 递减与一次引用释放。回收器由 `Profile` 选择：`HostSmpProfile` -> `ReclaimBatcher`（每批池容量 `min(kBatchSizeMax, kMaxEventPools)`），`RttSingleCoreProfile` -> `ImmediateReclaimer`。
-- `Runtime` 三阶段：Phase 1 `bind` / `bind_at`（注册 AO，须在 `initialize` 前）；Phase 2 `initialize`（提交注册表，幂等）；Phase 3 `start`（启动 Dispatcher 线程，`started_` 仅在 PAL 报告成功后才置位，失败返回 `false`）。`stop()` 请求停止并 join。**不存在 `run_dispatcher()` 公开方法**——Dispatcher 线程由 `start()` 经 PAL 启动（此为对旧契约的更正）。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；coordinator / dispatcher 的默认 `BreakerRouterT` 仍是单个 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。
+- `Runtime` 三阶段：Phase 1 `bind` / `bind_at`（注册 AO，须在 `initialize` 前）；Phase 2 `initialize`（提交注册表，幂等，并对每个已绑定 AO 调用 `init_default()`；显式 `Ao::init()` 过的 AO 不会被重复初始化）；Phase 3 `start`（启动 Dispatcher 线程，`started_` 仅在 PAL 报告成功后才置位，失败返回 `false`）。`stop()` 请求停止并 join。**不存在 `run_dispatcher()` 公开方法**——Dispatcher 线程由 `start()` 经 PAL 启动（此为对旧契约的更正）。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；coordinator / dispatcher 的默认 `BreakerRouterT` 仍是单个 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。
 - `PalT::template QueueBackend` 决定 staging 后端：`pal::Posix` -> `BoundedMpscQueue`（SMP），`pal::RtThread` -> `SingleCoreCriticalRing`（单核）。`Profile` 决定池与回收策略；RT-Thread 板传 `pal::RtThread::Profile`（即 `RttSingleCoreProfile`），默认 `HostSmpProfile` 保持 batched 回收。
 
 ### 3.9 PAL（平台抽象，L0/平台层）
@@ -563,7 +567,7 @@ public:
 ### 3.11 expected / assert（基础契约，L0）
 
 - `Expected<V, E>` 为 move-only、`[[nodiscard]]`，用 `success(...)` / `error(...)` 构造，`value()` / `error()` 违反前置条件时触发断言；`Expected<void, E>` 只有 `success()` / `error(E)`。
-- `COACT_ASSERT(cond)` 在失败时调用 `coact::fatal_assert(file, line)`；`COACT_UNLIKELY` 提示冷路径。运行期错误尽量用返回值表达，断言只用于捕获协议违例（如重入、计数下溢、经基类删除）。
+- `COACT_ASSERT(cond)` 在失败时调用 `coact::fatal_assert(file, line)`；`COACT_UNLIKELY` 提示冷路径。运行期错误尽量用返回值表达，断言只用于捕获协议违例（如重入、计数下溢、经基类删除）。`set_fatal_handler(FatalHandler)` 可在初始化期安装产品级致命处理器（例如驱动输出进入安全状态或复位）；处理器返回后 `fatal_assert()` 仍会 `abort()`，不会静默恢复执行。
 
 ## 4. 验收标准
 

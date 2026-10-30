@@ -232,6 +232,23 @@ COACT_TEST(ao_rtc_unhandled_event_tolerated)
     CHECK(coact::AoRunState::Idle == ao.lease().state());
 }
 
+COACT_TEST(ao_unhandled_event_is_counted)
+{
+    AoA ao(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,
+           kAoInitialState, kAoMaxDepth);
+    ao.init(coact::Event{SIG_TICK, 0U, 0U});
+    CHECK_EQ(ao.unhandled_events(), 0U);
+
+    ao.dispatch(coact::Event{SIG_NOMATCH, 0U, 0U});
+    CHECK_EQ(ao.unhandled_events(), 1U);
+
+    CHECK(ao.dispatch_direct(coact::Event{SIG_NOMATCH, 0U, 0U}));
+    CHECK_EQ(ao.unhandled_events(), 2U);
+
+    ao.dispatch(coact::Event{SIG_TICK, 0U, 0U});
+    CHECK_EQ(ao.unhandled_events(), 2U);
+}
+
 COACT_TEST(ao_illegal_reentry_is_abort)
 {
     AoA ao(ao_states, kAoNumStates, ao_trans, kAoNumTransitions,

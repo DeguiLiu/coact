@@ -132,6 +132,12 @@ public:
         if (initialized_) {
             return true;
         }
+        for (uint16_t i = 1U; i <= static_cast<uint16_t>(Config::kMaxAo); ++i) {
+            AoBase* ao = registry_.lookup(TargetId(static_cast<uint8_t>(i)));
+            if (nullptr != ao) {
+                ao->init_default();
+            }
+        }
         initialized_ = true;
         return true;
     }

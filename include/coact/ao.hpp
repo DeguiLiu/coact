@@ -137,6 +137,16 @@ public:
     // event untouched so the Dispatcher can retain its ownership and wait.
     virtual bool try_dispatch_queued(const Event& event) noexcept = 0;
 
+    // Default lifecycle hook used by Runtime::initialize(). Implementations
+    // that own an HSM override it; the base no-op keeps custom AoBase
+    // subclasses source-compatible.
+    virtual void init_default() noexcept {}
+
+    // Events that reached the AO but matched no HSM transition. Zero for
+    // implementations that do not track it. This turns a previously silent
+    // drop into an observable counter.
+    virtual uint32_t unhandled_events() const noexcept { return 0U; }
+
     // Direct-path RTC dispatch (M1): acquires RunningDirect lease internally,
     // runs the HSM to completion, releases. Kept distinct so Monitor/C5
     // can distinguish a direct dispatch from a dispatcher-driven one via
@@ -281,11 +291,27 @@ public:
     {
     }
 
-    // Enter the initial state. Called by the runtime during initialization,
-    // before the AO accepts any dispatched event.
+    // Enter the initial state. Runtime::initialize() calls init_default()
+    // for AOs the application did not initialize explicitly.
     void init(const Event& init_evt) noexcept
     {
         hsm_.init(context_, init_evt);
+        COACT_ASSERT(hsm_.current_state() >= 0);
+        initialized_ = true;
+    }
+
+    // Idempotent default initialization used by Runtime::initialize(). An
+    // explicit init() call marks the AO initialized, so this becomes a no-op.
+    void init_default() noexcept override
+    {
+        if (!initialized_) {
+            init(Event{0U, 0U, 0U});
+        }
+    }
+
+    uint32_t unhandled_events() const noexcept override
+    {
+        return unhandled_events_.load(std::memory_order_relaxed);
     }
 
     // Application context accessor. Callers configure the AO's context
@@ -305,7 +331,9 @@ public:
         const AoRunState held = AoRunState::RunningDispatcher;
         const bool taken = lease_.try_acquire(held);
         if (taken) {
-            hsm_.dispatch(context_, event);
+            if (!hsm_.dispatch(context_, event)) {
+                unhandled_events_.fetch_add(1U, std::memory_order_relaxed);
+            }
             lease_.release(held);
         }
         return taken;
@@ -315,7 +343,9 @@ public:
     {
         const AoRunState held = AoRunState::RunningDirect;
         if (lease_.try_acquire(held)) {
-            hsm_.dispatch(context_, event);
+            if (!hsm_.dispatch(context_, event)) {
+                unhandled_events_.fetch_add(1U, std::memory_order_relaxed);
+            }
             lease_.release(held);
             return true;
         }
@@ -361,6 +391,8 @@ private:
     HsmT hsm_;
     ExecutionLease lease_;
     PendingCounter pending_;
+    bool initialized_{false};
+    std::atomic<uint32_t> unhandled_events_{0U};
 };
 
 }  // namespace coact

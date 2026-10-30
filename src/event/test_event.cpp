@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <atomic>
+#include <csetjmp>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +25,17 @@ namespace {
 // (TSan would otherwise flag a harness race, masking pool results).
 std::atomic<std::uint64_t> g_alloc_count{0U};
 std::atomic<std::uint64_t> g_free_count{0U};
+
+}  // namespace
+
+namespace {
+
+std::jmp_buf g_gc_abort_jmp;
+
+void gc_abort_handler(const char*, int)
+{
+    std::longjmp(g_gc_abort_jmp, 1);
+}
 
 }  // namespace
 
@@ -152,7 +164,7 @@ COACT_TEST(event_pool_failed_init_is_observable_and_closed)
     coact::event_gc(event);
 }
 
-COACT_TEST(event_gc_zero_reference_does_not_reclaim)
+COACT_TEST(event_gc_zero_reference_is_fatal)
 {
     PoolStorage<16U, kCap> storage;
     coact::EventPool<16U, kCap> pool;
@@ -162,8 +174,14 @@ COACT_TEST(event_gc_zero_reference_does_not_reclaim)
     REQUIRE(e != nullptr);
     CHECK_EQ(e->ref_ctr, 1U);
 
+    // Simulate the second release of an already fully released event.
     e->ref_ctr = 0U;
-    coact::event_gc(e);
+    const coact::FatalHandler previous = coact::set_fatal_handler(&gc_abort_handler);
+    if (0 == setjmp(g_gc_abort_jmp)) {
+        coact::event_gc(e);
+        CHECK(false);  // event_gc must not return on a zero reference count
+    }
+    coact::set_fatal_handler(previous);
     CHECK_EQ(pool.used(), 1U);
 
     e->ref_ctr = 1U;

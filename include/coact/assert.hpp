@@ -6,12 +6,37 @@
 
 namespace coact {
 
-// Invoked on an irrecoverable invariant break. Default aborts; applications
-// may provide a strong definition (declared here without inline) to install a
-// product fatal handler, e.g. enter safe-state. See design 12.5.
-inline void fatal_assert(const char* file, int line) noexcept {
-    (void)file;
-    (void)line;
+using FatalHandler = void (*)(const char* file, int line);
+
+namespace detail {
+
+// Set during initialization; concurrent replacement is not supported.
+inline FatalHandler& fatal_handler_slot() noexcept
+{
+    static FatalHandler handler = nullptr;
+    return handler;
+}
+
+}  // namespace detail
+
+// Install a product fatal handler, e.g. one that drives outputs to a safe
+// state or resets the controller. Returns the previous handler. If the
+// installed handler returns, fatal_assert() still aborts: a fatal invariant
+// break must never silently resume normal execution.
+inline FatalHandler set_fatal_handler(FatalHandler handler) noexcept
+{
+    FatalHandler previous = detail::fatal_handler_slot();
+    detail::fatal_handler_slot() = handler;
+    return previous;
+}
+
+// Invoked on an irrecoverable invariant break. Default aborts. The handler may
+// reset or enter a safe state; if it returns, abort() still terminates.
+[[noreturn]] inline void fatal_assert(const char* file, int line) noexcept {
+    FatalHandler handler = detail::fatal_handler_slot();
+    if (nullptr != handler) {
+        handler(file, line);
+    }
     std::abort();
 }
 

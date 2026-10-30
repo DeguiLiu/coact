@@ -331,11 +331,18 @@ inline void event_gc(Event* e) noexcept
     PoolRecord* const record = pool_record(e->pool_id);
     COACT_ASSERT(record != nullptr);
     const CriticalSection::Token token = record->cs.save(record->cs.ctx);
-    bool reclaim = false;
-    if (COACT_LIKELY(e->ref_ctr > 0U)) {
-        --e->ref_ctr;
-        reclaim = (e->ref_ctr == 0U);
+    // A zero reference count is a protocol violation (double release or a
+    // stale handle), not a no-op: silently ignoring it can reclaim a block
+    // while another owner still holds a pointer.
+    if (0U == e->ref_ctr) {
+        // Restore the critical section before the fatal handler runs so a
+        // product handler can drive outputs to a safe state with interrupts
+        // unmasked.
+        record->cs.restore(record->cs.ctx, token);
+        COACT_ASSERT(false);
     }
+    --e->ref_ctr;
+    const bool reclaim = (e->ref_ctr == 0U);
     record->cs.restore(record->cs.ctx, token);
     if (COACT_LIKELY(reclaim)) {
         record->reclaim(e);
