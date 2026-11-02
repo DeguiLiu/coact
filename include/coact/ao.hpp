@@ -111,7 +111,7 @@ public:
 
     void increment() noexcept
     {
-        (void)try_increment(0U);
+        count_.fetch_add(static_cast<uint16_t>(1U), std::memory_order_release);
     }
 
     void decrement() noexcept
