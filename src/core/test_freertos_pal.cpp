@@ -432,6 +432,57 @@ COACT_TEST(freertos_sem_and_mutex) {
   pal.mutex_deinit(mutex);
 }
 
+COACT_TEST(freertos_guards_release_external_handles) {
+  stub_freertos_reset_faults();
+  static ResStandard res;
+  coact::pal::FreeRtos pal(res);
+  REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk), static_cast<int>(pal.initialize()));
+
+  coact::pal::FreeRtos::SemHandle sem_handle;
+  {
+    coact::pal::FreeRtos::SemGuard sem(pal, sem_handle, 1U);
+    REQUIRE(sem.ok());
+    CHECK(nullptr != sem_handle.handle);
+    CHECK(pal.sem_take(sem.handle(), 0U));
+  }
+  CHECK(nullptr == sem_handle.handle);
+
+  coact::pal::FreeRtos::MutexHandle mutex_handle;
+  {
+    coact::pal::FreeRtos::MutexGuard mutex(pal, mutex_handle);
+    REQUIRE(mutex.ok());
+    pal.mutex_lock(mutex.handle());
+    pal.mutex_unlock(mutex.handle());
+  }
+  CHECK(nullptr == mutex_handle.handle);
+
+  coact::pal::FreeRtos::CondHandle cond_handle;
+  {
+    coact::pal::FreeRtos::CondGuard cond(pal, cond_handle);
+    REQUIRE(cond.ok());
+    pal.cond_signal(cond.handle());
+    pal.cond_broadcast(cond.handle());
+  }
+  CHECK(nullptr == cond_handle.handle);
+
+  coact::pal::FreeRtos::SoftIrqHandle irq_handle;
+  {
+    coact::pal::FreeRtos::SoftIrqGuard irq(pal, irq_handle);
+    REQUIRE(irq.ok());
+    REQUIRE(pal.softirq_raise(irq.handle(), 7));
+    CHECK_EQ(pal.softirq_take(irq.handle(), 0U), 7);
+  }
+  CHECK(nullptr == irq_handle.wake);
+
+  stub_freertos_fail_sem() = true;
+  coact::pal::FreeRtos::SemHandle failed_handle;
+  {
+    coact::pal::FreeRtos::SemGuard failed(pal, failed_handle, 0U);
+    CHECK(!failed.ok());
+  }
+  CHECK(nullptr == failed_handle.handle);
+}
+
 COACT_TEST(freertos_isr_release_nested_critical_and_sleep) {
   stub_freertos_reset_faults();
   static ResStandard res;

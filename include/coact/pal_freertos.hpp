@@ -349,6 +349,76 @@ class FreeRtos {
     FreeRtos* pal = nullptr;
   };
 
+  /* Scoped RAII owners for the init/deinit families. The caller still owns the
+     static handle storage; the guard owns only the initialized kernel object
+     and releases it in the destructor. Non-copyable and non-movable, so a
+     kernel object cannot be duplicated or released twice by accident. A failed
+     init leaves ok() == false and the destructor is still safe (deinit
+     tolerates a null handle). */
+  class SemGuard {
+   public:
+    SemGuard(FreeRtos& pal, SemHandle& handle, uint32_t initial) noexcept;
+    ~SemGuard();
+    SemGuard(const SemGuard&) = delete;
+    SemGuard& operator=(const SemGuard&) = delete;
+    [[nodiscard]] bool ok() const noexcept { return ok_; }
+    [[nodiscard]] SemHandle& handle() noexcept { return *handle_; }
+    [[nodiscard]] const SemHandle& handle() const noexcept { return *handle_; }
+
+   private:
+    FreeRtos* pal_;
+    SemHandle* handle_;
+    bool ok_ = false;
+  };
+
+  class MutexGuard {
+   public:
+    MutexGuard(FreeRtos& pal, MutexHandle& handle) noexcept;
+    ~MutexGuard();
+    MutexGuard(const MutexGuard&) = delete;
+    MutexGuard& operator=(const MutexGuard&) = delete;
+    [[nodiscard]] bool ok() const noexcept { return ok_; }
+    [[nodiscard]] MutexHandle& handle() noexcept { return *handle_; }
+    [[nodiscard]] const MutexHandle& handle() const noexcept { return *handle_; }
+
+   private:
+    FreeRtos* pal_;
+    MutexHandle* handle_;
+    bool ok_ = false;
+  };
+
+  class CondGuard {
+   public:
+    CondGuard(FreeRtos& pal, CondHandle& handle) noexcept;
+    ~CondGuard();
+    CondGuard(const CondGuard&) = delete;
+    CondGuard& operator=(const CondGuard&) = delete;
+    [[nodiscard]] bool ok() const noexcept { return ok_; }
+    [[nodiscard]] CondHandle& handle() noexcept { return *handle_; }
+    [[nodiscard]] const CondHandle& handle() const noexcept { return *handle_; }
+
+   private:
+    FreeRtos* pal_;
+    CondHandle* handle_;
+    bool ok_ = false;
+  };
+
+  class SoftIrqGuard {
+   public:
+    SoftIrqGuard(FreeRtos& pal, SoftIrqHandle& handle) noexcept;
+    ~SoftIrqGuard();
+    SoftIrqGuard(const SoftIrqGuard&) = delete;
+    SoftIrqGuard& operator=(const SoftIrqGuard&) = delete;
+    [[nodiscard]] bool ok() const noexcept { return ok_; }
+    [[nodiscard]] SoftIrqHandle& handle() noexcept { return *handle_; }
+    [[nodiscard]] const SoftIrqHandle& handle() const noexcept { return *handle_; }
+
+   private:
+    FreeRtos* pal_;
+    SoftIrqHandle* handle_;
+    bool ok_ = false;
+  };
+
   // Host-test convenience only: references an internal static resource.
   // Production boards must pass explicit FreeRtosResources.
   FreeRtos() noexcept;
@@ -483,6 +553,34 @@ class FreeRtos {
   TaskHandle_t dispatcher_handle_ = nullptr;
   WatchdogOps watchdog_{};
 };
+
+inline FreeRtos::SemGuard::SemGuard(FreeRtos& pal, SemHandle& handle, uint32_t initial) noexcept
+    : pal_(&pal), handle_(&handle), ok_(pal.sem_init(handle, initial)) {}
+
+inline FreeRtos::SemGuard::~SemGuard() {
+  pal_->sem_deinit(*handle_);
+}
+
+inline FreeRtos::MutexGuard::MutexGuard(FreeRtos& pal, MutexHandle& handle) noexcept
+    : pal_(&pal), handle_(&handle), ok_(pal.mutex_init(handle)) {}
+
+inline FreeRtos::MutexGuard::~MutexGuard() {
+  pal_->mutex_deinit(*handle_);
+}
+
+inline FreeRtos::CondGuard::CondGuard(FreeRtos& pal, CondHandle& handle) noexcept
+    : pal_(&pal), handle_(&handle), ok_(pal.cond_init(handle)) {}
+
+inline FreeRtos::CondGuard::~CondGuard() {
+  pal_->cond_deinit(*handle_);
+}
+
+inline FreeRtos::SoftIrqGuard::SoftIrqGuard(FreeRtos& pal, SoftIrqHandle& handle) noexcept
+    : pal_(&pal), handle_(&handle), ok_(pal.softirq_init(handle)) {}
+
+inline FreeRtos::SoftIrqGuard::~SoftIrqGuard() {
+  pal_->softirq_deinit(*handle_);
+}
 
 }  // namespace pal
 }  // namespace coact
