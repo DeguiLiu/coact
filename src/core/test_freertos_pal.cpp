@@ -707,6 +707,13 @@ COACT_TEST(freertos_worker_create_join_is_race_free)
     CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed),
              completed.load(std::memory_order_relaxed));
     CHECK_EQ(completed.load(std::memory_order_relaxed), 4000);
+
+    /* The slot must still be usable after the contention, not leaked or left
+       with stale work. */
+    coact::pal::FreeRtos::ThreadHandle tail;
+    REQUIRE(pal.thread_create(tail, &worker_count, nullptr));
+    pal.thread_join(tail);
+    CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed), 4001);
 }
 
 /* ---- SoftIrq ------------------------------------------------------------ */
