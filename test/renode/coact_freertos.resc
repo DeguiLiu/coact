@@ -1,0 +1,7 @@
+# FreeRTOS PAL harness. freertos.sh substitutes the two @...@ placeholders.
+mach create "coact-freertos"
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+sysbus.usart2 CreateFileBackend @FREERTOS_UART@ true
+sysbus LoadELF @FREERTOS_ELF@
+emulation RunFor "00:00:01"
+quit

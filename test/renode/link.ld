@@ -28,6 +28,16 @@ SECTIONS
         *(.ARM.exidx*)
     } > FLASH
 
+    /* C++ static constructors (FreeRTOS fixture needs FreeRtosResources /
+       FreeRtos to be constructed; the other fixtures have none). */
+    .init_array :
+    {
+        __init_array_start = .;
+        KEEP(*(SORT(.init_array.*)))
+        KEEP(*(.init_array))
+        __init_array_end = .;
+    } > FLASH
+
     _sidata = LOADADDR(.data);
 
     .data :

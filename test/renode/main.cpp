@@ -531,9 +531,8 @@ coact::CriticalSection irq_cs() noexcept
 
 // ---------------------------------------------------------------------------
 // Timer2 / NVIC access. stm32f4.repl wires timer2 (10 MHz, Timers.STM32_Timer)
-// to nvic@28, i.e. external IRQ 28 and vector 16 + 28 = 44. This model does not
-// implement SysTick (writes to 0xE000E010 are logged as unhandled), so timer2
-// is the asynchronous edge S8 uses.
+// to nvic@28, i.e. external IRQ 28 and vector 16 + 28 = 44. S8 uses timer2 as
+// its asynchronous edge so the test does not depend on the SysTick model.
 // ---------------------------------------------------------------------------
 namespace hw {
 

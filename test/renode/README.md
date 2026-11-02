@@ -8,10 +8,12 @@
 | 基线管线（不要求准入 API） | `test/renode/run.sh --baseline-only` | `RESULT PASS 15/15` |
 | 看门狗终止跑飞 | `test/renode/wdg.sh` | `RESULT WDG PASS 7/7`，实测 31899 us 复位 |
 | MPU 能力矩阵 | `test/renode/mpu.sh` | `RESULT MPU PASS 13/13`，能力 11/11，设计要求项 8/8 |
+| FreeRTOS PAL（真实内核） | `test/renode/freertos.sh` | `RESULT PASS 26/26` |
 | 变异测试 | `test/renode/mutate.sh` | `ALL MUTATIONS CAUGHT`（13/13） |
 
 镜像尺寸（`arm-none-eabi-size`）：主夹具 `text=36644 bss=716`；仅基线
 `text=8276 bss=84`；看门狗 `text=5860 bss=104`；MPU `text=4744 bss=4116`。
+FreeRTOS 夹具 `text=21464 bss=55848`（含 4 个常驻 worker 栈与事件池）。
 准入策略关闭时协调器为 32 字节，开启后 120 字节（差值为 88 字节的策略
 对象），ISR 版本同为 120 字节（`Cfg::kMaxAo=2`）。策略对象由 12 字节的
 临界区钩子三元组、4 字节对齐填充和 3 个 24 字节的 `ArrivalGate` 组成。
@@ -39,12 +41,14 @@ test/renode/run.sh                 # 基线 + S1..S14
 test/renode/run.sh --baseline-only # 仅基线管线
 test/renode/wdg.sh                 # 看门狗
 test/renode/mpu.sh                 # MPU 能力矩阵
+test/renode/freertos.sh            # FreeRTOS PAL（真实内核）
 test/renode/mutate.sh              # 变异测试（内部多次调用 run.sh）
 ```
 
 产物写入 `test/renode/build/`：各 ELF、`uart.log`（主夹具目标输出）、
-`wdg.log`、`mpu.log`、`*_renode.log`（Renode 自身日志）。四个脚本共用该目录，
-各自持有独立的 `flock`，可安全串行调用。
+`wdg.log`、`mpu.log`、`*_renode.log`（Renode 自身日志）。
+`freertos.sh` 使用独立的 `build-freertos/`，避免与主夹具的 ELF 互相覆盖。
+四个脚本共用 `build/`，各自持有独立的 `flock`，可安全串行调用。
 
 ## 3. 输出通道
 
@@ -180,6 +184,33 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 由人重新推导设计结论后再冻结。当前冻结值：11 项能力全部 `ENFORCED`，其中
 8 项标记为 `required`（设计 5.1/8.1 依赖），3 项为 `informational`。
 
+## 7.1 FreeRTOS PAL 夹具（真实内核）
+
+`freertos.sh` 不用 stub：它把 FreeRTOS Kernel V11.1.0 的 `tasks.c` / `queue.c` /
+`list.c` 与 `portable/GCC/ARM_CM3` 端口一起编进 Cortex-M4 镜像，在 Renode 里
+跑真实调度器。选 CM3 端口而不是 CM4F，是为了避开 FPU 上下文汇编，同时保留
+同一套 ARMv7-M 的 SVC/PendSV/SysTick 与 BASEPRI 临界区路径。
+
+启动顺序按设计 D9：`main()` 只创建 bootstrap 任务并调用
+`vTaskStartScheduler()`（不返回）；bootstrap 在调度器运行后执行
+`pal.initialize()`、`register_current_task()` 和 `Runtime::start()`。
+静态构造由 `start_freertos.c` 遍历 `.init_array` 完成。
+
+26 条断言覆盖：
+
+| 组 | 内容 |
+|---|---|
+| `FR.pal_*` / `FR.context_*` | 显式初始化、栈尺寸、逻辑优先级映射、ContextSlot 去重 |
+| `FR.clock_*` | SysTick 真实推进（`vTaskDelay(5)` 后纳秒数前进 >= 5 ms） |
+| `FR.sem_*` / `FR.mutex_*` | 计数信号量、非阻塞/有限超时、mutex 往返 |
+| `FR.isr_*` | TIM2（IRQ 28，优先级 6）真实中断里调用 `softirq_raise()` 与 `sem_release_from_isr()`，任务侧收到 payload=7 和信号量 |
+| `FR.thread_*` | 常驻 worker 创建、执行、join、复槽 |
+| `FR.runtime_*` | Runtime + Staging + EventPool 端到端：8 个事件全部派发，停止后池占用归零 |
+
+实测：`RESULT PASS 26/26`，`text=21464 bss=55848`，反汇编中
+`__atomic_compare_exchange_8` 调用点为 0。`bss` 偏大来自 4 个 1 KiB worker 栈、
+EventPool 与 Runtime 的固定数组，不是堆。
+
 ## 8. 本夹具不证明什么
 
 - 不证明真实 STM32F407 或产品板上的行为。Renode 是功能模型：MPU 矩阵说明
@@ -201,6 +232,10 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 - 看门狗夹具证明的是“IWDG 在该模型上于约 32 ms 终止一个永不返回的动作，
   且每秒 kick 的对照组在 100 ms 内不被复位”，不证明产品板的看门狗时钟源
   与复位行为。
+- FreeRTOS 夹具证明的是 V11.1.0 CM3 端口在该模型上的调度、SysTick、真实
+  TIM2 中断进入 PAL 的 ISR 分支，以及固定静态资源下的端到端管线。它不证明
+  CM4F/FPU 端口、厂商 BSP、tickless/低功耗配置、栈水位、长时间稳定性，也不
+  证明目标板的 `configMAX_SYSCALL_INTERRUPT_PRIORITY` 与中断优先级规划。
 
 ## 9. 文件
 
@@ -214,6 +249,10 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 | `main.cpp` | 基线与 S1..S14 场景 |
 | `wdg_main.cpp` | 看门狗夹具：跑飞 → IWDG 复位 → 量测延迟 → 健康对照组 |
 | `mpu_main.cpp` | MPU 能力矩阵（10 个探针，每个带对照） |
+| `freertos_main.cpp` | FreeRTOS PAL 夹具：真实内核、SysTick、TIM2 ISR、Sem/Mutex/Worker/Runtime |
+| `start_freertos.c` | FreeRTOS 向量表（SVC/PendSV/SysTick/TIM2）与 `.init_array` 初始化 |
+| `freertos/` | FreeRTOS Kernel V11.1.0 裁剪副本（MIT，见其 README） |
 | `coact_admission.resc` / `coact_wdg.resc` / `coact_mpu.resc` | 三个夹具的 Renode 脚本 |
+| `coact_freertos.resc` | FreeRTOS 夹具模板，`freertos.sh` 替换路径占位符 |
 | `mpu_caps.expected` | 冻结的能力集，`mpu.sh` 第二道门的比对基线 |
-| `run.sh` / `wdg.sh` / `mpu.sh` / `mutate.sh` | 构建、运行、判定 |
+| `run.sh` / `wdg.sh` / `mpu.sh` / `freertos.sh` / `mutate.sh` | 构建、运行、判定 |

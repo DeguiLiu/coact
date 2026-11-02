@@ -517,12 +517,13 @@ int main()
 
 - `ctest --test-dir build-v2`：58/58 通过。
 - `test_freertos_pal`：18 组、79 个断言全部通过。
+- Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 26/26 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker 与 Runtime 端到端。镜像 `text=21464 bss=55848`，`__atomic_compare_exchange_8` 调用点为 0。
 - 编译门禁：`configNUMBER_OF_CORES==1`、`configSUPPORT_STATIC_ALLOCATION==1`、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`、`INCLUDE_vTaskDelay==1`、`INCLUDE_xTaskGetSchedulerState==1`、32 位 tick、`configMAX_PRIORITIES>=2` 均为 `#error` 级检查；Cortex-M0/M0+ 与 SMP 直接拒绝。
 
 边界：
 
 - host stub 不按优先级调度，不产生真实 tick 中断，ISR 是同步调用的；它只能证明 PAL 的协议与控件选择，不能替代 P3 板上验证。
-- 尚未验证真实 FreeRTOS 链接、`xPortIsInsideInterrupt` 的端口实现、静态 idle/timer 任务内存回调、栈水位与 24h 长稳。
+- Renode 夹具使用 CM3 端口 + 真实内核，已覆盖真实链接、SysTick 与 TIM2 中断；仍不覆盖 CM4F/FPU 端口、厂商 BSP、`xPortIsInsideInterrupt` 在目标端口的可见性、tickless/低功耗、栈水位与 24h 长稳。
 - timer、diag、coro 按第 11 节不纳入本次实现。
 
 ## 14. 参考
