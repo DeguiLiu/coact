@@ -318,7 +318,7 @@ FreeRTOS 数值越大优先级越高，`0` 通常留给 idle。coact 的 `Logica
 
 - 静态断言 `configMAX_PRIORITIES >= 2`。
 - dispatcher 使用 `configMAX_PRIORITIES - 1`，或由 `FreeRtosResources` 显式配置。
-- 生产者映射为 `min(max(logical, 1), configMAX_PRIORITIES - 1)`。
+- 生产者映射为 `min(max(logical, 1), configMAX_PRIORITIES - 2)`；最高应用优先级留给 dispatcher，避免生产者与唯一排空 staging 的线程同优先级。
 - 不允许把 `LogicalPrio` 直接当 `UBaseType_t` 传入；RT-Thread 版硬编码的 `10` 在 `configMAX_PRIORITIES=7` 的板子上非法。
 
 ### D6：时钟
@@ -414,7 +414,7 @@ int main()
 | `INCLUDE_vTaskDelay` | `1` | `sleep_us()` |
 | `INCLUDE_xTaskGetSchedulerState` | `1` | `start_dispatcher()` 拒绝调度器启动前的调用 |
 | `configTICK_TYPE_WIDTH_IN_BITS` | `TICK_TYPE_WIDTH_32_BITS`（旧配置可用 `configUSE_16_BIT_TICKS=0`） | 32 位 tick；16 位不满足老化/超时 |
-| `configMAX_PRIORITIES` | 至少 `2`，建议 `>= 8` | dispatcher 与生产者优先级 |
+| `configMAX_PRIORITIES` | 至少 `3`（idle、生产者、dispatcher），建议 `>= 8` | dispatcher 与生产者优先级 |
 | `configTICK_RATE_HZ` | 建议 `1000` | 5 ms 批次超时与 1 ms RTC 预算 |
 | `configMAX_SYSCALL_INTERRUPT_PRIORITY` | 按 MCU 设置 | ISR 调用 `...FromISR` 的前提 |
 | `configCHECK_FOR_STACK_OVERFLOW` | `2` | 板级栈水位验证 |
@@ -518,7 +518,7 @@ int main()
 - `ctest --test-dir build-v2`：58/58 通过。
 - `test_freertos_pal`：18 组、79 个断言全部通过。
 - Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 26/26 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker 与 Runtime 端到端。镜像 `text=21464 bss=55848`，`__atomic_compare_exchange_8` 调用点为 0。
-- 编译门禁：`configNUMBER_OF_CORES==1`、`configSUPPORT_STATIC_ALLOCATION==1`、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`、`INCLUDE_vTaskDelay==1`、`INCLUDE_xTaskGetSchedulerState==1`、32 位 tick、`configMAX_PRIORITIES>=2` 均为 `#error` 级检查；Cortex-M0/M0+ 与 SMP 直接拒绝。
+- 编译门禁：`configNUMBER_OF_CORES==1`、`configSUPPORT_STATIC_ALLOCATION==1`、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`、`INCLUDE_vTaskDelay==1`、`INCLUDE_xTaskGetSchedulerState==1`、32 位 tick、`configMAX_PRIORITIES>=3` 均为 `#error` 级检查；Cortex-M0/M0+ 与 SMP 直接拒绝。
 
 边界：
 

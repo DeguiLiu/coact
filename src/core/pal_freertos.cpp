@@ -213,7 +213,8 @@ InitError FreeRtos::initialize() noexcept
         }
         worker.task = xTaskCreateStatic(
             &FreeRtos::worker_thread_entry, "coact_work",
-            worker.stack_words, &worker, 1U, worker.stack, &worker.tcb);
+            worker.stack_words, &worker, res_->worker_priority,
+            worker.stack, &worker.tcb);
         if (nullptr == worker.task) {
             break;
         }

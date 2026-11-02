@@ -77,8 +77,8 @@
 #if defined(configUSE_16_BIT_TICKS) && (configUSE_16_BIT_TICKS == 1)
 #error "coact::pal::FreeRtos requires a 32-bit TickType_t"
 #endif
-#if (configMAX_PRIORITIES < 2)
-#error "coact::pal::FreeRtos requires configMAX_PRIORITIES >= 2"
+#if (configMAX_PRIORITIES < 3)
+#error "coact::pal::FreeRtos requires configMAX_PRIORITIES >= 3 (idle, producer, dispatcher)"
 #endif
 
 #if !defined(COACT_FREERTOS_STUB) && defined(__ARM_ARCH_6M__)
@@ -170,7 +170,11 @@ inline constexpr TickType_t wait_ticks(uint32_t timeout_ms) noexcept
 inline constexpr UBaseType_t map_logical_prio(LogicalPrio prio) noexcept
 {
     const UBaseType_t floor = 1U;
-    const UBaseType_t ceiling = static_cast<UBaseType_t>(configMAX_PRIORITIES - 1);
+    /* The top application priority belongs to the Dispatcher. A producer that
+       mapped to it would time-slice with (or, with time slicing off, starve)
+       the only thread that drains the staging queue. */
+    const UBaseType_t ceiling =
+        static_cast<UBaseType_t>(configMAX_PRIORITIES - 2);
     if (prio < floor) {
         return floor;
     }
@@ -227,6 +231,10 @@ struct FreeRtosResourcesBase {
     uint16_t slot_count = 0U;
     WorkerSlot* worker_slots = nullptr;
     uint16_t worker_slot_count = 0U;
+    /* Native priority for every resident worker. Defaults to one above idle;
+       a board that runs real work on workers can raise it, but it must stay
+       below dispatcher_priority() (the PAL does not verify this at run time). */
+    UBaseType_t worker_priority = 1U;
 };
 
 // Zero-size placeholder for WorkerSlots == 0 (zero-length arrays are a GNU

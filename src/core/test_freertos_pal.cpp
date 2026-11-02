@@ -312,7 +312,7 @@ COACT_TEST(freertos_register_maps_logical_priority)
     /* LogicalPrio 63 must not be passed to FreeRTOS; it maps to the highest
        application priority, leaving 0 for idle. */
     CHECK_EQ(g_prio_mapped.load(std::memory_order_relaxed),
-             static_cast<int>(configMAX_PRIORITIES - 1));
+             static_cast<int>(configMAX_PRIORITIES - 2));
 }
 
 /* ---- ISR context and clock --------------------------------------------- */
@@ -538,8 +538,11 @@ COACT_TEST(freertos_cond_broadcast_wakes_every_waiter)
 /* ---- ThreadOps ---------------------------------------------------------- */
 namespace {
 std::atomic<int> g_worker_runs{0};
+std::atomic<int> g_worker_prio{-1};
 void worker_count(void* /*ctx*/) noexcept
 {
+    g_worker_prio.store(static_cast<int>(xTaskGetCurrentTaskHandle()->prio),
+                        std::memory_order_relaxed);
     g_worker_runs.fetch_add(1, std::memory_order_relaxed);
 }
 }  // namespace
@@ -548,10 +551,12 @@ COACT_TEST(freertos_worker_pool_runs_and_reuses_slots)
 {
     stub_freertos_reset_faults();
     static ResStandard res;
+    res.worker_priority = 2U;
     coact::pal::FreeRtos pal(res);
     REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
                static_cast<int>(pal.initialize()));
     g_worker_runs.store(0, std::memory_order_relaxed);
+    g_worker_prio.store(-1, std::memory_order_relaxed);
 
     coact::pal::FreeRtos::ThreadHandle a;
     coact::pal::FreeRtos::ThreadHandle b;
@@ -566,6 +571,7 @@ COACT_TEST(freertos_worker_pool_runs_and_reuses_slots)
     REQUIRE(pal.thread_create(c, &worker_count, nullptr));
     pal.thread_join(c);
     CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed), 3);
+    CHECK_EQ(g_worker_prio.load(std::memory_order_relaxed), 2);
 }
 
 /* ---- SoftIrq ------------------------------------------------------------ */
