@@ -29,17 +29,17 @@ class FlashSim {
  public:
   FlashSim() noexcept { std::memset(flash_, 0xFFU, FlashSize); }
 
-  bool Read(uint32_t addr, uint8_t* buf, uint32_t len) const noexcept {
-    if (buf == nullptr || addr + len > FlashSize)
+  bool Read(uint32_t addr, coact::MutableByteSpan buf) const noexcept {
+    if (buf.data() == nullptr || addr + buf.size() > FlashSize)
       return false;
-    std::memcpy(buf, &flash_[addr], len);
+    std::memcpy(buf.data(), &flash_[addr], buf.size());
     return true;
   }
 
-  bool Write(uint32_t addr, const uint8_t* data, uint32_t len) noexcept {
-    if (data == nullptr || addr + len > FlashSize)
+  bool Write(uint32_t addr, coact::ByteSpan data) noexcept {
+    if (data.data() == nullptr || addr + data.size() > FlashSize)
       return false;
-    std::memcpy(&flash_[addr], data, len);
+    std::memcpy(&flash_[addr], data.data(), data.size());
     return true;
   }
 
@@ -54,10 +54,10 @@ class FlashSim {
   uint16_t CalcCrc(uint32_t addr, uint32_t len) const noexcept {
     if (addr + len > FlashSize)
       return 0;
-    return CalcCrc16(&flash_[addr], len);
+    return CalcCrc16(coact::ByteSpan(&flash_[addr], len));
   }
 
-  const uint8_t* Data() const noexcept { return flash_; }
+  coact::ByteSpan Data() const noexcept { return coact::ByteSpan(flash_, FlashSize); }
   static constexpr uint32_t Size() noexcept { return FlashSize; }
   static constexpr uint32_t Sector() noexcept { return SectorSize; }
 
@@ -173,7 +173,7 @@ inline osp::TransitionResult OnReceiving(DeviceContext<FS, SS>& ctx, const osp::
     }
 
     uint32_t wa = ctx.start_addr + hdr->chunk_offset;
-    if (!ctx.flash->Write(wa, chunk, hdr->chunk_len)) {
+    if (!ctx.flash->Write(wa, coact::ByteSpan(chunk, hdr->chunk_len))) {
       OSP_LOG_ERROR("OTA_DEV", "Write failed at 0x%X", wa);
       return ctx.sm->RequestTransition(ctx.si.error);
     }
@@ -251,7 +251,7 @@ class DeviceHandler final {
  public:
   using Flash = FlashSim<FlashSize, SectorSize>;
   using Context = DeviceContext<FlashSize, SectorSize>;
-  using RespCb = void (*)(const uint8_t* data, uint32_t len, void* ctx);
+  using RespCb = void (*)(coact::ByteSpan data, void* ctx);
 
   DeviceHandler() noexcept : sm_(ctx_) {
     ctx_.flash = &flash_;
@@ -333,7 +333,7 @@ class DeviceHandler final {
       std::memcpy(&buf[off], &info_.product_id, 2);
       off += 2;
       put_str(info_.serial_number);
-      SendResp(frame.cmd_class, frame.cmd, buf, static_cast<uint16_t>(off));
+      SendResp(frame.cmd_class, frame.cmd, coact::ByteSpan(buf, off));
       OSP_LOG_INFO("OTA_DEV", "SYS GetInfo sent");
     } else {
       SendStatus(frame.cmd_class, frame.cmd, Status::kUnknown);
@@ -346,7 +346,7 @@ class DeviceHandler final {
     switch (frame.cmd) {
       case spi::kReadId: {
         uint8_t id[3] = {0xEFU, 0x40U, 0x18U};
-        SendResp(frame.cmd_class, frame.cmd, id, 3);
+        SendResp(frame.cmd_class, frame.cmd, coact::ByteSpan(id));
         break;
       }
       case spi::kRead: {
@@ -359,11 +359,11 @@ class DeviceHandler final {
         std::memcpy(&addr, frame.data, 4);
         std::memcpy(&len, &frame.data[4], 2);
         uint8_t rb[256];
-        if (len > sizeof(rb) || !flash_.Read(addr, rb, len)) {
+        if (len > sizeof(rb) || !flash_.Read(addr, coact::MutableByteSpan(rb, len))) {
           SendStatus(frame.cmd_class, frame.cmd, Status::kParamErr);
           break;
         }
-        SendResp(frame.cmd_class, frame.cmd, rb, len);
+        SendResp(frame.cmd_class, frame.cmd, coact::ByteSpan(rb, len));
         break;
       }
       case spi::kWrite: {
@@ -375,7 +375,7 @@ class DeviceHandler final {
         uint16_t len = 0;
         std::memcpy(&addr, frame.data, 4);
         std::memcpy(&len, &frame.data[4], 2);
-        if (!flash_.Write(addr, &frame.data[6], len)) {
+        if (!flash_.Write(addr, coact::ByteSpan(&frame.data[6], len))) {
           SendStatus(frame.cmd_class, frame.cmd, Status::kHwErr);
           break;
         }
@@ -405,7 +405,7 @@ class DeviceHandler final {
         std::memcpy(&addr, frame.data, 4);
         std::memcpy(&len, &frame.data[4], 4);
         uint16_t crc = flash_.CalcCrc(addr, len);
-        SendResp(frame.cmd_class, frame.cmd, reinterpret_cast<const uint8_t*>(&crc), 2);
+        SendResp(frame.cmd_class, frame.cmd, coact::as_bytes(crc));
         break;
       }
       default:
@@ -467,8 +467,7 @@ class DeviceHandler final {
         resp.status = (ctx_.calc_crc == ctx_.expected_crc) ? static_cast<uint8_t>(Status::kSuccess)
                                                            : static_cast<uint8_t>(Status::kCrcErr);
         resp.calc_crc = ctx_.calc_crc;
-        SendResp(static_cast<uint8_t>(CmdClass::kOta), frame.cmd | ota_cmd::kAckFlag,
-                 reinterpret_cast<const uint8_t*>(&resp), sizeof(resp));
+        SendResp(static_cast<uint8_t>(CmdClass::kOta), frame.cmd | ota_cmd::kAckFlag, coact::as_bytes(resp));
         break;
       }
       default:
@@ -479,18 +478,18 @@ class DeviceHandler final {
 
   // --- Response helpers -----------------------------------------------------
 
-  void SendResp(uint8_t cls, uint8_t cmd, const uint8_t* data, uint16_t len) noexcept {
+  void SendResp(uint8_t cls, uint8_t cmd, coact::ByteSpan data) noexcept {
     if (resp_cb_ == nullptr)
       return;
     uint8_t buf[512];
-    uint32_t n = BuildFrame(buf, sizeof(buf), cls, cmd, data, len);
+    uint32_t n = BuildFrame(coact::MutableByteSpan(buf), cls, cmd, data);
     if (n > 0)
-      resp_cb_(buf, n, resp_ctx_);
+      resp_cb_(coact::ByteSpan(buf, n), resp_ctx_);
   }
 
   void SendStatus(uint8_t cls, uint8_t cmd, Status s) noexcept {
     uint8_t st = static_cast<uint8_t>(s);
-    SendResp(cls, cmd, &st, 1);
+    SendResp(cls, cmd, coact::as_bytes(st));
   }
 
   void SendOtaAck(uint8_t cmd, Status s) noexcept {
@@ -499,8 +498,7 @@ class DeviceHandler final {
     ack.cmd = cmd | ota_cmd::kAckFlag;
     ack.status = static_cast<uint8_t>(s);
     ack.received_size = ctx_.received_size;
-    SendResp(static_cast<uint8_t>(CmdClass::kOta), cmd | ota_cmd::kAckFlag, reinterpret_cast<const uint8_t*>(&ack),
-             sizeof(ack));
+    SendResp(static_cast<uint8_t>(CmdClass::kOta), cmd | ota_cmd::kAckFlag, coact::as_bytes(ack));
   }
 
   // --- Members --------------------------------------------------------------

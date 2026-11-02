@@ -45,6 +45,7 @@
 #include <cstdint>
 
 #include <atomic>
+#include <string_view>
 
 #ifdef COACT_RTT_STUB
 #include "test/rtthread_stub.h"
@@ -216,7 +217,7 @@ class LogRtThreadBase {
 
   // ---- Platform hooks (capture-less; context == this) ------------------
   static uint32_t tick_counter_read(void* ctx) noexcept;
-  static bool kprintf_sink(void* ctx, const char* bytes, uint16_t length) noexcept;
+  static bool kprintf_sink(void* ctx, std::string_view text) noexcept;
   static void wake_signal_task(void* ctx) noexcept;
   static void wake_signal_isr(void* ctx) noexcept;
   static void wake_wait_block(void* ctx) noexcept;
@@ -312,7 +313,7 @@ class LogRtThread : public LogRtThreadBase {
     }
     const LogSinkOps sink = logger_.sink();
     if (nullptr != sink.write) {
-      const bool ok = sink.write(sink.context, buf, len);
+      const bool ok = sink.write(sink.context, std::string_view(buf, len));
       if (ok) {
         ++sink_write_count_;
       } else {

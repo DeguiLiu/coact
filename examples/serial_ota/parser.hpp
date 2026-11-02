@@ -210,7 +210,7 @@ inline osp::TransitionResult HandleTail(ParserContext& ctx, const osp::Event& ev
       return ctx.sm->RequestTransition(ctx.si.idle);
     }
 
-    uint16_t calc_crc = CalcCrc16(ctx.payload_buf, ctx.expected_len);
+    uint16_t calc_crc = CalcCrc16(coact::ByteSpan(ctx.payload_buf, ctx.expected_len));
     if (calc_crc != ctx.frame.crc) {
       ++ctx.stats.crc_errors;
       OSP_LOG_WARN("OTA_PARSER", "CRC mismatch: calc=0x%04X recv=0x%04X", calc_crc, ctx.frame.crc);
@@ -273,9 +273,9 @@ class FrameParser final {
     sm_.Dispatch(osp::Event{kEvtByte, nullptr});
   }
 
-  void PutData(const uint8_t* data, uint32_t len) noexcept {
-    for (uint32_t i = 0; i < len; ++i) {
-      PutByte(data[i]);
+  void PutData(coact::ByteSpan data) noexcept {
+    for (const uint8_t byte : data) {
+      PutByte(byte);
     }
   }
 

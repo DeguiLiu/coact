@@ -28,6 +28,7 @@
 #include <cstdint>
 
 #include <array>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -187,7 +188,7 @@ struct LogClockOps {
 };
 
 struct LogSinkOps {
-  bool (*write)(void* context, const char* bytes, uint16_t length) noexcept;
+  bool (*write)(void* context, std::string_view bytes) noexcept;
   void* context;
 };
 

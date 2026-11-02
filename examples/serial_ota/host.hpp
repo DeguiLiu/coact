@@ -31,7 +31,7 @@ namespace ota {
 // Send Callback
 // ============================================================================
 
-using SendCallback = void (*)(const uint8_t* data, uint32_t len, void* ctx);
+using SendCallback = void (*)(coact::ByteSpan data, void* ctx);
 
 // ============================================================================
 // Host Context
@@ -46,8 +46,7 @@ enum class ActionPhase : uint8_t {
 
 struct HostContext {
   // Firmware image
-  const uint8_t* firmware_data = nullptr;
-  uint32_t firmware_size = 0;
+  coact::ByteSpan firmware{};
   uint32_t start_addr = 0;
   uint16_t expected_crc = 0;
 
@@ -98,13 +97,13 @@ inline osp::NodeStatus SendStart(HostContext& ctx) {
 
   if (ctx.start_phase == ActionPhase::kSend) {
     OtaStartReq req;
-    req.total_size = ctx.firmware_size;
+    req.total_size = static_cast<uint32_t>(ctx.firmware.size());
     req.start_addr = ctx.start_addr;
     req.expected_crc = ctx.expected_crc;
 
     uint8_t frame_buf[64];
-    uint32_t n = BuildFrame(frame_buf, sizeof(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kStart, &req,
-                            sizeof(req));
+    uint32_t n = BuildFrame(coact::MutableByteSpan(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kStart,
+                            coact::as_bytes(req));
     if (n == 0)
       return osp::NodeStatus::kFailure;
 
@@ -113,10 +112,10 @@ inline osp::NodeStatus SendStart(HostContext& ctx) {
     ctx.bytes_sent = 0;
     ctx.current_offset = 0;
     ctx.start_phase = ActionPhase::kWait;
-    ctx.send_fn(frame_buf, n, ctx.send_ctx);
+    ctx.send_fn(coact::ByteSpan(frame_buf, n), ctx.send_ctx);
 
-    OSP_LOG_INFO("OTA_HOST", "Sent START: addr=0x%X size=%u crc=0x%04X", ctx.start_addr, ctx.firmware_size,
-                 ctx.expected_crc);
+    OSP_LOG_INFO("OTA_HOST", "Sent START: addr=0x%X size=%u crc=0x%04X", ctx.start_addr,
+                 static_cast<unsigned>(ctx.firmware.size()), ctx.expected_crc);
     return osp::NodeStatus::kRunning;
   }
 
@@ -157,12 +156,12 @@ inline osp::NodeStatus SendChunks(HostContext& ctx) {
     ctx.current_offset = rewind_to;
   }
 
-  if (ctx.current_offset >= ctx.firmware_size) {
+  if (ctx.current_offset >= ctx.firmware.size()) {
     OSP_LOG_INFO("OTA_HOST", "All chunks sent: %u bytes (%u retries)", ctx.bytes_sent, ctx.total_retries);
     return osp::NodeStatus::kSuccess;
   }
 
-  uint32_t remaining = ctx.firmware_size - ctx.current_offset;
+  uint32_t remaining = static_cast<uint32_t>(ctx.firmware.size()) - ctx.current_offset;
   uint32_t this_chunk = (remaining < ctx.chunk_size) ? remaining : ctx.chunk_size;
 
   uint8_t payload[kMaxPayloadLen];
@@ -170,22 +169,22 @@ inline osp::NodeStatus SendChunks(HostContext& ctx) {
   hdr.chunk_offset = ctx.current_offset;
   hdr.chunk_len = static_cast<uint16_t>(this_chunk);
   std::memcpy(payload, &hdr, sizeof(hdr));
-  std::memcpy(&payload[sizeof(hdr)], &ctx.firmware_data[ctx.current_offset], this_chunk);
+  std::memcpy(&payload[sizeof(hdr)], &ctx.firmware[ctx.current_offset], this_chunk);
 
   uint8_t frame_buf[kMaxPayloadLen + kFrameOverhead + 4U];
-  uint32_t n = BuildFrame(frame_buf, sizeof(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kData, payload,
-                          static_cast<uint16_t>(sizeof(hdr) + this_chunk));
+  uint32_t n = BuildFrame(coact::MutableByteSpan(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kData,
+                          coact::ByteSpan(payload, static_cast<std::size_t>(sizeof(hdr) + this_chunk)));
   if (n == 0)
     return osp::NodeStatus::kFailure;
 
-  ctx.send_fn(frame_buf, n, ctx.send_ctx);
+  ctx.send_fn(coact::ByteSpan(frame_buf, n), ctx.send_ctx);
   ctx.current_offset += this_chunk;
   ctx.bytes_sent += this_chunk;
   // chunk_retry_count is reset in OnResponse when DATA ACK kSuccess is received
 
-  if ((ctx.current_offset % (ctx.chunk_size * 8U)) == 0 || ctx.current_offset >= ctx.firmware_size) {
-    OSP_LOG_INFO("OTA_HOST", "Progress: %u/%u (%.0f%%)", ctx.current_offset, ctx.firmware_size,
-                 static_cast<double>(ctx.current_offset) * 100.0 / static_cast<double>(ctx.firmware_size));
+  if ((ctx.current_offset % (ctx.chunk_size * 8U)) == 0 || ctx.current_offset >= ctx.firmware.size()) {
+    OSP_LOG_INFO("OTA_HOST", "Progress: %u/%u (%.0f%%)", ctx.current_offset, static_cast<unsigned>(ctx.firmware.size()),
+                 static_cast<double>(ctx.current_offset) * 100.0 / static_cast<double>(ctx.firmware.size()));
   }
   return osp::NodeStatus::kRunning;
 }
@@ -201,15 +200,15 @@ inline osp::NodeStatus SendEnd(HostContext& ctx) {
 
   if (ctx.end_phase == ActionPhase::kSend) {
     uint8_t frame_buf[32];
-    uint32_t n =
-        BuildFrame(frame_buf, sizeof(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kEnd, nullptr, 0);
+    uint32_t n = BuildFrame(coact::MutableByteSpan(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kEnd,
+                            coact::ByteSpan{});
     if (n == 0)
       return osp::NodeStatus::kFailure;
 
     // Reset state BEFORE send -- loopback may set ack_received synchronously
     ctx.ack_received = false;
     ctx.end_phase = ActionPhase::kWait;
-    ctx.send_fn(frame_buf, n, ctx.send_ctx);
+    ctx.send_fn(coact::ByteSpan(frame_buf, n), ctx.send_ctx);
     OSP_LOG_INFO("OTA_HOST", "Sent END");
     return osp::NodeStatus::kRunning;
   }
@@ -224,7 +223,7 @@ inline osp::NodeStatus SendEnd(HostContext& ctx) {
   }
 
   // END rejected (size mismatch) -- rewind chunks and retry
-  if (ctx.last_received_size < ctx.firmware_size) {
+  if (ctx.last_received_size < ctx.firmware.size()) {
     OSP_LOG_WARN("OTA_HOST", "END rejected: resend from offset %u", ctx.last_received_size);
     ctx.current_offset = ctx.last_received_size;
     ctx.end_phase = ActionPhase::kSend;
@@ -247,8 +246,8 @@ inline osp::NodeStatus SendVerify(HostContext& ctx) {
 
   if (ctx.verify_phase == ActionPhase::kSend) {
     uint8_t frame_buf[32];
-    uint32_t n =
-        BuildFrame(frame_buf, sizeof(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kVerify, nullptr, 0);
+    uint32_t n = BuildFrame(coact::MutableByteSpan(frame_buf), static_cast<uint8_t>(CmdClass::kOta), ota_cmd::kVerify,
+                            coact::ByteSpan{});
     if (n == 0)
       return osp::NodeStatus::kFailure;
 
@@ -256,7 +255,7 @@ inline osp::NodeStatus SendVerify(HostContext& ctx) {
     ctx.verify_received = false;
     ctx.verify_ok = false;
     ctx.verify_phase = ActionPhase::kWait;
-    ctx.send_fn(frame_buf, n, ctx.send_ctx);
+    ctx.send_fn(coact::ByteSpan(frame_buf, n), ctx.send_ctx);
     OSP_LOG_INFO("OTA_HOST", "Sent VERIFY");
     return osp::NodeStatus::kRunning;
   }
@@ -281,10 +280,9 @@ inline osp::NodeStatus SendVerify(HostContext& ctx) {
 
 class OtaHost final {
  public:
-  OtaHost(const uint8_t* fw_data, uint32_t fw_size, uint32_t start_addr, uint32_t chunk_size = 128) noexcept
+  OtaHost(coact::ByteSpan firmware, uint32_t start_addr, uint32_t chunk_size = 128) noexcept
       : tree_(ctx_, "ota_upgrade") {
-    ctx_.firmware_data = fw_data;
-    ctx_.firmware_size = fw_size;
+    ctx_.firmware = firmware;
     ctx_.start_addr = start_addr;
     ctx_.chunk_size = chunk_size;
   }
@@ -298,13 +296,13 @@ class OtaHost final {
   }
 
   bool Start() noexcept {
-    if (ctx_.firmware_data == nullptr || ctx_.firmware_size == 0 || ctx_.send_fn == nullptr) {
+    if (ctx_.firmware.empty() || ctx_.send_fn == nullptr) {
       return false;
     }
 
-    ctx_.expected_crc = CalcCrc16(ctx_.firmware_data, ctx_.firmware_size);
-    OSP_LOG_INFO("OTA_HOST", "Starting OTA: size=%u crc=0x%04X chunk=%u", ctx_.firmware_size, ctx_.expected_crc,
-                 ctx_.chunk_size);
+    ctx_.expected_crc = CalcCrc16(ctx_.firmware);
+    OSP_LOG_INFO("OTA_HOST", "Starting OTA: size=%u crc=0x%04X chunk=%u", static_cast<unsigned>(ctx_.firmware.size()),
+                 ctx_.expected_crc, ctx_.chunk_size);
 
     auto root = tree_.AddSequence("ota_sequence", -1);
     tree_.AddAction("send_start", host_detail::SendStart, root);
@@ -361,9 +359,9 @@ class OtaHost final {
   }
 
   float GetProgress() const noexcept {
-    if (ctx_.firmware_size == 0)
+    if (ctx_.firmware.empty())
       return 0.0f;
-    return static_cast<float>(ctx_.bytes_sent) / static_cast<float>(ctx_.firmware_size);
+    return static_cast<float>(ctx_.bytes_sent) / static_cast<float>(ctx_.firmware.size());
   }
   uint32_t GetBytesSent() const noexcept { return ctx_.bytes_sent; }
   bool IsComplete() const noexcept { return tree_.LastStatus() == osp::NodeStatus::kSuccess; }

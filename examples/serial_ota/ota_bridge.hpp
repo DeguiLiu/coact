@@ -97,6 +97,6 @@ using BridgeHsm = coact::Hsm<OtaBridgeCtx>;
 using BridgeAo = coact::Ao<OtaBridgeCtx, BridgeHsm, BridgeTraits>;
 
 // One AO per demo; TargetId 1 routes both events to it.
-inline constexpr coact::TargetId kOtaBridgeTargetId = 1U;
+inline constexpr coact::TargetId kOtaBridgeTargetId = coact::TargetId(1U);
 
 }  // namespace ota_bridge

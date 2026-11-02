@@ -89,7 +89,8 @@ worker 栈与全部内核对象。要求单核、静态分配；不支持 Cortex
 
 ## 模块
 
-`event` `pool` `queue` `hsm` `ao` `staging` `monitor` `policy` `coro` `pal`，由
+`event` `pool` `queue` `hsm` `ao` `staging` `monitor` `policy` `coro` `pal`
+`span`，由
 `coordinator` / `dispatcher` / `runtime` 装配
 （[`docs/interface_contract.md`](docs/interface_contract.md)）。
 

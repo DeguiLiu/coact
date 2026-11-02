@@ -135,18 +135,18 @@ static uint32_t NextCorruptRng() noexcept {
 /// Host TX -> push to FIFO (simulates UART TX with channel noise).
 /// Only OTA_DATA frames (cmd_class=0x04, cmd=0x02) are subject to
 /// random byte corruption, causing CRC errors at the device parser.
-static void HostSendToDevice(const uint8_t* data, uint32_t len, void* /*ctx*/) {
+static void HostSendToDevice(coact::ByteSpan data, void* /*ctx*/) {
   // Corrupt only OTA_DATA frames: frame[3]=cmd_class, frame[4]=cmd
-  if (kDropRate > 0U && len > 5U && data[3] == static_cast<uint8_t>(ota::CmdClass::kOta) &&
+  if (kDropRate > 0U && data.size() > 5U && data[3] == static_cast<uint8_t>(ota::CmdClass::kOta) &&
       data[4] == ota::ota_cmd::kData) {
     if (NextCorruptRng() % 100U < kDropRate) {
       // Copy frame and flip one bit in the payload area to trigger CRC error
       uint8_t corrupt_buf[ota::kMaxPayloadLen + ota::kFrameOverhead + 8U];
-      uint32_t copy_len = len;
+      uint32_t copy_len = static_cast<uint32_t>(data.size());
       if (copy_len > sizeof(corrupt_buf)) {
         copy_len = static_cast<uint32_t>(sizeof(corrupt_buf));
       }
-      std::memcpy(corrupt_buf, data, copy_len);
+      std::memcpy(corrupt_buf, data.data(), copy_len);
       uint32_t pos = 3U + (NextCorruptRng() % (copy_len - 4U));
       corrupt_buf[pos] ^= 0x01U;
       ++g_corrupt_count;
@@ -154,12 +154,12 @@ static void HostSendToDevice(const uint8_t* data, uint32_t len, void* /*ctx*/) {
       return;
     }
   }
-  g_host_to_dev_fifo.PushBatch(data, static_cast<size_t>(len));
+  g_host_to_dev_fifo.PushBatch(data.data(), data.size());
 }
 
 /// Device TX -> push to FIFO (simulates UART TX FIFO).
-static void DeviceSendToHost(const uint8_t* data, uint32_t len, void* /*ctx*/) {
-  g_dev_to_host_fifo.PushBatch(data, static_cast<size_t>(len));
+static void DeviceSendToHost(coact::ByteSpan data, void* /*ctx*/) {
+  g_dev_to_host_fifo.PushBatch(data.data(), data.size());
 }
 
 /// Drain both FIFO channels into their respective parsers.
@@ -171,7 +171,7 @@ static void DrainUartFifos() noexcept {
     size_t n = g_host_to_dev_fifo.PopBatch(buf, sizeof(buf));
     if (n == 0)
       break;
-    g_device_parser.PutData(buf, static_cast<uint32_t>(n));
+    g_device_parser.PutData(coact::ByteSpan(buf, n));
   }
 
   // Device -> Host direction
@@ -179,7 +179,7 @@ static void DrainUartFifos() noexcept {
     size_t n = g_dev_to_host_fifo.PopBatch(buf, sizeof(buf));
     if (n == 0)
       break;
-    g_host_parser.PutData(buf, static_cast<uint32_t>(n));
+    g_host_parser.PutData(coact::ByteSpan(buf, n));
   }
 }
 
@@ -352,7 +352,7 @@ static int cmd_flash_dump(int argc, char* argv[]) {
 
   uint8_t buf[256];
   uint32_t chunk = (len > sizeof(buf)) ? static_cast<uint32_t>(sizeof(buf)) : len;
-  if (!const_cast<ota::FlashSim<>&>(flash).Read(addr, buf, chunk)) {
+  if (!const_cast<ota::FlashSim<>&>(flash).Read(addr, coact::MutableByteSpan(buf, chunk))) {
     osp::DebugShell::Printf("Error: read failed\r\n");
     return -1;
   }
@@ -485,7 +485,7 @@ int main(int argc, char* argv[]) {
   g_device.SetResponseCallback(DeviceSendToHost, nullptr);
 
   // --- Setup host (BehaviorTree-based) ---------------------------------------
-  ota::OtaHost host(firmware.data(), firmware.size(), kFlashStartAddr, kChunkSize);
+  ota::OtaHost host(coact::ByteSpan(firmware.data(), firmware.size()), kFlashStartAddr, kChunkSize);
   host.SetSendCallback(HostSendToDevice, nullptr);
   g_host = &host;
 
@@ -677,7 +677,7 @@ int main(int argc, char* argv[]) {
   uint16_t flash_crc = 0;
 
   if (ota_success) {
-    fw_crc = ota::CalcCrc16(firmware.data(), firmware.size());
+    fw_crc = ota::CalcCrc16(coact::ByteSpan(firmware.data(), firmware.size()));
     flash_crc = g_device.GetFlash().CalcCrc(kFlashStartAddr, kFirmwareSize);
     ota_success = (fw_crc == flash_crc);
     OSP_LOG_INFO("OTA_MAIN", "FW CRC=0x%04X  Flash CRC=0x%04X  %s", fw_crc, flash_crc,

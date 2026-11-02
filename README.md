@@ -95,7 +95,8 @@ static allocation enabled; Cortex-M0/M0+ is not supported.
 
 ## Modules
 
-`event` `pool` `queue` `hsm` `ao` `staging` `monitor` `policy` `coro` `pal`, with
+`event` `pool` `queue` `hsm` `ao` `staging` `monitor` `policy` `coro` `pal`
+`span`, with
 `coordinator` / `dispatcher` / `runtime` as the assembly
 ([`docs/interface_contract.md`](docs/interface_contract.md)).
 

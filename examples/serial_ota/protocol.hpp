@@ -11,6 +11,8 @@
 #ifndef SERIAL_OTA_PROTOCOL_HPP_
 #define SERIAL_OTA_PROTOCOL_HPP_
 
+#include "coact/span.hpp"
+
 #include <cstdint>
 #include <cstring>
 
@@ -105,10 +107,10 @@ static constexpr Crc16Table kCrc16Table{};
 }  // namespace detail
 
 /// Calculate CRC-CCITT over a byte range.
-inline uint16_t CalcCrc16(const uint8_t* data, uint32_t len) noexcept {
+inline uint16_t CalcCrc16(coact::ByteSpan data) noexcept {
   uint16_t crc = 0x0000U;
-  for (uint32_t i = 0; i < len; ++i) {
-    crc = static_cast<uint16_t>((crc << 8) ^ detail::kCrc16Table.data[static_cast<uint8_t>((crc >> 8) ^ data[i])]);
+  for (const uint8_t byte : data) {
+    crc = static_cast<uint16_t>((crc << 8) ^ detail::kCrc16Table.data[static_cast<uint8_t>((crc >> 8) ^ byte)]);
   }
   return crc;
 }
@@ -170,11 +172,11 @@ static_assert(sizeof(OtaVerifyResp) == 5, "OtaVerifyResp must be 5 bytes");
 
 /// Build a protocol frame into a caller-provided buffer.
 /// Returns total frame length, or 0 on error.
-inline uint32_t BuildFrame(uint8_t* buf, uint32_t buf_size, uint8_t cmd_class, uint8_t cmd, const void* data,
-                           uint16_t data_len) noexcept {
+inline uint32_t BuildFrame(coact::MutableByteSpan buf, uint8_t cmd_class, uint8_t cmd, coact::ByteSpan data) noexcept {
+  const uint16_t data_len = static_cast<uint16_t>(data.size());
   uint16_t payload_len = static_cast<uint16_t>(2U + data_len);
   uint32_t total = static_cast<uint32_t>(payload_len) + kFrameOverhead;
-  if (buf == nullptr || total > buf_size)
+  if ((nullptr == buf.data()) || (data_len != data.size()) || (total > buf.size()))
     return 0;
 
   uint32_t idx = 0;
@@ -184,12 +186,12 @@ inline uint32_t BuildFrame(uint8_t* buf, uint32_t buf_size, uint8_t cmd_class, u
   buf[idx++] = cmd_class;
   buf[idx++] = cmd;
 
-  if (data != nullptr && data_len > 0) {
-    std::memcpy(&buf[idx], data, data_len);
+  if (!data.empty()) {
+    std::memcpy(&buf[idx], data.data(), data_len);
     idx += data_len;
   }
 
-  uint16_t crc = CalcCrc16(&buf[3], payload_len);
+  uint16_t crc = CalcCrc16(coact::ByteSpan(&buf[3], payload_len));
   buf[idx++] = static_cast<uint8_t>(crc & 0xFFU);
   buf[idx++] = static_cast<uint8_t>((crc >> 8) & 0xFFU);
   buf[idx++] = kFrameTail;

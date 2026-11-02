@@ -191,13 +191,13 @@ uint32_t LogRtThreadBase::tick_counter_read(void* /*ctx*/) noexcept {
   return static_cast<uint32_t>(rt_tick_get());
 }
 
-bool LogRtThreadBase::kprintf_sink(void* /*ctx*/, const char* bytes, uint16_t length) noexcept {
-  if (nullptr == bytes) {
+bool LogRtThreadBase::kprintf_sink(void* /*ctx*/, std::string_view text) noexcept {
+  if (text.data() == nullptr) {
     return false;
   }
-  /* %.*s prints exactly `length` bytes; both the RT-Thread tiny vsnprintf
+  /* %.*s prints exactly `text.size()` bytes; both the RT-Thread tiny vsnprintf
      (precision via '*') and the host stub (std vfprintf) support it. */
-  (void)rt_kprintf("%.*s", static_cast<int>(length), bytes);
+  (void)rt_kprintf("%.*s", static_cast<int>(text.size()), text.data());
   return true;
 }
 
