@@ -8,7 +8,7 @@
 | 基线管线（不要求准入 API） | `test/renode/run.sh --baseline-only` | `RESULT PASS 15/15` |
 | 看门狗终止跑飞 | `test/renode/wdg.sh` | `RESULT WDG PASS 7/7`，实测 31899 us 复位 |
 | MPU 能力矩阵 | `test/renode/mpu.sh` | `RESULT MPU PASS 13/13`，能力 11/11，设计要求项 8/8 |
-| FreeRTOS PAL（真实内核） | `test/renode/freertos.sh` | `RESULT PASS 26/26` |
+| FreeRTOS PAL（真实内核） | `test/renode/freertos.sh` | `RESULT PASS 27/27` |
 | 变异测试 | `test/renode/mutate.sh` | `ALL MUTATIONS CAUGHT`（13/13） |
 
 镜像尺寸（`arm-none-eabi-size`）：主夹具 `text=36644 bss=716`；仅基线
@@ -196,7 +196,7 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 `pal.initialize()`、`register_current_task()` 和 `Runtime::start()`。
 静态构造由 `start_freertos.c` 遍历 `.init_array` 完成。
 
-26 条断言覆盖：
+27 条断言覆盖：
 
 | 组 | 内容 |
 |---|---|
@@ -206,8 +206,9 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 | `FR.isr_*` | TIM2（IRQ 28，优先级 6）真实中断里调用 `softirq_raise()` 与 `sem_release_from_isr()`，任务侧收到 payload=7 和信号量 |
 | `FR.thread_*` | 常驻 worker 创建、执行、join、复槽 |
 | `FR.runtime_*` | Runtime + Staging + EventPool 端到端：8 个事件全部派发，停止后池占用归零 |
+| `FR.dispatcher_stack_watermark` | `configCHECK_FOR_STACK_OVERFLOW=2`；dispatcher 剩余栈 976/1024 字（要求 >= 25%），溢出钩子会打印 FAIL 并停住 |
 
-实测：`RESULT PASS 26/26`，`text=21464 bss=55848`，反汇编中
+实测：`RESULT PASS 27/27`，`text=21464 bss=55848`，反汇编中
 `__atomic_compare_exchange_8` 调用点为 0。`bss` 偏大来自 4 个 1 KiB worker 栈、
 EventPool 与 Runtime 的固定数组，不是堆。
 

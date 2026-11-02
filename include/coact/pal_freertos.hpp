@@ -74,6 +74,12 @@
 #if !defined(INCLUDE_xTaskGetSchedulerState) || (INCLUDE_xTaskGetSchedulerState != 1)
 #error "coact::pal::FreeRtos requires INCLUDE_xTaskGetSchedulerState == 1"
 #endif
+#if !defined(INCLUDE_xTaskGetCurrentTaskHandle) || (INCLUDE_xTaskGetCurrentTaskHandle != 1)
+#error "coact::pal::FreeRtos requires INCLUDE_xTaskGetCurrentTaskHandle == 1"
+#endif
+#if !defined(INCLUDE_vTaskDelete) || (INCLUDE_vTaskDelete != 1)
+#error "coact::pal::FreeRtos requires INCLUDE_vTaskDelete == 1"
+#endif
 #if defined(configUSE_16_BIT_TICKS) && (configUSE_16_BIT_TICKS == 1)
 #error "coact::pal::FreeRtos requires a 32-bit TickType_t"
 #endif
@@ -306,6 +312,10 @@ struct FreeRtosResources : public FreeRtosResourcesBase {
 // rejected. The application must call start_dispatcher() (through
 // Runtime::start()) from a task that is already running under the FreeRTOS
 // scheduler. See design section D9.
+//
+// initialize()/start_dispatcher()/join_dispatcher() are NOT internally
+// synchronized: call them from one task, in order. Producer-side entry points
+// (signal/wait/sem/softirq) are safe from other tasks and ISRs.
 // ---------------------------------------------------------------------------
 class FreeRtos
 {
@@ -341,6 +351,9 @@ public:
     // semaphore token; take() consumes one token and one payload. A counting
     // semaphore (not binary) keeps token count equal to payload count, so a
     // burst of raises cannot leave payloads without wakeups.
+    // deinit() requires that all producers and the consumer have stopped:
+    // it deletes the wake semaphore, and a concurrent raise/take would touch
+    // freed kernel state.
     struct SoftIrqHandle {
         std::atomic<uint32_t> head{0U};
         std::atomic<uint32_t> tail{0U};
@@ -378,7 +391,9 @@ public:
     /* ---- Execution context -------------------------------------------- */
     bool register_current_task(LogicalPrio prio) noexcept;
     ExecutionContext current_context() const noexcept;
-    static bool in_dispatcher_thread() noexcept;
+    /* Instance method: two FreeRtos objects can run two dispatchers in one
+       image, and each must recognise only its own task handle. */
+    bool in_dispatcher_thread() const noexcept;
 
     /* ---- Monotonic clock ---------------------------------------------- */
     uint64_t monotonic_ns() const noexcept;
@@ -391,12 +406,22 @@ public:
     void signal_dispatcher_from_isr() noexcept;
 
     /* ---- Dispatcher thread lifecycle ---------------------------------- */
+    /* initialize() calls kernel APIs and is not re-entrant. A failure is
+       terminal (kInitFailed); the caller must not reuse the same resources
+       object with a new PAL, because partially created workers/semaphores are
+       left to the idle task. */
     InitError initialize() noexcept;
     InitError start_dispatcher(ThreadEntry entry, void* context) noexcept;
     void join_dispatcher() noexcept;
     void watchdog_progress(uint32_t marker) noexcept;
     void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
     uint32_t dispatcher_stack_bytes() const noexcept;
+    /* Native handle of this instance's dispatcher task, or nullptr before
+       start. Diagnostics only (stack watermark, debugging). */
+    TaskHandle_t dispatcher_task_handle() const noexcept
+    {
+        return dispatcher_handle_;
+    }
 
     /* ---- Direct dispatch depth (per registered task) ------------------ */
     void enter_direct() noexcept;
@@ -457,8 +482,6 @@ private:
 
     static void dispatcher_thread_entry(void* param) noexcept;
     static void worker_thread_entry(void* param) noexcept;
-    static TaskHandle_t dispatcher_task() noexcept;
-
     InitError ensure_initialized() noexcept;
     static ContextSlot* find_slot(FreeRtosResourcesBase* res,
                                   TaskHandle_t task) noexcept;
@@ -479,6 +502,7 @@ private:
     mutable uint64_t last_counter_ = 0U;
     mutable bool counter_seen_ = false;
     std::atomic_flag init_guard_ = ATOMIC_FLAG_INIT;
+    TaskHandle_t dispatcher_handle_ = nullptr;
 };
 
 }  // namespace pal

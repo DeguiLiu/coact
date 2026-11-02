@@ -325,6 +325,13 @@ void bootstrap(void*)
     }
     record_u64("FR.runtime_actions",
                static_cast<uint64_t>(ao->context().actions), kN);
+    const UBaseType_t hwm =
+        uxTaskGetStackHighWaterMark(g_pal.dispatcher_task_handle());
+    harness::puts("FR.info dispatcher_hwm_words=");
+    harness::put_u64(static_cast<uint64_t>(hwm));
+    harness::newline();
+    record(hwm >= (4096U / sizeof(StackType_t)) / 4U,
+           "FR.dispatcher_stack_watermark");
     rt->stop();
     record_u64("FR.runtime_pool_used", g_pool.used(), 0U);
 
@@ -351,6 +358,15 @@ extern "C" void vApplicationGetIdleTaskMemory(StaticTask_t** tcb,
     *tcb = &g_idle_tcb;
     *stack = g_idle_stack;
     *size = configMINIMAL_STACK_SIZE;
+}
+
+extern "C" void vApplicationStackOverflowHook(TaskHandle_t, char*)
+{
+    /* configCHECK_FOR_STACK_OVERFLOW == 2: reaching this hook is a fixture
+       failure, not something to recover from. */
+    harness::puts("FAIL FR.stack_overflow\n");
+    for (;;) {
+    }
 }
 
 extern "C" void abort(void) noexcept

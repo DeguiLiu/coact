@@ -23,10 +23,6 @@ FreeRtosResources<16384U, 8U, 8U, 2048U>& default_resources() noexcept
     return res;
 }
 
-/* Dispatcher identity captured by the trampoline. Compared by pointer, so an
-   unregistered task can never forge Dispatcher context. */
-TaskHandle_t g_dispatcher_task = nullptr;
-
 }  // namespace
 
 FreeRtos::FreeRtos() noexcept
@@ -311,9 +307,9 @@ ExecutionContext FreeRtos::current_context() const noexcept
     return ctx;
 }
 
-bool FreeRtos::in_dispatcher_thread() noexcept
+bool FreeRtos::in_dispatcher_thread() const noexcept
 {
-    const TaskHandle_t dispatcher = dispatcher_task();
+    const TaskHandle_t dispatcher = dispatcher_handle_;
     return (nullptr != dispatcher) && (xTaskGetCurrentTaskHandle() == dispatcher);
 }
 
@@ -419,7 +415,7 @@ void FreeRtos::signal_dispatcher_from_isr() noexcept
 void FreeRtos::dispatcher_thread_entry(void* param) noexcept
 {
     FreeRtos* self = static_cast<FreeRtos*>(param);
-    g_dispatcher_task = xTaskGetCurrentTaskHandle();
+    self->dispatcher_handle_ = xTaskGetCurrentTaskHandle();
 
     if (nullptr != self->user_entry_) {
         self->user_entry_(self->user_ctx_);
@@ -446,11 +442,6 @@ void FreeRtos::worker_thread_entry(void* param) noexcept
         }
         (void)xSemaphoreGive(slot->join);
     }
-}
-
-TaskHandle_t FreeRtos::dispatcher_task() noexcept
-{
-    return g_dispatcher_task;
 }
 
 InitError FreeRtos::start_dispatcher(ThreadEntry entry, void* context) noexcept

@@ -56,6 +56,12 @@ typedef StaticSemaphore_t* SemaphoreHandle_t;
 #ifndef INCLUDE_xTaskGetSchedulerState
 #define INCLUDE_xTaskGetSchedulerState 1
 #endif
+#ifndef INCLUDE_vTaskDelete
+#define INCLUDE_vTaskDelete 1
+#endif
+#ifndef INCLUDE_xTaskGetCurrentTaskHandle
+#define INCLUDE_xTaskGetCurrentTaskHandle 1
+#endif
 #ifndef configUSE_16_BIT_TICKS
 #define configUSE_16_BIT_TICKS 0
 #endif

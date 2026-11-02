@@ -11,6 +11,7 @@
 #include "test/test_harness.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <new>
@@ -203,6 +204,50 @@ COACT_TEST(freertos_start_requires_running_scheduler)
     CHECK_EQ(static_cast<int>(coact::pal::InitError::kThreadStartFailed),
              static_cast<int>(pal.start_dispatcher(&dispatcher_once, nullptr)));
     stub_freertos_scheduler_running() = true;
+}
+
+namespace {
+struct DualCtx {
+    coact::pal::FreeRtos* self;
+    coact::pal::FreeRtos* other;
+    std::atomic<int>* out;
+};
+
+void dual_dispatcher_entry(void* p) noexcept
+{
+    auto* ctx = static_cast<DualCtx*>(p);
+    int result = 0;
+    if (ctx->self->in_dispatcher_thread()) {
+        result |= 1;
+    }
+    if (ctx->other->in_dispatcher_thread()) {
+        result |= 2;
+    }
+    ctx->out->store(result, std::memory_order_relaxed);
+}
+}  // namespace
+
+COACT_TEST(freertos_two_instances_track_their_own_dispatcher)
+{
+    stub_freertos_reset_faults();
+    static ResStandard res_a;
+    static ResStandard res_b;
+    coact::pal::FreeRtos a(res_a);
+    coact::pal::FreeRtos b(res_b);
+    std::atomic<int> result_a{-1};
+    std::atomic<int> result_b{-1};
+
+    DualCtx ctx_a{&a, &b, &result_a};
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(a.start_dispatcher(&dual_dispatcher_entry, &ctx_a)));
+    a.join_dispatcher();
+    CHECK_EQ(result_a.load(std::memory_order_relaxed), 1);  /* own only */
+
+    DualCtx ctx_b{&b, &a, &result_b};
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(b.start_dispatcher(&dual_dispatcher_entry, &ctx_b)));
+    b.join_dispatcher();
+    CHECK_EQ(result_b.load(std::memory_order_relaxed), 1);  /* stale A is not B */
 }
 
 /* ---- Context table ------------------------------------------------------ */
@@ -533,6 +578,62 @@ COACT_TEST(freertos_cond_broadcast_wakes_every_waiter)
     CHECK_EQ(g_bcast_woken.load(std::memory_order_relaxed), 2);
     pal.cond_deinit(g_cond);
     pal.mutex_deinit(g_cond_mutex);
+}
+
+namespace {
+long long elapsed_ms(std::chrono::steady_clock::time_point start) noexcept
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start)
+        .count();
+}
+}  // namespace
+
+COACT_TEST(freertos_cond_signal_before_wait_is_not_lost)
+{
+    stub_freertos_reset_faults();
+    static ResStandard res;
+    coact::pal::FreeRtos pal(res);
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(pal.initialize()));
+    coact::pal::FreeRtos::MutexHandle mutex;
+    coact::pal::FreeRtos::CondHandle cond;
+    REQUIRE(pal.mutex_init(mutex));
+    REQUIRE(pal.cond_init(cond));
+
+    pal.mutex_lock(mutex);
+    pal.cond_signal(cond);  /* no waiter yet: the counting semaphore stores it */
+    const auto start = std::chrono::steady_clock::now();
+    pal.cond_wait(cond, mutex, 200U);
+    const long long ms = elapsed_ms(start);
+    pal.mutex_unlock(mutex);
+    /* A stored token returns immediately; a lost one would block ~200 ms. */
+    CHECK(ms < 100);
+    pal.cond_deinit(cond);
+    pal.mutex_deinit(mutex);
+}
+
+COACT_TEST(freertos_cond_wait_times_out)
+{
+    stub_freertos_reset_faults();
+    static ResStandard res;
+    coact::pal::FreeRtos pal(res);
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(pal.initialize()));
+    coact::pal::FreeRtos::MutexHandle mutex;
+    coact::pal::FreeRtos::CondHandle cond;
+    REQUIRE(pal.mutex_init(mutex));
+    REQUIRE(pal.cond_init(cond));
+
+    pal.mutex_lock(mutex);
+    const auto start = std::chrono::steady_clock::now();
+    pal.cond_wait(cond, mutex, 5U);
+    const long long ms = elapsed_ms(start);
+    pal.mutex_unlock(mutex);
+    CHECK(ms >= 1);
+    CHECK(ms < 100);
+    pal.cond_deinit(cond);
+    pal.mutex_deinit(mutex);
 }
 
 /* ---- ThreadOps ---------------------------------------------------------- */

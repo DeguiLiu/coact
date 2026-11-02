@@ -18,7 +18,7 @@
 #define configUSE_TIMERS 0
 #define configUSE_IDLE_HOOK 0
 #define configUSE_TICK_HOOK 0
-#define configCHECK_FOR_STACK_OVERFLOW 0
+#define configCHECK_FOR_STACK_OVERFLOW 2
 #define configUSE_MALLOC_FAILED_HOOK 0
 #define configUSE_TRACE_FACILITY 0
 #define configQUEUE_REGISTRY_SIZE 0
@@ -39,6 +39,7 @@
 #define INCLUDE_xTaskGetSchedulerState 1
 #define INCLUDE_vTaskPrioritySet 1
 #define INCLUDE_uxTaskPriorityGet 1
+#define INCLUDE_uxTaskGetStackHighWaterMark 1
 
 /* A failed assertion means the fixture must stop loudly, not continue with a
    broken kernel. The harness treats "no RESULT line" as a failure. */

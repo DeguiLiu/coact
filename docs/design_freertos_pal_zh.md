@@ -398,6 +398,8 @@ int main()
 - 如果产品必须在 `main()` 里先 `start()` 再启动调度器，需要把 `join_dispatcher()` 改成非阻塞轮询或在文档中明确禁止该顺序。
 - `vTaskDelay(portMAX_DELAY)` **不是**永久阻塞。V11.1.0 的 `vTaskDelay()` 以 `xCanBlockIndefinitely=pdFALSE` 调用 `prvAddCurrentTaskToDelayedList()`，`portMAX_DELAY` 只表示约 `0xFFFFFFFF` tick 的有限延迟，tick 溢出后可能被唤醒。永久阻塞用 `vTaskSuspend(NULL)`（需要 `INCLUDE_vTaskSuspend=1`），或等待一个永不释放的信号量。
 
+生命周期 API（`initialize` / `start_dispatcher` / `join_dispatcher`）不做内部同步，必须由同一任务按顺序调用；生产者与 ISR 侧入口可以并发。dispatcher 身份保存在 `FreeRtos` 实例内，而不是翻译单元全局量，因此同一镜像里的两个 PAL 实例不会互相覆盖身份；`in_dispatcher_thread()` 也相应改为实例方法。
+
 ## 7. FreeRTOSConfig.h 要求
 
 | 配置项 | 值 | 原因 |
@@ -413,6 +415,8 @@ int main()
 | `INCLUDE_vTaskSuspend` | `1` | `xSemaphoreTake(..., portMAX_DELAY)` 与 `vTaskSuspend(NULL)` 才是永久阻塞；`vTaskDelay(portMAX_DELAY)` 仍不是 |
 | `INCLUDE_vTaskDelay` | `1` | `sleep_us()` |
 | `INCLUDE_xTaskGetSchedulerState` | `1` | `start_dispatcher()` 拒绝调度器启动前的调用 |
+| `INCLUDE_xTaskGetCurrentTaskHandle` | `1` | 上下文表键与 dispatcher 身份比较 |
+| `INCLUDE_vTaskDelete` | `1` | dispatcher 退出后删除自身 TCB |
 | `configTICK_TYPE_WIDTH_IN_BITS` | `TICK_TYPE_WIDTH_32_BITS`（旧配置可用 `configUSE_16_BIT_TICKS=0`） | 32 位 tick；16 位不满足老化/超时 |
 | `configMAX_PRIORITIES` | 至少 `3`（idle、生产者、dispatcher），建议 `>= 8` | dispatcher 与生产者优先级 |
 | `configTICK_RATE_HZ` | 建议 `1000` | 5 ms 批次超时与 1 ms RTC 预算 |
@@ -511,13 +515,13 @@ int main()
 | `include/coact/pal_freertos.hpp` | `FreeRtosResources`、`ContextSlot`、`WorkerSlot`、`FreeRtos` 类与编译期配置门禁 |
 | `src/core/pal_freertos.cpp` | 上下文分支临界区、ClockOps、dispatcher/worker 生命周期、Sem/Mutex/Cond/Thread/SoftIrq |
 | `test/freertos_stub.h` | pthread 支撑的 FreeRTOS API 子集，含故障注入与 ISR 模拟 |
-| `src/core/test_freertos_pal.cpp` | 18 组 host 契约测试（资源布局、初始化失败、启动/join、调度器未运行、ContextSlot 冻结/满表、优先级映射、ISR、嵌套临界区、时钟扩展、Sem/Mutex/Cond/signal+broadcast、sleep、worker 复用、SoftIrq、Runtime 端到端） |
+| `src/core/test_freertos_pal.cpp` | 21 组 host 契约测试（资源布局、初始化失败、启动/join、调度器未运行、双实例身份、ContextSlot 冻结/满表、优先级映射、ISR、嵌套临界区、时钟扩展、Sem/Mutex/Cond/signal+broadcast/timeout、sleep、worker 复用、SoftIrq、Runtime 端到端） |
 
 实测结果（2026-11-02，本机）：
 
 - `ctest --test-dir build-v2`：58/58 通过。
-- `test_freertos_pal`：18 组、79 个断言全部通过。
-- Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 26/26 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker 与 Runtime 端到端。镜像 `text=21464 bss=55848`，`__atomic_compare_exchange_8` 调用点为 0。
+- `test_freertos_pal`：21 组、89 个断言全部通过。
+- Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 27/27 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker 与 Runtime 端到端。`configCHECK_FOR_STACK_OVERFLOW=2`，dispatcher 栈水位 976/1024 字余量（断言要求 >= 25%）。镜像 `text=21464 bss=55848`，`__atomic_compare_exchange_8` 调用点为 0。
 - 编译门禁：`configNUMBER_OF_CORES==1`、`configSUPPORT_STATIC_ALLOCATION==1`、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`、`INCLUDE_vTaskDelay==1`、`INCLUDE_xTaskGetSchedulerState==1`、32 位 tick、`configMAX_PRIORITIES>=3` 均为 `#error` 级检查；Cortex-M0/M0+ 与 SMP 直接拒绝。
 
 边界：

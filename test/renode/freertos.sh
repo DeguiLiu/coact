@@ -17,7 +17,7 @@ RENODE=${RENODE:-/home/dgliu/renode/renode}
 CC=${CC:-arm-none-eabi-gcc}
 CXX=${CXX:-arm-none-eabi-g++}
 COACT_INCLUDE_DIR=${COACT_INCLUDE_DIR:-$REPO_ROOT/include}
-EXPECTED_TOTAL=26
+EXPECTED_TOTAL=27
 
 COMMON_FLAGS=(
     -mcpu=cortex-m4 -mthumb -mfloat-abi=soft
