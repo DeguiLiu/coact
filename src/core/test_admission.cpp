@@ -327,6 +327,24 @@ COACT_TEST(admission_reserve_without_interval_clears_stale_handle)
              static_cast<uint64_t>(0U));
 }
 
+/* A rejected reserve must not leave the caller's old handle active: the
+   failure path clears it, which rolls the stale hold back exactly once. */
+COACT_TEST(admission_failed_reserve_clears_stale_handle)
+{
+    using Adm = coact::StaticAdmission<AdmReserveStaleRules, SmallCfg,
+                                       coact::AdmissionSpinSync>;
+
+    ManualClockPal pal;
+    Adm admission(pal);
+    coact::ArrivalReservation handle;
+
+    REQUIRE(admission.reserve(coact::TargetId(2U), 1000U, handle));
+    CHECK(handle.active());
+    CHECK(!admission.reserve(coact::TargetId(2U), 1500U, handle));
+    CHECK(!handle.active());
+    CHECK_EQ(admission.holds(coact::TargetId(2U)), static_cast<uint16_t>(0U));
+}
+
 /* =========================================================================
  * ArrivalReservation: the submit path has six early returns after the gate,
  * so the window is handed back by leaving scope and kept only by commit().

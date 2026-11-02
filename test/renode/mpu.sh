@@ -33,7 +33,7 @@ COMMON_FLAGS=(
 )
 CXX_FLAGS=(
     -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics
-    -fno-use-cxa-atexit
+    -fno-use-cxa-atexit -DCOACT_ATOMIC64_SHIM
 )
 
 fail() {

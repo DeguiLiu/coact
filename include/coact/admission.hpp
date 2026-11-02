@@ -50,10 +50,11 @@ static_assert(sizeof(MaxBacklog) == sizeof(uint16_t),
               "coact: MaxBacklog must be zero-overhead");
 
 // Upper bound for a configured interval. ArrivalGate itself saturates over the
-// whole uint64 range, but a rule larger than this keeps a target closed for
-// the lifetime of the product and is, in practice, a ms/ns unit mistake.
-// Rejecting it at compile time is cheaper than finding it on the bench.
-inline constexpr uint64_t kMaxMinArrivalNs = 0x7FFFFFFFULL;  // ~2.147 s
+// whole uint64 range, but a rule larger than one hour keeps a target closed for
+// the lifetime of most products and is, in practice, a ms/ns unit mistake.
+// The bound also admits legitimate low-frequency industrial rules (5 s, 10 s);
+// rejecting them at compile time would force a hand-written policy instead.
+inline constexpr uint64_t kMaxMinArrivalNs = 3600ULL * 1000000000ULL;  // 1 h
 
 // One rule row: the limits that apply to a single 1-based TargetId.
 struct TargetAdmission {
@@ -491,6 +492,9 @@ public:
         }
         ArrivalGate& gate = gate_for(target);
         if (!gate.try_reserve(sync_.cs, now_ns, MinArrivalNs{min_ns})) {
+            /* A rejected reserve must not leave a stale handle behind: the
+               caller may roll back or destroy it on the failure path. */
+            out = ArrivalReservation{};
             return false;
         }
         out = ArrivalReservation(gate, sync_.cs, now_ns);

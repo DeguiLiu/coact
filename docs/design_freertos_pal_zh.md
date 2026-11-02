@@ -400,6 +400,8 @@ int main()
 
 生命周期 API（`initialize` / `start_dispatcher` / `join_dispatcher`）不做内部同步，必须由同一任务按顺序调用；生产者与 ISR 侧入口可以并发。dispatcher 身份保存在 `FreeRtos` 实例内，而不是翻译单元全局量，因此同一镜像里的两个 PAL 实例不会互相覆盖身份；`in_dispatcher_thread()` 也相应改为实例方法。
 
+`Dispatcher::in_dispatcher_thread()` 随 PAL 一起改为实例方法，转发到构造时持有的 PAL 引用。cmdfw 这类需要把“是否在 dispatcher 线程”注册成回调的调用方，必须绑定 `[&d] { return d.in_dispatcher_thread(); }`，或直接使用自己的 PAL 实例；`DispatcherT::in_dispatcher_thread()` 的静态写法不再成立。
+
 ## 7. FreeRTOSConfig.h 要求
 
 | 配置项 | 值 | 原因 |
@@ -411,6 +413,7 @@ int main()
 | `configUSE_COUNTING_SEMAPHORES` | `1` | SemOps / CondOps |
 | `configUSE_TASK_NOTIFICATIONS` | `1`（默认） | SoftIrq 可选方案 |
 | `INCLUDE_vTaskDelay` | `1` | `sleep_us()` |
+| `INCLUDE_vTaskPrioritySet` | `1` | `register_current_task()` 把逻辑优先级映射到原生优先级；缺失时无法满足优先级契约 |
 | `INCLUDE_xTaskGetCurrentTaskHandle` | `1`（默认） | `in_dispatcher_thread()` |
 | `INCLUDE_vTaskSuspend` | `1` | `xSemaphoreTake(..., portMAX_DELAY)` 与 `vTaskSuspend(NULL)` 才是永久阻塞；`vTaskDelay(portMAX_DELAY)` 仍不是 |
 | `INCLUDE_vTaskDelay` | `1` | `sleep_us()` |

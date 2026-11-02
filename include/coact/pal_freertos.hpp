@@ -80,8 +80,15 @@
 #if !defined(INCLUDE_vTaskDelete) || (INCLUDE_vTaskDelete != 1)
 #error "coact::pal::FreeRtos requires INCLUDE_vTaskDelete == 1"
 #endif
+#if !defined(INCLUDE_vTaskPrioritySet) || (INCLUDE_vTaskPrioritySet != 1)
+#error "coact::pal::FreeRtos requires INCLUDE_vTaskPrioritySet == 1 (logical prio mapping)"
+#endif
 #if defined(configUSE_16_BIT_TICKS) && (configUSE_16_BIT_TICKS == 1)
 #error "coact::pal::FreeRtos requires a 32-bit TickType_t"
+#endif
+#if defined(configTICK_TYPE_WIDTH_IN_BITS) && \
+    (configTICK_TYPE_WIDTH_IN_BITS != TICK_TYPE_WIDTH_32_BITS)
+#error "coact::pal::FreeRtos requires configTICK_TYPE_WIDTH_IN_BITS == TICK_TYPE_WIDTH_32_BITS"
 #endif
 #if (configMAX_PRIORITIES < 3)
 #error "coact::pal::FreeRtos requires configMAX_PRIORITIES >= 3 (idle, producer, dispatcher)"

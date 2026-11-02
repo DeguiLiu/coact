@@ -1909,6 +1909,59 @@ COACT_TEST(admission_adv_snapshot_read_is_consistent_or_torn)
                 static_cast<unsigned long long>(mixed.load()));
 }
 
+/* Multiple producers can record at once, and two seqs kSlots apart share a
+ * slot. The per-slot writer flag must serialize those two writers: a record
+ * that passes the seq check must still carry one writer's fields only. */
+COACT_TEST(admission_adv_snapshot_multi_writer_is_consistent_or_torn)
+{
+    coact::Monitor<AdvCfg> monitor;
+    std::atomic<uint64_t> consistent{0U};
+    std::atomic<uint64_t> mixed{0U};
+    static constexpr uint32_t kWriters = 4U;
+    static constexpr uint32_t kPerWriter = 2000U;
+
+    std::array<std::thread, kWriters> writers{};
+    for (uint32_t w = 0U; w < kWriters; ++w) {
+        writers[w] = std::thread([&monitor, w]() {
+            for (uint32_t i = 1U; i <= kPerWriter; ++i) {
+                monitor.record_admission_snapshot(
+                    coact::TargetId(static_cast<uint8_t>(1U + w)),
+                    coact::SubmitDisposition::DroppedRateLimit,
+                    static_cast<uint16_t>(100U + w),
+                    static_cast<uint64_t>(i) * 1000U + w,
+                    static_cast<uint64_t>(w));
+            }
+        });
+    }
+    for (auto& t : writers) {
+        t.join();
+    }
+
+    const uint64_t total = monitor.admission_snapshot_count();
+    CHECK_EQ(total, static_cast<uint64_t>(kWriters * kPerWriter));
+    for (uint64_t seq = 1U; seq <= total; ++seq) {
+        const auto got = monitor.admission_snapshot(seq);
+        if (!got) {
+            continue;  /* kTorn (dropped or overwritten) is allowed */
+        }
+        const coact::AdmissionSnapshot& s = got.value();
+        consistent.fetch_add(1U, std::memory_order_relaxed);
+        const uint64_t w = s.budget_ns;
+        if ((w >= kWriters) || (s.target != static_cast<uint8_t>(1U + w))
+            || (s.reason != static_cast<uint16_t>(100U + w))
+            || ((s.now_ns % 1000U) != w)) {
+            mixed.fetch_add(1U, std::memory_order_relaxed);
+        }
+    }
+
+    CHECK(consistent.load(std::memory_order_relaxed) > 0U);
+    CHECK_EQ(mixed.load(std::memory_order_relaxed), static_cast<uint64_t>(0U));
+    std::printf("snapshot multi-writer: consistent=%llu mixed=%llu dropped=%u\n",
+                static_cast<unsigned long long>(consistent.load()),
+                static_cast<unsigned long long>(mixed.load()),
+                static_cast<unsigned>(monitor.admission_snapshot_dropped()));
+}
+
 /* Compile-time rule set for admission_adv_runtime_forwards_admission_policy.
  * One second minimum interval: two back-to-back submits cannot both be
  * admitted, and the test does not depend on host scheduling. */

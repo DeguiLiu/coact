@@ -293,11 +293,10 @@ bool FreeRtos::register_current_task(LogicalPrio prio) noexcept
     slot->ctx.prio_valid = true;
     slot->ctx.direct_depth = 0U;
 
-#if defined(INCLUDE_vTaskPrioritySet) && (INCLUDE_vTaskPrioritySet == 1)
     /* Design D5: never hand a LogicalPrio to FreeRTOS directly; map into
-       1..configMAX_PRIORITIES-1 and leave 0 for the idle task. */
+       1..configMAX_PRIORITIES-1 and leave 0 for the idle task. The header
+       requires INCLUDE_vTaskPrioritySet, so this is unconditional. */
     vTaskPrioritySet(nullptr, detail::map_logical_prio(prio));
-#endif
     return true;
 }
 

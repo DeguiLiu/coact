@@ -713,15 +713,28 @@ enum class SnapshotError : uint8_t {
     kDisabled     // Config asked for no snapshot storage
 };
 
-// Fixed-depth ring of rejection records. A writer fills the fields first and
-// publishes the slot's seq last; a reader checks that seq before and after the
-// fields, so it either returns one whole record or reports kTorn. It cannot
-// hand back a record whose fields came from two different rejections, which is
-// what a plain field-by-field relaxed read would allow on a reused slot.
+// Fixed-depth ring of rejection records. Each slot has one writer at a time:
+// record() claims a per-slot flag and drops the record when another producer
+// already owns that slot. The writer publishes an odd seq, fills the fields,
+// then publishes the even seq; a reader checks the slot seq before and after
+// the fields, so it either returns one whole record or reports kTorn. Without
+// the writer flag two producers whose seqs differ by kSlots could interleave
+// their field stores and leave a record that passes the seq check but mixes
+// both rejections.
 template <uint8_t Slots>
 class AdmissionSnapshotRing {
 public:
     static constexpr uint8_t kSlots = Slots;
+
+    /* Slot fields and count_ are 64-bit atomics. Cortex-M4/M7 builds emit
+       libatomic calls unless the product links a PRIMASK-backed __atomic_*_8
+       shim; boards that enable snapshots must provide it and define
+       COACT_ATOMIC64_SHIM. Host builds are lock-free and need neither. */
+#if !defined(COACT_ATOMIC64_SHIM)
+    static_assert((0U == Slots) || std::atomic<uint64_t>::is_always_lock_free,
+                  "coact: admission snapshots need lock-free 64-bit atomics; "
+                  "link a __atomic_*_8 shim and define COACT_ATOMIC64_SHIM");
+#endif
 
     void record(TargetId target, SubmitDisposition disposition, uint16_t reason,
                 uint64_t now_ns, uint64_t budget_ns) noexcept
@@ -729,6 +742,13 @@ public:
         const uint64_t seq =
             count_.fetch_add(1U, std::memory_order_relaxed) + 1U;
         Slot& s = slots_[static_cast<size_t>(seq - 1U) % kSlots];
+        if (s.writing.test_and_set(std::memory_order_acquire)) {
+            /* Another producer still owns this slot. Diagnostics may drop a
+               record: count_ already consumed the seq, so lookup(seq) sees a
+               different published value and reports kTorn. */
+            dropped_.fetch_add(1U, std::memory_order_relaxed);
+            return;
+        }
         const uint64_t published = seq << 1U;
         s.seq.store(published | 1U, std::memory_order_release);
         s.target.store(target.raw(), std::memory_order_relaxed);
@@ -738,11 +758,17 @@ public:
         s.now_ns.store(now_ns, std::memory_order_relaxed);
         s.budget_ns.store(budget_ns, std::memory_order_relaxed);
         s.seq.store(published, std::memory_order_release);
+        s.writing.clear(std::memory_order_release);
     }
 
     uint64_t count() const noexcept
     {
         return count_.load(std::memory_order_relaxed);
+    }
+
+    uint32_t dropped() const noexcept
+    {
+        return dropped_.load(std::memory_order_relaxed);
     }
 
     Expected<AdmissionSnapshot, SnapshotError>
@@ -790,10 +816,12 @@ private:
         std::atomic<uint64_t> seq{0U};
         std::atomic<uint64_t> now_ns{0U};
         std::atomic<uint64_t> budget_ns{0U};
+        std::atomic_flag writing = ATOMIC_FLAG_INIT;
     };
 
     std::array<Slot, static_cast<size_t>(Slots)> slots_{};
     std::atomic<uint64_t> count_{0U};
+    std::atomic<uint32_t> dropped_{0U};
 };
 
 // Depth 0, the default: no storage, no records, no lookups. A Monitor that was
@@ -807,6 +835,7 @@ public:
     void record(TargetId, SubmitDisposition, uint16_t, uint64_t,
                 uint64_t) const noexcept {}
     uint64_t count() const noexcept { return 0U; }
+    uint32_t dropped() const noexcept { return 0U; }
     Expected<AdmissionSnapshot, SnapshotError> lookup(uint64_t) const noexcept
     {
         return Expected<AdmissionSnapshot, SnapshotError>::error(
@@ -886,6 +915,9 @@ public:
     // Total records ever written. Monotonic, so a reader can compare it
     // against a previously seen seq to tell eviction from "never happened".
     [[nodiscard]] uint64_t admission_snapshot_count() const noexcept;
+    // Records dropped because another producer owned the slot. A dropped seq
+    // is consumed, so its lookup reports kTorn rather than a stale record.
+    [[nodiscard]] uint32_t admission_snapshot_dropped() const noexcept;
     [[nodiscard]] Expected<AdmissionSnapshot, SnapshotError>
     admission_snapshot(uint64_t seq) const noexcept;
 
@@ -1062,6 +1094,11 @@ inline void Monitor<Config>::record_admission_snapshot(
 template <typename Config>
 inline uint64_t Monitor<Config>::admission_snapshot_count() const noexcept {
     return snapshots_.count();
+}
+
+template <typename Config>
+inline uint32_t Monitor<Config>::admission_snapshot_dropped() const noexcept {
+    return snapshots_.dropped();
 }
 
 template <typename Config>

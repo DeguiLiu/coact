@@ -45,6 +45,34 @@ jobs:
       - name: Test
         run: ctest --test-dir build-san --output-on-failure
 
+  # Target-ABI compile gate. The Renode scripts compile these translation
+  # units on the bench; without this job a FreeRTOS-only break (missing
+  # INCLUDE_* macro, static_assert on target, #error gate) lands on master
+  # before anyone runs Renode. Compile only: no kernel link, no emulator.
+  arm-cross:
+    name: arm-cross (FreeRTOS PAL, Cortex-M4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arm-none-eabi-g++
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi
+
+      - name: Compile target translation units
+        run: |
+          CXX=arm-none-eabi-g++
+          FLAGS="-mcpu=cortex-m4 -mthumb -mfloat-abi=soft -std=c++17 \
+                 -fno-exceptions -fno-rtti -fno-threadsafe-statics \
+                 -fno-use-cxa-atexit -Os -Wall -Wextra \
+                 -DCOACT_ATOMIC64_SHIM \
+                 -Itest/renode/freertos -Itest/renode/freertos/include \
+                 -Itest/renode/freertos/port -Itest/renode -Iinclude"
+          $CXX $FLAGS -c src/core/pal_freertos.cpp -o /tmp/pal_freertos.o
+          $CXX $FLAGS -c test/renode/freertos_main.cpp -o /tmp/freertos_main.o
+          $CXX $FLAGS -c test/renode/main.cpp -o /tmp/renode_main.o
+
   # Windows / MSVC job. The windows branch is what the Windows product
   # consumes, and pal_windows.{hpp,cpp} only compile here, so this job is the
   # only place that defect class can be caught. Scope is the host-portable

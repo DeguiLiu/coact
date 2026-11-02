@@ -111,7 +111,13 @@ public:
 
     void increment() noexcept
     {
-        count_.fetch_add(static_cast<uint16_t>(1U), std::memory_order_release);
+        const uint16_t prior =
+            count_.fetch_add(static_cast<uint16_t>(1U),
+                             std::memory_order_release);
+        /* Unconditional adds are used only when the pool bounds the pending
+           count; crossing the 16-bit ceiling is a capacity bug, not a state
+           to wrap through. */
+        COACT_ASSERT(prior != 0xffffU);
     }
 
     void decrement() noexcept
