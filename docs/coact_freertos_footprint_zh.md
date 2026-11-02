@@ -82,3 +82,28 @@ test/renode/footprint.sh
 
 脚本输出三张镜像的 `arm-none-eabi-size`、最大 `.bss` 符号，并在 Renode 中运行
 `baseline` 与两个 coact 镜像，打印栈高水位。
+
+## 7. 如果改用 C 实现（预估，非实测）
+
+结论：等价功能的 C 实现大约增加 5–7 KiB Flash，RAM 与 coact 基本同量级
+（6–10 KiB）。语言不是主要成本来源；要显著缩小体积，应当削减功能或容量。
+
+| 档位 | 内容 | 预估 Flash 增量 | 预估 RAM 增量 |
+|---|---|---:|---:|
+| 等价 C 实现 | 单 Dispatcher、事件池、优先级队列、HSM 表、PAL 封装 | +5–7 KiB | +6–10 KiB |
+| 极简 C 实现 | 1 个任务 + 1 个环形队列 + `switch` 状态机，无 AO 注册表/熔断器/监控 | +2–3.5 KiB | +4–5 KiB |
+
+估算依据：
+
+- coact 实测 Flash 增量为 9064 B。等价 C 版可省去模板实例化、通用装配和少量
+  重复内联，预计省 30–40%，即落在 5–7 KiB。
+- RAM 的主要项是 Dispatcher 栈（4 KiB）和 Staging（默认 5.3 KiB），C 版同样
+  需要这些数据结构，预计只省 5–10%。
+- coact 已使用 `-fno-exceptions -fno-rtti`，热路径没有虚函数，也没有堆；
+  9 KiB 主要是实际逻辑，不是 C++ 语言开销。
+- C 版的代价是失去 `static_assert`、RAII 回滚、强类型句柄和编译期容量检查，
+  事件所有权与句柄配对只能靠约定和人工检查。
+
+需要更准确的数字时，可以按“极简 C 实现”写一个参考镜像，复用
+`test/renode/footprint.sh` 的同一套内核、启动代码和编译选项实测；上表不应作为
+实测证据引用。
