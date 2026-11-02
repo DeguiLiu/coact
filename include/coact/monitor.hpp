@@ -729,15 +729,15 @@ public:
         const uint64_t seq =
             count_.fetch_add(1U, std::memory_order_relaxed) + 1U;
         Slot& s = slots_[static_cast<size_t>(seq - 1U) % kSlots];
+        const uint64_t published = seq << 1U;
+        s.seq.store(published | 1U, std::memory_order_release);
         s.target.store(target.raw(), std::memory_order_relaxed);
         s.disposition.store(static_cast<uint8_t>(disposition),
                             std::memory_order_relaxed);
         s.reason.store(reason, std::memory_order_relaxed);
         s.now_ns.store(now_ns, std::memory_order_relaxed);
         s.budget_ns.store(budget_ns, std::memory_order_relaxed);
-        /* Published last, with release: a reader that sees this seq sees the
-           five fields written above it. */
-        s.seq.store(seq, std::memory_order_release);
+        s.seq.store(published, std::memory_order_release);
     }
 
     uint64_t count() const noexcept
@@ -762,7 +762,8 @@ public:
             return Result::error(SnapshotError::kEvicted);
         }
         const Slot& s = slots_[static_cast<size_t>(seq - 1U) % kSlots];
-        if (s.seq.load(std::memory_order_acquire) != seq) {
+        const uint64_t published = seq << 1U;
+        if (s.seq.load(std::memory_order_acquire) != published) {
             return Result::error(SnapshotError::kTorn);
         }
         AdmissionSnapshot out{};
@@ -775,7 +776,7 @@ public:
         /* The slot may have been reused while the fields were read; its seq
            then no longer matches the requested one and the record above is a
            mix of two rejections. */
-        if (s.seq.load(std::memory_order_acquire) != seq) {
+        if (s.seq.load(std::memory_order_acquire) != published) {
             return Result::error(SnapshotError::kTorn);
         }
         return Result::success(out);
