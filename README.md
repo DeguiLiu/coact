@@ -6,22 +6,30 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 coact (**Co**operative **Act**ive-object framework) is a header-first **C++17**
-event framework for **single-core MCUs** running RT-Thread: producers submit from
-task or ISR context, one dispatcher thread delivers to **Active Objects (AO)**
-backed by **Hierarchical State Machines (HSM)**. Events replace threads; one
-dispatcher thread runs them; transition tables are static.
+event framework for **single-core MCUs** running **RT-Thread or FreeRTOS**:
+producers submit from task or ISR context, one dispatcher thread delivers to
+**Active Objects (AO)** backed by **Hierarchical State Machines (HSM)**. Events
+replace threads; one dispatcher thread runs them; transition tables are static.
+
+coact turns execution order, failure paths and recovery state from caller
+discipline into framework structure: one dispatcher, static HSMs and a
+fixed-capacity event pool turn a request from a plain call into a stateful
+lifecycle, and partitioned AOs with explicit phase enums keep it bounded,
+checkable and recoverable by construction.
 
 ## Why coact
 
 - **C++17 only, no code generator.** Transitions are ordinary `constexpr` tables
   in your translation unit; no modelling tool sits in the build.
 - **Single core is the design point.** `SingleCoreCriticalRing` plus an injected
-  `CriticalSection` (irq mask on RT-Thread) keeps the ISR path lock-free and
-  libatomic-free; host SMP is a test reference, not the product target.
+  `CriticalSection` (irq mask on RT-Thread, task critical section / ISR mask on
+  FreeRTOS) keeps the ISR path lock-free and libatomic-free; host SMP is a test
+  reference, not the product target.
 - **Fixed capacity, zero hot-path allocation.** A fixed-size `EventPool` recycled
   by ref-count lets one event fan out safely (`-fno-exceptions -fno-rtti`).
-- **RT-Thread is the primary target, not a port.** Linux and Windows hosts build
-  from the same headers through a small PAL swap.
+- **RT-Thread and FreeRTOS are first-class targets, not ports.** Both PALs use
+  caller-provided static resources and never allocate; Linux and Windows hosts
+  build from the same headers through the same PAL boundary.
 - **Critical-High staging reservation** (this branch): `kHighCriticalReserve` keeps
   High-partition cells free for critical events, plus a `ReservedNormal` lane.
 - **Deterministic wakeups.** The dispatcher wakes only when idle and a drain-check
@@ -80,7 +88,7 @@ On RT-Thread include the same headers, select `coact/pal_rtthread.hpp` and compi
 `src/core/pal_rtthread.cpp` into the BSP — the PAL uses caller-provided static
 resources and never allocates.
 
-On FreeRTOS Kernel V11 select `coact/pal_freertos.hpp` and compile
+On FreeRTOS select `coact/pal_freertos.hpp` and compile
 `src/core/pal_freertos.cpp`; `FreeRtosResources` owns the dispatcher/worker
 stacks and every kernel object. The port requires a single-core build with
 static allocation enabled; Cortex-M0/M0+ is not supported.
@@ -94,8 +102,10 @@ static allocation enabled; Cortex-M0/M0+ is not supported.
 ## Testing
 
 Host targets pass under `ctest` and are TSan-clean on the pool/dispatcher paths;
-CI adds ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread 5.2.1 /
-qemu-vexpress-a9 (single core).
+CI adds ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread under
+qemu-vexpress-a9 (single core) and on FreeRTOS under Renode (Cortex-M4 running
+the CM3 port), including a fault-injection fixture where IWDG resets a task that
+masks interrupts and spins.
 
 ## License
 

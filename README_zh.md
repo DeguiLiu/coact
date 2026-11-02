@@ -5,24 +5,27 @@
 [![CI](https://github.com/DeguiLiu/coact/actions/workflows/ci.yml/badge.svg)](https://github.com/DeguiLiu/coact/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-coact（**Co**operative **Act**ive-object framework）是一个面向 **RT-Thread 单核
-MCU** 的 header-first **C++17** 事件框架：生产者从任务或 ISR 上下文提交事件，由单
-一线程派发给 **主动对象（AO）**，AO 行为由 **层次状态机（HSM）** 描述。事件代替线程；
-单一线程派发；转移表是静态的。
+coact（**Co**operative **Act**ive-object framework）是一个面向 **RT-Thread /
+FreeRTOS 单核 MCU** 的 header-first **C++17** 事件框架：生产者从任务或 ISR 上下文
+提交事件，由单一线程派发给 **主动对象（AO）**，AO 行为由 **层次状态机（HSM）**
+描述。事件代替线程；单一线程派发；转移表是静态的。
 
-coact 的核心价值在于把执行顺序、失败路径和恢复状态从调用者的自觉变成框架结构，coact 用单 Dispatcher、静态 HSM 和定容事件池，把一次请求从“函数调用”变成“有状态的生命周期”；分级 AO 与显式阶段枚举让有界、可检测、可恢复成为结构属性。
+coact 的核心价值在于把执行顺序、失败路径和恢复状态从调用者的自觉变成框架结构：
+单 Dispatcher、静态 HSM 和定容事件池把一次请求从“函数调用”变成“有状态的生命
+周期”，分级 AO 与显式阶段枚举让有界、可检测、可恢复成为结构属性。
 
 ## 为什么选 coact
 
 - **只用 C++17，不需要代码生成器。** 转移就是你翻译单元里的普通 `constexpr`
   表，构建过程里没有建模工具这一环。
 - **单核是设计前提。** `SingleCoreCriticalRing` 配合注入的 `CriticalSection`
-  （RT-Thread 上即关中断），使 ISR 路径既不加锁也不依赖 libatomic；host 上的
-  SMP 只是测试参考，不是产品目标。
+  （RT-Thread 上关中断，FreeRTOS 上用任务临界区 / ISR 屏蔽），使 ISR 路径既不
+  加锁也不依赖 libatomic；host 上的 SMP 只是测试参考，不是产品目标。
 - **容量定死，热路径零分配。** 定容 `EventPool` 以引用计数回收，同一事件可安全
   扇出给多个 AO（`-fno-exceptions -fno-rtti`）。
-- **RT-Thread 是首选目标，而不是"移植之一"。** Linux / Windows host 用同一套头文件，
-  仅切换 PAL。
+- **RT-Thread 与 FreeRTOS 都是一等目标，而不是"移植之一"。** 两个 PAL 都只使用
+  调用方提供的静态资源，自身不做分配；Linux / Windows host 用同一套头文件，仅
+  切换 PAL。
 - **关键事件预约**（仅本分支）：`kHighCriticalReserve` 为 High 分区保留单元，使
   关键事件在普通流量打满时仍能进入，并配一条 `ReservedNormal` 通道。
 - **唤醒确定性。** 仅在 Dispatcher 空闲时才 signal，drain 复查封闭 missed-wakeup
@@ -80,7 +83,7 @@ rt.start();
 `src/core/pal_rtthread.cpp` 编进 BSP——该 PAL 使用调用方提供的静态资源，自身不做
 任何分配。
 
-在 FreeRTOS Kernel V11 上选 `coact/pal_freertos.hpp`，把
+在 FreeRTOS 上选 `coact/pal_freertos.hpp`，把
 `src/core/pal_freertos.cpp` 编进工程；`FreeRtosResources` 持有 dispatcher /
 worker 栈与全部内核对象。要求单核、静态分配；不支持 Cortex-M0/M0+。
 
@@ -93,8 +96,9 @@ worker 栈与全部内核对象。要求单核、静态分配；不支持 Cortex
 ## 测试
 
 host 目标在 `ctest` 下全部通过，池 / Dispatcher 路径 TSan 无竞争；CI 另跑
-ASan/UBSan 与 Windows MSVC job。已在 RT-Thread 5.2.1 / qemu-vexpress-a9（单核）
-上完成启动验证。
+ASan/UBSan 与 Windows MSVC job。已在 RT-Thread / qemu-vexpress-a9（单核）完成
+启动验证；FreeRTOS 在 Renode（Cortex-M4，CM3 端口）上跑通 PAL、运行时断言与
+故障注入夹具，其中关中断死循环的任务由 IWDG 复位。
 
 ## 许可
 
