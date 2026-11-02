@@ -36,14 +36,14 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-#include <windows.h>
-
-#include <atomic>
-#include <cstdint>
-
 #include "coact/config.hpp"
 #include "coact/pal.hpp"
 #include "coact/queue.hpp"
+
+#include <cstdint>
+
+#include <atomic>
+#include <windows.h>
 
 namespace coact {
 namespace pal {
@@ -59,221 +59,216 @@ namespace pal {
 // not depend on the consuming app's foundation headers).
 // ---------------------------------------------------------------------------
 class WakeEvent {
-public:
-    WakeEvent() noexcept;               // CreateEventW auto-reset, null on failure
-    ~WakeEvent() noexcept;              // CloseHandle
-    WakeEvent(const WakeEvent&) = delete;
-    WakeEvent& operator=(const WakeEvent&) = delete;
-    WakeEvent(WakeEvent&& other) noexcept;
-    WakeEvent& operator=(WakeEvent&& other) noexcept;
+ public:
+  WakeEvent() noexcept;   // CreateEventW auto-reset, null on failure
+  ~WakeEvent() noexcept;  // CloseHandle
+  WakeEvent(const WakeEvent&) = delete;
+  WakeEvent& operator=(const WakeEvent&) = delete;
+  WakeEvent(WakeEvent&& other) noexcept;
+  WakeEvent& operator=(WakeEvent&& other) noexcept;
 
-    bool valid() const noexcept;        // true iff the handle was created
-    void signal() noexcept;             // SetEvent (null-safe)
-    bool wait(uint32_t ms) noexcept;    // WaitForSingleObject; true == signaled
-                                        // (0 = wait forever, PAL convention)
+  bool valid() const noexcept;      // true iff the handle was created
+  void signal() noexcept;           // SetEvent (null-safe)
+  bool wait(uint32_t ms) noexcept;  // WaitForSingleObject; true == signaled
+                                    // (0 = wait forever, PAL convention)
 
-private:
-    HANDLE handle_;
+ private:
+  HANDLE handle_;
 };
 
 class Windows {
-public:
-    // SoftIrqOps mailbox capacity (the fixed SPSC ring embedded in
-    // SoftIrqHandle). A class member rather than a namespace-scope constant so
-    // a translation unit that also includes pal_rtthread.hpp does not collide
-    // with kSoftIrqRingSlots. Keep the layout deterministic; callers wanting a
-    // larger queue chain multiple handles (the SoftIrqOps contract is SPSC).
-    static constexpr uint32_t kSoftIrqRingSlots = 8U;
-    // Lock-free discipline: the SPSC ring only ever crosses two threads; tag
-    // the atomic width so a non-lock-free atomics port fails at compile time,
-    // not at runtime through a fallback.
-    static_assert(std::atomic<uint32_t>::is_always_lock_free,
-                  "SoftIrq ring indices must stay lock-free");
+ public:
+  // SoftIrqOps mailbox capacity (the fixed SPSC ring embedded in
+  // SoftIrqHandle). A class member rather than a namespace-scope constant so
+  // a translation unit that also includes pal_rtthread.hpp does not collide
+  // with kSoftIrqRingSlots. Keep the layout deterministic; callers wanting a
+  // larger queue chain multiple handles (the SoftIrqOps contract is SPSC).
+  static constexpr uint32_t kSoftIrqRingSlots = 8U;
+  // Lock-free discipline: the SPSC ring only ever crosses two threads; tag
+  // the atomic width so a non-lock-free atomics port fails at compile time,
+  // not at runtime through a fallback.
+  static_assert(std::atomic<uint32_t>::is_always_lock_free, "SoftIrq ring indices must stay lock-free");
 
-    // -----------------------------------------------------------------------
-    // Windows sync handles. Self-contained values filled in by the PAL's init
-    // methods; the `pal` back-pointer lets lambdas and free functions call
-    // back into the PAL through the handle (same shape as pal::Posix).
-    // -----------------------------------------------------------------------
-    struct SemHandle {
-        HANDLE   sem;   // CreateSemaphoreW (counting, max LONG_MAX)
-        Windows* pal;   // set by Windows::sem_init
-    };
+  // -----------------------------------------------------------------------
+  // Windows sync handles. Self-contained values filled in by the PAL's init
+  // methods; the `pal` back-pointer lets lambdas and free functions call
+  // back into the PAL through the handle (same shape as pal::Posix).
+  // -----------------------------------------------------------------------
+  struct SemHandle {
+    HANDLE sem;    // CreateSemaphoreW (counting, max LONG_MAX)
+    Windows* pal;  // set by Windows::sem_init
+  };
 
-    struct MutexHandle {
-        CRITICAL_SECTION cs;    // InitializeCriticalSectionAndSpinCount
-        Windows*         pal;   // set by Windows::mutex_init
-    };
+  struct MutexHandle {
+    CRITICAL_SECTION cs;  // InitializeCriticalSectionAndSpinCount
+    Windows* pal;         // set by Windows::mutex_init
+  };
 
-    struct CondHandle {
-        CONDITION_VARIABLE cv;  // InitializeConditionVariable
-        Windows*           pal; // set by Windows::cond_init
-    };
+  struct CondHandle {
+    CONDITION_VARIABLE cv;  // InitializeConditionVariable
+    Windows* pal;           // set by Windows::cond_init
+  };
 
-    struct ThreadHandle {
-        HANDLE      thread;     // _beginthreadex handle, closed by thread_join
-        bool        valid;
-        ThreadEntry entry;      // filled by thread_create; read by the trampoline
-        void*       context;
-        Windows*    pal;        // set by Windows::thread_create
-    };
+  struct ThreadHandle {
+    HANDLE thread;  // _beginthreadex handle, closed by thread_join
+    bool valid;
+    ThreadEntry entry;  // filled by thread_create; read by the trampoline
+    void* context;
+    Windows* pal;  // set by Windows::thread_create
+  };
 
-    // SoftIrqHandle (SoftIrqOps family): a fixed-capacity SPSC mailbox plus an
-    // auto-reset event used purely as a wake hint — a Win32 event cannot carry
-    // the int32_t payload, so the payload travels in the ring (exactly the
-    // RT-Thread port's design). init() runs on the consumer thread; raise()
-    // publishes then SetEvent(); take() drains FIFO and returns -1 on timeout.
-    struct SoftIrqHandle {
-        HANDLE                event = nullptr;  // CreateEventW (auto-reset)
-        std::atomic<uint32_t> head{0};          // producer write index (wraps)
-        std::atomic<uint32_t> tail{0};          // consumer read index (wraps)
-        int32_t               ring[kSoftIrqRingSlots];
-        Windows*              pal = nullptr;    // set by Windows::softirq_init
-    };
+  // SoftIrqHandle (SoftIrqOps family): a fixed-capacity SPSC mailbox plus an
+  // auto-reset event used purely as a wake hint — a Win32 event cannot carry
+  // the int32_t payload, so the payload travels in the ring (exactly the
+  // RT-Thread port's design). init() runs on the consumer thread; raise()
+  // publishes then SetEvent(); take() drains FIFO and returns -1 on timeout.
+  struct SoftIrqHandle {
+    HANDLE event = nullptr;         // CreateEventW (auto-reset)
+    std::atomic<uint32_t> head{0};  // producer write index (wraps)
+    std::atomic<uint32_t> tail{0};  // consumer read index (wraps)
+    int32_t ring[kSoftIrqRingSlots];
+    Windows* pal = nullptr;  // set by Windows::softirq_init
+  };
 
-    Windows() noexcept;
-    ~Windows() noexcept;   // join_dispatcher + close the wake/started/gate events
+  Windows() noexcept;
+  ~Windows() noexcept;  // join_dispatcher + close the wake/started/gate events
 
-    // A PAL owns raw kernel HANDLEs (wake/started events and, while a
-    // Dispatcher is live, its thread handle). Copying one would produce two
-    // owners for the same handle, and the second CloseHandle to run would
-    // close whatever the OS had since handed out under that value. The type is
-    // a per-process singleton in practice, so deleting the copy operations
-    // costs nothing and turns that into a compile error.
-    Windows(const Windows&) = delete;
-    Windows& operator=(const Windows&) = delete;
+  // A PAL owns raw kernel HANDLEs (wake/started events and, while a
+  // Dispatcher is live, its thread handle). Copying one would produce two
+  // owners for the same handle, and the second CloseHandle to run would
+  // close whatever the OS had since handed out under that value. The type is
+  // a per-process singleton in practice, so deleting the copy operations
+  // costs nothing and turns that into a compile error.
+  Windows(const Windows&) = delete;
+  Windows& operator=(const Windows&) = delete;
 
-    // -- Interrupt masking: no-op on a Windows SMP host (tokens opaque) ------
-    CriticalToken irq_save() noexcept;
-    void irq_restore(CriticalToken token) noexcept;
+  // -- Interrupt masking: no-op on a Windows SMP host (tokens opaque) ------
+  CriticalToken irq_save() noexcept;
+  void irq_restore(CriticalToken token) noexcept;
 
-    // Register the calling thread's logical priority for the C2 admission
-    // gate. Returns false for invalid priorities.
-    bool register_current_task(LogicalPrio prio) noexcept;
+  // Register the calling thread's logical priority for the C2 admission
+  // gate. Returns false for invalid priorities.
+  bool register_current_task(LogicalPrio prio) noexcept;
 
-    ExecutionContext current_context() const noexcept;
+  ExecutionContext current_context() const noexcept;
 
-    // Real thread identity: true only on the coact Dispatcher thread. Backed by
-    // the thread_local context set in dispatcher_entry(). Static so the
-    // Dispatcher can bind it as a gate callback without an instance.
-    static bool in_dispatcher_thread() noexcept;
+  // Real thread identity: true only on the coact Dispatcher thread. Backed by
+  // the thread_local context set in dispatcher_entry(). Static so the
+  // Dispatcher can bind it as a gate callback without an instance.
+  static bool in_dispatcher_thread() noexcept;
 
-    uint64_t monotonic_ns() const noexcept;
-    uint64_t clock_resolution_ns() const noexcept;
+  uint64_t monotonic_ns() const noexcept;
+  uint64_t clock_resolution_ns() const noexcept;
 
-    // Host-test hook: simulate an RT-Thread-style coarse tick. When hz != 0,
-    // monotonic_ns() is quantized to 1/hz s (e.g. 100 Hz -> 10 ms), matching a
-    // tick-based PAL. Default 0 = no quantization (QPC resolution).
-    void set_tick_hz(uint32_t hz) noexcept;
+  // Host-test hook: simulate an RT-Thread-style coarse tick. When hz != 0,
+  // monotonic_ns() is quantized to 1/hz s (e.g. 100 Hz -> 10 ms), matching a
+  // tick-based PAL. Default 0 = no quantization (QPC resolution).
+  void set_tick_hz(uint32_t hz) noexcept;
 
-    // No-op: Windows uses the default thread stack; kept so the Runtime can
-    // push Config::kDispatcherStackBytes to any PAL uniformly.
-    void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
+  // No-op: Windows uses the default thread stack; kept so the Runtime can
+  // push Config::kDispatcherStackBytes to any PAL uniformly.
+  void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
 
-    // Host-test hook (same spirit as set_tick_hz): bound the start_dispatcher
-    // entry handshake, default 1000 ms. Setting 0 forces the handshake-timeout
-    // path deterministically so a test can prove a failed start never runs the
-    // entry. The raw setter is private (below); production cannot reach it —
-    // only a test TU that defines COACT_ENABLE_WINDOWS_TEST_HOOKS before
-    // including this header gets the accessor.
+  // Host-test hook (same spirit as set_tick_hz): bound the start_dispatcher
+  // entry handshake, default 1000 ms. Setting 0 forces the handshake-timeout
+  // path deterministically so a test can prove a failed start never runs the
+  // entry. The raw setter is private (below); production cannot reach it —
+  // only a test TU that defines COACT_ENABLE_WINDOWS_TEST_HOOKS before
+  // including this header gets the accessor.
 #if defined(COACT_ENABLE_WINDOWS_TEST_HOOKS)
-    void set_start_timeout_for_test(uint32_t ms) noexcept
-    {
-        set_dispatcher_start_timeout_ms(ms);
-    }
+  void set_start_timeout_for_test(uint32_t ms) noexcept { set_dispatcher_start_timeout_ms(ms); }
 #endif
 
-    // Block up to timeout_ms for a dispatcher signal (0 = wait forever).
-    void wait_dispatcher(uint32_t timeout_ms) noexcept;
-    void signal_dispatcher_from_task() noexcept;
-    // Non-blocking SetEvent (callers may be real callback/ISR threads).
-    void signal_dispatcher_from_isr() noexcept;
+  // Block up to timeout_ms for a dispatcher signal (0 = wait forever).
+  void wait_dispatcher(uint32_t timeout_ms) noexcept;
+  void signal_dispatcher_from_task() noexcept;
+  // Non-blocking SetEvent (callers may be real callback/ISR threads).
+  void signal_dispatcher_from_isr() noexcept;
 
-    [[nodiscard]] bool start_dispatcher(ThreadEntry entry,
-                                        void* context) noexcept;
-    void join_dispatcher() noexcept;
-    void watchdog_progress(uint32_t marker) noexcept;
+  [[nodiscard]] bool start_dispatcher(ThreadEntry entry, void* context) noexcept;
+  void join_dispatcher() noexcept;
+  void watchdog_progress(uint32_t marker) noexcept;
 
-    // -- M1 C3 extension: track the calling thread's direct-dispatch depth --
-    void enter_direct() noexcept;
-    void leave_direct() noexcept;
+  // -- M1 C3 extension: track the calling thread's direct-dispatch depth --
+  void enter_direct() noexcept;
+  void leave_direct() noexcept;
 
-    // Windows backend: bounded MPSC (same as every SMP host).
-    template <typename T, uint16_t Cap>
-    using QueueBackend = coact::BoundedMpscQueue<T, Cap>;
+  // Windows backend: bounded MPSC (same as every SMP host).
+  template <typename T, uint16_t Cap>
+  using QueueBackend = coact::BoundedMpscQueue<T, Cap>;
 
-    // -- SemOps family (pal.hpp): CreateSemaphoreW --------------------------
-    // take(0) is a non-blocking try, take(kWaitForever) blocks until a token
-    // exists, any other timeout_ms bounds the wait. release/release_from_isr
-    // both call ReleaseSemaphore (host "ISR" producers are ordinary threads).
-    bool sem_init(SemHandle& sem, uint32_t initial) noexcept;
-    bool sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept;
-    void sem_release(SemHandle& sem) noexcept;
-    void sem_release_from_isr(SemHandle& sem) noexcept;
-    void sem_deinit(SemHandle& sem) noexcept;
+  // -- SemOps family (pal.hpp): CreateSemaphoreW --------------------------
+  // take(0) is a non-blocking try, take(kWaitForever) blocks until a token
+  // exists, any other timeout_ms bounds the wait. release/release_from_isr
+  // both call ReleaseSemaphore (host "ISR" producers are ordinary threads).
+  bool sem_init(SemHandle& sem, uint32_t initial) noexcept;
+  bool sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept;
+  void sem_release(SemHandle& sem) noexcept;
+  void sem_release_from_isr(SemHandle& sem) noexcept;
+  void sem_deinit(SemHandle& sem) noexcept;
 
-    // -- MutexOps family (pal.hpp): CRITICAL_SECTION ------------------------
-    bool mutex_init(MutexHandle& m) noexcept;
-    void mutex_lock(MutexHandle& m) noexcept;
-    void mutex_unlock(MutexHandle& m) noexcept;
-    void mutex_deinit(MutexHandle& m) noexcept;
+  // -- MutexOps family (pal.hpp): CRITICAL_SECTION ------------------------
+  bool mutex_init(MutexHandle& m) noexcept;
+  void mutex_lock(MutexHandle& m) noexcept;
+  void mutex_unlock(MutexHandle& m) noexcept;
+  void mutex_deinit(MutexHandle& m) noexcept;
 
-    // -- CondOps family (pal.hpp): CONDITION_VARIABLE + CRITICAL_SECTION ----
-    bool cond_init(CondHandle& c) noexcept;
-    // timeout_ms 0 = wait forever (the Dispatcher wait convention) — NOTE this
-    // is the OPPOSITE of the Win32 dwMilliseconds==0 "return immediately"
-    // meaning, so cond_wait translates 0/kWaitForever to INFINITE explicitly.
-    void cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexcept;
-    void cond_signal(CondHandle& c) noexcept;
-    void cond_broadcast(CondHandle& c) noexcept;
-    void cond_deinit(CondHandle& c) noexcept;
+  // -- CondOps family (pal.hpp): CONDITION_VARIABLE + CRITICAL_SECTION ----
+  bool cond_init(CondHandle& c) noexcept;
+  // timeout_ms 0 = wait forever (the Dispatcher wait convention) — NOTE this
+  // is the OPPOSITE of the Win32 dwMilliseconds==0 "return immediately"
+  // meaning, so cond_wait translates 0/kWaitForever to INFINITE explicitly.
+  void cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexcept;
+  void cond_signal(CondHandle& c) noexcept;
+  void cond_broadcast(CondHandle& c) noexcept;
+  void cond_deinit(CondHandle& c) noexcept;
 
-    // -- ThreadOps family (pal.hpp): _beginthreadex + WaitForSingleObject ----
-    bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
-    void thread_join(ThreadHandle& t) noexcept;
+  // -- ThreadOps family (pal.hpp): _beginthreadex + WaitForSingleObject ----
+  bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
+  void thread_join(ThreadHandle& t) noexcept;
 
-    // -- SoftIrqOps family (pal.hpp): event wake + SPSC payload ring -------
-    bool softirq_init(SoftIrqHandle& h) noexcept;
-    bool softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept;
-    // timeout_ms 0 == kWaitForever (the documented wait-forever convention);
-    // returns -1 on timeout.
-    int32_t softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept;
-    void softirq_deinit(SoftIrqHandle& h) noexcept;
+  // -- SoftIrqOps family (pal.hpp): event wake + SPSC payload ring -------
+  bool softirq_init(SoftIrqHandle& h) noexcept;
+  bool softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept;
+  // timeout_ms 0 == kWaitForever (the documented wait-forever convention);
+  // returns -1 on timeout.
+  int32_t softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept;
+  void softirq_deinit(SoftIrqHandle& h) noexcept;
 
-    // -- Sleep (SemOps family companion): block the calling thread ---------
-    // Whole milliseconds via Sleep(), the sub-millisecond remainder via a QPC
-    // busy-wait. Windows' default timer resolution is ~15.6 ms unless the
-    // process calls timeBeginPeriod(), so whole-ms Sleep() calls round UP to
-    // the next tick — this is NOT a precise microsecond delay.
-    void sleep_us(uint32_t us) noexcept;
+  // -- Sleep (SemOps family companion): block the calling thread ---------
+  // Whole milliseconds via Sleep(), the sub-millisecond remainder via a QPC
+  // busy-wait. Windows' default timer resolution is ~15.6 ms unless the
+  // process calls timeBeginPeriod(), so whole-ms Sleep() calls round UP to
+  // the next tick — this is NOT a precise microsecond delay.
+  void sleep_us(uint32_t us) noexcept;
 
-private:
-    static unsigned int __stdcall dispatcher_entry(void* arg) noexcept;
-    static unsigned int __stdcall thread_trampoline(void* arg) noexcept;
+ private:
+  static unsigned int __stdcall dispatcher_entry(void* arg) noexcept;
+  static unsigned int __stdcall thread_trampoline(void* arg) noexcept;
 
-    HANDLE      wake_event_;       // auto-reset Dispatcher wake
-    HANDLE      started_event_;    // auto-reset start handshake (entry -> starter);
-                                   // reset at the top of every start_dispatcher
-                                   // attempt so a stale signal cannot fake a start
-    HANDLE      start_gate_event_; // auto-reset start gate (starter -> entry)
-    bool        thread_valid_;
-    HANDLE      dispatcher_thread_;  // _beginthreadex handle, closed on join
-    ThreadEntry user_entry_;
-    void*       user_ctx_;
-    // Set by start_dispatcher when the entry handshake times out: the entry,
-    // however late it is scheduled, must return before touching user_entry_.
-    std::atomic<bool> start_abandoned_;
-    uint32_t    start_timeout_ms_; // handshake bound (host-test hook)
-    LARGE_INTEGER freq_;
-    uint32_t    tick_hz_;         // 0 = no quantization (QPC native)
-    uint64_t    ns_per_tick_;     // 1e9 / tick_hz_, valid when tick_hz_ != 0
-    static thread_local ExecutionContext tls_ctx_;
+  HANDLE wake_event_;        // auto-reset Dispatcher wake
+  HANDLE started_event_;     // auto-reset start handshake (entry -> starter);
+                             // reset at the top of every start_dispatcher
+                             // attempt so a stale signal cannot fake a start
+  HANDLE start_gate_event_;  // auto-reset start gate (starter -> entry)
+  bool thread_valid_;
+  HANDLE dispatcher_thread_;  // _beginthreadex handle, closed on join
+  ThreadEntry user_entry_;
+  void* user_ctx_;
+  // Set by start_dispatcher when the entry handshake times out: the entry,
+  // however late it is scheduled, must return before touching user_entry_.
+  std::atomic<bool> start_abandoned_;
+  uint32_t start_timeout_ms_;  // handshake bound (host-test hook)
+  LARGE_INTEGER freq_;
+  uint32_t tick_hz_;      // 0 = no quantization (QPC native)
+  uint64_t ns_per_tick_;  // 1e9 / tick_hz_, valid when tick_hz_ != 0
+  static thread_local ExecutionContext tls_ctx_;
 
-    // Private host-test hook (definition in pal_windows.cpp), reachable only via
-    // set_start_timeout_for_test() above under COACT_ENABLE_WINDOWS_TEST_HOOKS.
-    // Kept private and out of the public API so no production call site can pass
-    // 0 and force every start to fail.
-    void set_dispatcher_start_timeout_ms(uint32_t ms) noexcept;
+  // Private host-test hook (definition in pal_windows.cpp), reachable only via
+  // set_start_timeout_for_test() above under COACT_ENABLE_WINDOWS_TEST_HOOKS.
+  // Kept private and out of the public API so no production call site can pass
+  // 0 and force every start to fail.
+  void set_dispatcher_start_timeout_ms(uint32_t ms) noexcept;
 };
 
 // ---------------------------------------------------------------------------

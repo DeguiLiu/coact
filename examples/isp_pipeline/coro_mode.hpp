@@ -73,51 +73,44 @@
 
 #ifdef ISP_DEMO_CORO
 
-#include <pthread.h>
-#include <time.h>
+#include "coact/coro/posix.hpp"
+
+#include <cstdint>
+#include <cstdio>
 
 #include <array>
 #include <atomic>
-#include <cstdint>
-#include <cstdio>
+#include <pthread.h>
 #include <thread>
+#include <time.h>
 #include <utility>
-
-#include "coact/coro/posix.hpp"
 
 namespace isp_demo_coro {
 
 // The single executor instance (defined in main.cpp).
-inline coact::coro::posix::StackfulExecutor<16U, 256U * 1024U>* g_exec =
-    nullptr;
+inline coact::coro::posix::StackfulExecutor<16U, 256U * 1024U>* g_exec = nullptr;
 inline std::atomic<bool> g_stop{false};
 inline pthread_t g_thread{};
 inline std::atomic<bool> g_thread_valid{false};
 
-inline uint64_t now_us() noexcept
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<uint64_t>(ts.tv_sec) * 1000000ULL +
-           static_cast<uint64_t>(ts.tv_nsec) / 1000ULL;
+inline uint64_t now_us() noexcept {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<uint64_t>(ts.tv_sec) * 1000000ULL + static_cast<uint64_t>(ts.tv_nsec) / 1000ULL;
 }
 
-inline void sleep_us_impl(uint64_t us) noexcept
-{
-    struct timespec ts;
-    ts.tv_sec = static_cast<time_t>(us / 1000000ULL);
-    ts.tv_nsec = static_cast<long>((us % 1000000ULL) * 1000ULL);
-    clock_nanosleep(CLOCK_MONOTONIC, 0U, &ts, nullptr);
+inline void sleep_us_impl(uint64_t us) noexcept {
+  struct timespec ts;
+  ts.tv_sec = static_cast<time_t>(us / 1000000ULL);
+  ts.tv_nsec = static_cast<long>((us % 1000000ULL) * 1000ULL);
+  clock_nanosleep(CLOCK_MONOTONIC, 0U, &ts, nullptr);
 }
 
 // Yield with a relative microsecond deadline (the worker-facing API; every
 // worker sleep becomes this call).
-inline void coro_sleep_us(coact::coro::posix::Coroutine& co,
-                          uint32_t us) noexcept
-{
-    (void)co.yield(coact::coro::posix::YieldRequest{
-        coact::coro::posix::WaitReason::kSleep,
-        now_us() * 1000ULL + static_cast<uint64_t>(us) * 1000ULL, 0U});
+inline void coro_sleep_us(coact::coro::posix::Coroutine& co, uint32_t us) noexcept {
+  (void)co.yield(coact::coro::posix::YieldRequest{coact::coro::posix::WaitReason::kSleep,
+                                                  now_us() * 1000ULL + static_cast<uint64_t>(us) * 1000ULL, 0U});
 }
 
 // Hook the PAL installs so the pump materializes deferred thread_create
@@ -125,48 +118,44 @@ inline void coro_sleep_us(coact::coro::posix::Coroutine& co,
 inline void (*pump_materialize_hook)() noexcept = []() noexcept {};
 
 // Executor pump thread: round-robin cooperative passes until stop + drain.
-inline void* pump_trampoline(void* /*arg*/) noexcept
-{
-    while (!g_stop.load(std::memory_order_acquire)) {
-        isp_demo_coro::pump_materialize_hook();
-        if (0U == g_exec->run_once()) {
-            /* All coroutines parked or finished: brief idle nap (no busy
-               spin; the workload is latency-paced, not throughput-paced). */
-            std::this_thread::yield();
-        }
+inline void* pump_trampoline(void* /*arg*/) noexcept {
+  while (!g_stop.load(std::memory_order_acquire)) {
+    isp_demo_coro::pump_materialize_hook();
+    if (0U == g_exec->run_once()) {
+      /* All coroutines parked or finished: brief idle nap (no busy
+         spin; the workload is latency-paced, not throughput-paced). */
+      std::this_thread::yield();
     }
-    /* Drain: retire every remaining coroutine after stop was requested. */
-    for (uint32_t pass = 0U; pass < 20000U; ++pass) {
-        if (0U == g_exec->run_once()) {
-            break;
-        }
+  }
+  /* Drain: retire every remaining coroutine after stop was requested. */
+  for (uint32_t pass = 0U; pass < 20000U; ++pass) {
+    if (0U == g_exec->run_once()) {
+      break;
     }
-    return nullptr;
+  }
+  return nullptr;
 }
 
-inline bool start_executor() noexcept
-{
-    if (g_thread_valid) {
-        return false;
-    }
-    /* Optional pinning: best effort (a container may refuse; a 2-thread
-       process still has no second core preempting task state). */
-    (void)coact::coro::posix::pin_current_thread_to_core(0U);
-    if (0 != pthread_create(&g_thread, nullptr, &pump_trampoline,
-                            nullptr)) {
-        return false;
-    }
-    g_thread_valid = true;
-    return true;
+inline bool start_executor() noexcept {
+  if (g_thread_valid) {
+    return false;
+  }
+  /* Optional pinning: best effort (a container may refuse; a 2-thread
+     process still has no second core preempting task state). */
+  (void)coact::coro::posix::pin_current_thread_to_core(0U);
+  if (0 != pthread_create(&g_thread, nullptr, &pump_trampoline, nullptr)) {
+    return false;
+  }
+  g_thread_valid = true;
+  return true;
 }
 
-inline void stop_executor() noexcept
-{
-    if (g_thread_valid) {
-        g_stop.store(true, std::memory_order_release);
-        pthread_join(g_thread, nullptr);
-        g_thread_valid = false;
-    }
+inline void stop_executor() noexcept {
+  if (g_thread_valid) {
+    g_stop.store(true, std::memory_order_release);
+    pthread_join(g_thread, nullptr);
+    g_thread_valid = false;
+  }
 }
 
 }  // namespace isp_demo_coro

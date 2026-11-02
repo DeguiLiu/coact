@@ -40,4 +40,3 @@
  */
 
 #include "recfg_session.hpp"
-

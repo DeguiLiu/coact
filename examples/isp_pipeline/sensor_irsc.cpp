@@ -34,4 +34,3 @@
  */
 
 #include "sensor_irsc.hpp"
-

@@ -41,11 +41,14 @@ fi
 
 # Default targets
 if [ ${#TARGETS[@]} -eq 0 ]; then
-  TARGETS=("include" "src" "test")
+    TARGETS=("include" "src" "test" "examples")
 fi
 
-# Find all C++ files
-FILES=$(find "${TARGETS[@]}" -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.h' \) 2>/dev/null | sort)
+# Find all C++ files. test/renode/freertos/ is a vendored FreeRTOS kernel and
+# keeps upstream formatting; reformatting it would bury real changes.
+FILES=$(find "${TARGETS[@]}" -path 'test/renode/freertos' -prune -o \
+    -type f \( -name '*.hpp' -o -name '*.cpp' -o -name '*.h' \) -print \
+    2>/dev/null | sort)
 
 if [ -z "$FILES" ]; then
   echo "No C++ files found."

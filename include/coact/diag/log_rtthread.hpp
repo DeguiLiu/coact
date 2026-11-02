@@ -42,14 +42,15 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <atomic>
 #include <cstdint>
+
+#include <atomic>
 
 #ifdef COACT_RTT_STUB
 #include "test/rtthread_stub.h"
 #else
-#include <rtthread.h>
 #include <rthw.h>
+#include <rtthread.h>
 #if defined(RT_USING_SMP) || !defined(RT_CPUS_NR) || (RT_CPUS_NR != 1)
 #error "coact::diag::LogRtThread requires one non-SMP CPU"
 #endif
@@ -64,8 +65,7 @@ namespace diag {
 // Built-in raw-hex renderer (declaration; definition in log_rtthread.cpp).
 // Always handles (handled=true): the "e=/s=/a0=/..." line never loses a record.
 struct RawHexPolicy {
-    static LogRenderResult render(const LogRecord& r, char* buf,
-                                  uint16_t cap) noexcept;
+  static LogRenderResult render(const LogRecord& r, char* buf, uint16_t cap) noexcept;
 };
 
 // Convert a millisecond timeout to RT-Thread ticks (ceiling). 0 ms maps to the
@@ -75,13 +75,13 @@ rt_int32_t ms_to_ticks(uint32_t timeout_ms) noexcept;
 // Init/start status. Any failure returns a definite error; the adapter never
 // falls back to dynamic create/malloc.
 enum class LogRtError : uint8_t {
-    kOk = 0U,
-    kSemInitFailed,        // rt_sem_init failed (wake or join)
-    kThreadInitFailed,     // rt_thread_init failed
-    kThreadStartFailed,    // rt_thread_startup failed
-    kAlreadyInitialized,   // initialize() after ready/start/stop
-    kAlreadyStarted,       // start() after start, or after stop (no restart)
-    kBindFailed,           // Logger::bind rejected hooks / critical section
+  kOk = 0U,
+  kSemInitFailed,       // rt_sem_init failed (wake or join)
+  kThreadInitFailed,    // rt_thread_init failed
+  kThreadStartFailed,   // rt_thread_startup failed
+  kAlreadyInitialized,  // initialize() after ready/start/stop
+  kAlreadyStarted,      // start() after start, or after stop (no restart)
+  kBindFailed,          // Logger::bind rejected hooks / critical section
 };
 
 // ---------------------------------------------------------------------------
@@ -92,154 +92,139 @@ enum class LogRtError : uint8_t {
 // specific without a virtual or a set-before-start runtime hook.
 // ---------------------------------------------------------------------------
 class LogRtThreadBase {
-public:
-    using Record = LogRecord;
-    using Level = LogLevel;
-    using Lane = LogLane;
+ public:
+  using Record = LogRecord;
+  using Level = LogLevel;
+  using Lane = LogLane;
 
-    static_assert(std::atomic<bool>::is_always_lock_free,
-                  "coact::diag: LogRtThread stop flag must not require libatomic");
+  static_assert(std::atomic<bool>::is_always_lock_free,
+                "coact::diag: LogRtThread stop flag must not require libatomic");
 
-    static constexpr uint16_t kNormalCapacity = 32U;
-    static constexpr uint16_t kCriticalCapacity = 8U;
-    static constexpr uint8_t kDebugWatermarkPercent = 50U;
-    static constexpr uint8_t kInfoWatermarkPercent = 75U;
-    static constexpr uint32_t kWriterStackBytes = 4096U;
-    static constexpr uint8_t kWriterPriority = 20U;
-    static constexpr uint8_t kWriterTick = 10U;
-    static constexpr uint8_t kCriticalDrainBatch = 4U;   // design §5.4
-    static constexpr uint16_t kLineBufferSize = 160U;
+  static constexpr uint16_t kNormalCapacity = 32U;
+  static constexpr uint16_t kCriticalCapacity = 8U;
+  static constexpr uint8_t kDebugWatermarkPercent = 50U;
+  static constexpr uint8_t kInfoWatermarkPercent = 75U;
+  static constexpr uint32_t kWriterStackBytes = 4096U;
+  static constexpr uint8_t kWriterPriority = 20U;
+  static constexpr uint8_t kWriterTick = 10U;
+  static constexpr uint8_t kCriticalDrainBatch = 4U;  // design §5.4
+  static constexpr uint16_t kLineBufferSize = 160U;
 
-    // The core Logger owns two fixed-capacity DiagRing storages internally
-    // (design §5.1) and guards them with the single injected CriticalSection;
-    // only the capacities + watermarks are template parameters.
-    using LoggerT = Logger<kNormalCapacity, kCriticalCapacity,
-                           kDebugWatermarkPercent, kInfoWatermarkPercent>;
+  // The core Logger owns two fixed-capacity DiagRing storages internally
+  // (design §5.1) and guards them with the single injected CriticalSection;
+  // only the capacities + watermarks are template parameters.
+  using LoggerT = Logger<kNormalCapacity, kCriticalCapacity, kDebugWatermarkPercent, kInfoWatermarkPercent>;
 
-    // `run`/`self` wire the derived writer loop into the base writer thread.
-    // Set once at construction; never changed at runtime.
-    LogRtThreadBase(void (*run)(void*), void* self) noexcept;
-    LogRtThreadBase(const LogRtThreadBase&) = delete;
-    LogRtThreadBase& operator=(const LogRtThreadBase&) = delete;
+  // `run`/`self` wire the derived writer loop into the base writer thread.
+  // Set once at construction; never changed at runtime.
+  LogRtThreadBase(void (*run)(void*), void* self) noexcept;
+  LogRtThreadBase(const LogRtThreadBase&) = delete;
+  LogRtThreadBase& operator=(const LogRtThreadBase&) = delete;
 
-    // ---- Lifecycle (one init, one start, one stop; no restart) ----------
-    // rt_sem_init(wake + join) + Logger::bind with default ops. On failure the
-    // logger stays disabled and a definite error is returned.
-    LogRtError initialize() noexcept;
-    // rt_thread_init + rt_thread_startup the writer thread. Auto-initializes
-    // when initialize() was not called first.
-    LogRtError start() noexcept;
-    // Set the stop flag, release the wake semaphore, wait for the writer to
-    // drain both lanes and exit. Producers must be quiescent: records produced
-    // after stop() are not drained.
-    void stop() noexcept;
+  // ---- Lifecycle (one init, one start, one stop; no restart) ----------
+  // rt_sem_init(wake + join) + Logger::bind with default ops. On failure the
+  // logger stays disabled and a definite error is returned.
+  LogRtError initialize() noexcept;
+  // rt_thread_init + rt_thread_startup the writer thread. Auto-initializes
+  // when initialize() was not called first.
+  LogRtError start() noexcept;
+  // Set the stop flag, release the wake semaphore, wait for the writer to
+  // drain both lanes and exit. Producers must be quiescent: records produced
+  // after stop() are not drained.
+  void stop() noexcept;
 
-    bool bound() const noexcept;
-    LoggerT& logger() noexcept;
-    const LoggerT& logger() const noexcept;
+  bool bound() const noexcept;
+  LoggerT& logger() noexcept;
+  const LoggerT& logger() const noexcept;
 
-    // Writer-side sink success counter. The writer thread updates it; read it
-    // only after stop() (the join semaphore provides the happens-before).
-    // Truncation / sink-failure accounting is folded into the core Logger stats
-    // via note_formatter_truncated() / note_sink_failed().
-    uint32_t sink_write_count() const noexcept;
+  // Writer-side sink success counter. The writer thread updates it; read it
+  // only after stop() (the join semaphore provides the happens-before).
+  // Truncation / sink-failure accounting is folded into the core Logger stats
+  // via note_formatter_truncated() / note_sink_failed().
+  uint32_t sink_write_count() const noexcept;
 
-    // ---- Producer wrappers (task context) -------------------------------
-    template <Level L, uint16_t EventId>
-    void record_from_task(uint16_t source_id) noexcept
-    {
-        logger_.record<L, EventId>(source_id);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_task(uint16_t source_id, uint32_t a0) noexcept
-    {
-        logger_.record<L, EventId>(source_id, a0);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_task(uint16_t source_id, uint32_t a0, uint32_t a1) noexcept
-    {
-        logger_.record<L, EventId>(source_id, a0, a1);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_task(uint16_t source_id, uint32_t a0, uint32_t a1,
-                          uint32_t a2) noexcept
-    {
-        logger_.record<L, EventId>(source_id, a0, a1, a2);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_task(uint16_t source_id, uint32_t a0, uint32_t a1,
-                          uint32_t a2, uint32_t a3) noexcept
-    {
-        logger_.record<L, EventId>(source_id, a0, a1, a2, a3);
-    }
+  // ---- Producer wrappers (task context) -------------------------------
+  template <Level L, uint16_t EventId>
+  void record_from_task(uint16_t source_id) noexcept {
+    logger_.record<L, EventId>(source_id);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_task(uint16_t source_id, uint32_t a0) noexcept {
+    logger_.record<L, EventId>(source_id, a0);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_task(uint16_t source_id, uint32_t a0, uint32_t a1) noexcept {
+    logger_.record<L, EventId>(source_id, a0, a1);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_task(uint16_t source_id, uint32_t a0, uint32_t a1, uint32_t a2) noexcept {
+    logger_.record<L, EventId>(source_id, a0, a1, a2);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_task(uint16_t source_id, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) noexcept {
+    logger_.record<L, EventId>(source_id, a0, a1, a2, a3);
+  }
 
-    // ---- Producer wrappers (ISR-safe path) ------------------------------
-    // In RT-Thread rt_sem_release is ISR-safe, and the core Logger now has a
-    // distinct record_from_isr() entry that wakes the writer via the ISR-safe
-    // signal_from_isr hook.
-    template <Level L, uint16_t EventId>
-    void record_from_isr(uint16_t source_id) noexcept
-    {
-        logger_.record_from_isr<L, EventId>(source_id);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_isr(uint16_t source_id, uint32_t a0) noexcept
-    {
-        logger_.record_from_isr<L, EventId>(source_id, a0);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_isr(uint16_t source_id, uint32_t a0, uint32_t a1) noexcept
-    {
-        logger_.record_from_isr<L, EventId>(source_id, a0, a1);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_isr(uint16_t source_id, uint32_t a0, uint32_t a1,
-                         uint32_t a2) noexcept
-    {
-        logger_.record_from_isr<L, EventId>(source_id, a0, a1, a2);
-    }
-    template <Level L, uint16_t EventId>
-    void record_from_isr(uint16_t source_id, uint32_t a0, uint32_t a1,
-                         uint32_t a2, uint32_t a3) noexcept
-    {
-        logger_.record_from_isr<L, EventId>(source_id, a0, a1, a2, a3);
-    }
+  // ---- Producer wrappers (ISR-safe path) ------------------------------
+  // In RT-Thread rt_sem_release is ISR-safe, and the core Logger now has a
+  // distinct record_from_isr() entry that wakes the writer via the ISR-safe
+  // signal_from_isr hook.
+  template <Level L, uint16_t EventId>
+  void record_from_isr(uint16_t source_id) noexcept {
+    logger_.record_from_isr<L, EventId>(source_id);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_isr(uint16_t source_id, uint32_t a0) noexcept {
+    logger_.record_from_isr<L, EventId>(source_id, a0);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_isr(uint16_t source_id, uint32_t a0, uint32_t a1) noexcept {
+    logger_.record_from_isr<L, EventId>(source_id, a0, a1);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_isr(uint16_t source_id, uint32_t a0, uint32_t a1, uint32_t a2) noexcept {
+    logger_.record_from_isr<L, EventId>(source_id, a0, a1, a2);
+  }
+  template <Level L, uint16_t EventId>
+  void record_from_isr(uint16_t source_id, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) noexcept {
+    logger_.record_from_isr<L, EventId>(source_id, a0, a1, a2, a3);
+  }
 
-protected:
-    enum class State : uint8_t {
-        kUninitialized,
-        kReady,
-        kStarted,
-        kStopped,
-        kInitFailed,
-    };
+ protected:
+  enum class State : uint8_t {
+    kUninitialized,
+    kReady,
+    kStarted,
+    kStopped,
+    kInitFailed,
+  };
 
-    // ---- Static resources (all in static storage; never allocated) ------
-    struct rt_thread writer_tcb_{};
-    alignas(RT_ALIGN_SIZE) rt_uint8_t writer_stack_[kWriterStackBytes]{};
-    struct rt_semaphore wake_sem_{};
-    struct rt_semaphore join_sem_{};
+  // ---- Static resources (all in static storage; never allocated) ------
+  struct rt_thread writer_tcb_{};
+  alignas(RT_ALIGN_SIZE) rt_uint8_t writer_stack_[kWriterStackBytes]{};
+  struct rt_semaphore wake_sem_{};
+  struct rt_semaphore join_sem_{};
 
-    LoggerT logger_{};
+  LoggerT logger_{};
 
-    std::atomic<bool> stop_requested_{false};
-    uint32_t sink_write_count_ = 0U;
-    State state_ = State::kUninitialized;
-    LogRtError last_error_ = LogRtError::kOk;
-    void (*run_)(void*) = nullptr;
-    void* run_self_ = nullptr;
+  std::atomic<bool> stop_requested_{false};
+  uint32_t sink_write_count_ = 0U;
+  State state_ = State::kUninitialized;
+  LogRtError last_error_ = LogRtError::kOk;
+  void (*run_)(void*) = nullptr;
+  void* run_self_ = nullptr;
 
-    // ---- Platform hooks (capture-less; context == this) ------------------
-    static uint32_t tick_counter_read(void* ctx) noexcept;
-    static bool kprintf_sink(void* ctx, const char* bytes, uint16_t length) noexcept;
-    static void wake_signal_task(void* ctx) noexcept;
-    static void wake_signal_isr(void* ctx) noexcept;
-    static void wake_wait_block(void* ctx) noexcept;
-    static void wake_wait_bounded(void* ctx, uint32_t timeout_ms) noexcept;
-    static CriticalSection::Token irq_save(void* ctx) noexcept;
-    static void irq_restore(void* ctx, CriticalSection::Token token) noexcept;
+  // ---- Platform hooks (capture-less; context == this) ------------------
+  static uint32_t tick_counter_read(void* ctx) noexcept;
+  static bool kprintf_sink(void* ctx, const char* bytes, uint16_t length) noexcept;
+  static void wake_signal_task(void* ctx) noexcept;
+  static void wake_signal_isr(void* ctx) noexcept;
+  static void wake_wait_block(void* ctx) noexcept;
+  static void wake_wait_bounded(void* ctx, uint32_t timeout_ms) noexcept;
+  static CriticalSection::Token irq_save(void* ctx) noexcept;
+  static void irq_restore(void* ctx, CriticalSection::Token token) noexcept;
 
-    LogRtError fail(LogRtError err) noexcept;
+  LogRtError fail(LogRtError err) noexcept;
 };
 
 // ---------------------------------------------------------------------------
@@ -250,103 +235,91 @@ protected:
 // ---------------------------------------------------------------------------
 template <typename Policy = RawHexPolicy>
 class LogRtThread : public LogRtThreadBase {
-public:
-    using LogRtThreadBase::LogRtThreadBase;
+ public:
+  using LogRtThreadBase::LogRtThreadBase;
 
-    LogRtThread() noexcept
-        : LogRtThreadBase(&LogRtThread::writer_thread_entry, this)
-    {
-    }
+  LogRtThread() noexcept : LogRtThreadBase(&LogRtThread::writer_thread_entry, this) {}
 
-private:
-    static void writer_thread_entry(void* param) noexcept
-    {
-        LogRtThread* self = static_cast<LogRtThread*>(param);
-        if (nullptr != self) {
-            self->writer_run();
-        }
+ private:
+  static void writer_thread_entry(void* param) noexcept {
+    LogRtThread* self = static_cast<LogRtThread*>(param);
+    if (nullptr != self) {
+      self->writer_run();
     }
-    void writer_run() noexcept
-    {
-        for (;;) {
-            bool drained_any = false;
+  }
+  void writer_run() noexcept {
+    for (;;) {
+      bool drained_any = false;
 
-            /* Up to 4 Critical per 1 Normal (design §5.4). */
-            for (uint8_t i = 0U; i < kCriticalDrainBatch; ++i) {
-                Record r;
-                if (logger_.pop_from_lane(Lane::kCritical, r)) {
-                    emit(r);
-                    drained_any = true;
-                }
-                else {
-                    break;
-                }
-            }
-            Record normal;
-            if (logger_.pop_from_lane(Lane::kNormal, normal)) {
-                emit(normal);
-                drained_any = true;
-            }
+      /* Up to 4 Critical per 1 Normal (design §5.4). */
+      for (uint8_t i = 0U; i < kCriticalDrainBatch; ++i) {
+        Record r;
+        if (logger_.pop_from_lane(Lane::kCritical, r)) {
+          emit(r);
+          drained_any = true;
+        } else {
+          break;
+        }
+      }
+      Record normal;
+      if (logger_.pop_from_lane(Lane::kNormal, normal)) {
+        emit(normal);
+        drained_any = true;
+      }
 
-            /* Exit only after the stop flag is set AND both lanes are drained. */
-            if (stop_requested_.load(std::memory_order_acquire) &&
-                (0U == logger_.size(Lane::kCritical)) &&
-                (0U == logger_.size(Lane::kNormal))) {
-                break;
-            }
-            if (false == drained_any) {
-                if (stop_requested_.load(std::memory_order_acquire)) {
-                    break;
-                }
-                /* Pure blocking wait; no polling backoff (design §5.4). */
-                const LogWakeOps wake = logger_.wake();
-                if (nullptr != wake.wait_block) {
-                    wake.wait_block(wake.context);
-                }
-            }
+      /* Exit only after the stop flag is set AND both lanes are drained. */
+      if (stop_requested_.load(std::memory_order_acquire) && (0U == logger_.size(Lane::kCritical)) &&
+          (0U == logger_.size(Lane::kNormal))) {
+        break;
+      }
+      if (false == drained_any) {
+        if (stop_requested_.load(std::memory_order_acquire)) {
+          break;
         }
-        (void)rt_sem_release(&join_sem_);
+        /* Pure blocking wait; no polling backoff (design §5.4). */
+        const LogWakeOps wake = logger_.wake();
+        if (nullptr != wake.wait_block) {
+          wake.wait_block(wake.context);
+        }
+      }
     }
-    void emit(const Record& r) noexcept
-    {
-        char buf[kLineBufferSize];
-        bool truncated = false;
-        uint16_t len = 0U;
-        bool handled = false;
-        const LogRenderResult rendered = Policy::render(r, buf, kLineBufferSize);
-        if (rendered.handled && (rendered.length > 0U) &&
-            (rendered.length < kLineBufferSize) &&
-            ('\n' == buf[rendered.length - 1U])) {
-            buf[rendered.length] = '\0';
-            len = rendered.length;
-            truncated = rendered.truncated;
-            handled = true;
-        }
-        else if (!rendered.handled) {
-            logger_.note_catalog_miss();
-        }
-        else {
-            truncated = true;
-        }
-        if (!handled) {
-            const LogRenderResult raw = RawHexPolicy::render(r, buf, kLineBufferSize);
-            len = raw.length;
-            truncated = truncated || raw.truncated;
-        }
-        if (truncated) {
-            logger_.note_formatter_truncated();
-        }
-        const LogSinkOps sink = logger_.sink();
-        if (nullptr != sink.write) {
-            const bool ok = sink.write(sink.context, buf, len);
-            if (ok) {
-                ++sink_write_count_;
-            }
-            else {
-                logger_.note_sink_failed();
-            }
-        }
+    (void)rt_sem_release(&join_sem_);
+  }
+  void emit(const Record& r) noexcept {
+    char buf[kLineBufferSize];
+    bool truncated = false;
+    uint16_t len = 0U;
+    bool handled = false;
+    const LogRenderResult rendered = Policy::render(r, buf, kLineBufferSize);
+    if (rendered.handled && (rendered.length > 0U) && (rendered.length < kLineBufferSize) &&
+        ('\n' == buf[rendered.length - 1U])) {
+      buf[rendered.length] = '\0';
+      len = rendered.length;
+      truncated = rendered.truncated;
+      handled = true;
+    } else if (!rendered.handled) {
+      logger_.note_catalog_miss();
+    } else {
+      truncated = true;
     }
+    if (!handled) {
+      const LogRenderResult raw = RawHexPolicy::render(r, buf, kLineBufferSize);
+      len = raw.length;
+      truncated = truncated || raw.truncated;
+    }
+    if (truncated) {
+      logger_.note_formatter_truncated();
+    }
+    const LogSinkOps sink = logger_.sink();
+    if (nullptr != sink.write) {
+      const bool ok = sink.write(sink.context, buf, len);
+      if (ok) {
+        ++sink_write_count_;
+      } else {
+        logger_.note_sink_failed();
+      }
+    }
+  }
 };
 
 }  // namespace diag

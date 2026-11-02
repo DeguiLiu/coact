@@ -38,16 +38,17 @@
 #error "coact/pal_rtthread.hpp requires C++"
 #endif
 
+#include <cstdint>
+
 #include <array>
 #include <atomic>
-#include <cstdint>
 #include <type_traits>
 
 #ifdef COACT_RTT_STUB
 #include "test/rtthread_stub.h"
 #else
-#include <rtthread.h>
 #include <rthw.h>
+#include <rtthread.h>
 
 #if defined(RT_USING_SMP) || !defined(RT_CPUS_NR) || (RT_CPUS_NR != 1)
 #error "coact::pal::RtThread requires one non-SMP CPU; use a Linux/SMP PAL with HostSmpProfile instead"
@@ -72,47 +73,40 @@ namespace pal {
 // Default ClockOps backed by rt_tick_get() (RT tick precision, design §7.5:
 // RT tick is only for Dispatcher blocking waits and long deadlines). Targets
 // bind a 10 MHz TIM counter for microsecond budget checks via set_clock_ops().
-inline uint64_t rt_tick_counter_read(void* /*ctx*/) noexcept
-{
-    return static_cast<uint64_t>(rt_tick_get());
+inline uint64_t rt_tick_counter_read(void* /*ctx*/) noexcept {
+  return static_cast<uint64_t>(rt_tick_get());
 }
-inline ClockOps tick_clock_ops() noexcept
-{
-    ClockOps ops;
-    ops.read_counter = &rt_tick_counter_read;
-    ops.frequency_hz = static_cast<uint32_t>(RT_TICK_PER_SECOND);
-    ops.ctx = nullptr;
-    ops.counter_bits = static_cast<uint8_t>(sizeof(rt_tick_t) * 8U);
-    return ops;
+inline ClockOps tick_clock_ops() noexcept {
+  ClockOps ops;
+  ops.read_counter = &rt_tick_counter_read;
+  ops.frequency_hz = static_cast<uint32_t>(RT_TICK_PER_SECOND);
+  ops.ctx = nullptr;
+  ops.counter_bits = static_cast<uint8_t>(sizeof(rt_tick_t) * 8U);
+  return ops;
 }
 
 namespace detail {
 
-inline constexpr uint64_t exact_ns_per_counter(uint32_t frequency_hz) noexcept
-{
-    return (frequency_hz != 0U && (1000000000ULL % frequency_hz) == 0U)
-        ? (1000000000ULL / frequency_hz)
-        : 0U;
+inline constexpr uint64_t exact_ns_per_counter(uint32_t frequency_hz) noexcept {
+  return (frequency_hz != 0U && (1000000000ULL % frequency_hz) == 0U) ? (1000000000ULL / frequency_hz) : 0U;
 }
 
 // Convert a Dispatcher wait timeout to RT-Thread ticks. Zero is the sole
 // infinite-wait value; every non-zero timeout remains finite, including one
 // whose rounded tick count reaches RT_WAITING_FOREVER.
-inline constexpr rt_int32_t dispatcher_wait_ticks(uint32_t timeout_ms) noexcept
-{
-    if (timeout_ms == 0U) {
-        return static_cast<rt_int32_t>(RT_WAITING_FOREVER);
-    }
-    uint64_t ticks = timeout_ms;
-    if constexpr (RT_TICK_PER_SECOND != 1000U) {
-        ticks =
-            (static_cast<uint64_t>(timeout_ms) * RT_TICK_PER_SECOND + 999U) / 1000U;
-    }
-    const uint64_t forever = static_cast<uint64_t>(RT_WAITING_FOREVER);
-    if (ticks >= forever) {
-        return static_cast<rt_int32_t>(forever - 1U);
-    }
-    return static_cast<rt_int32_t>(ticks);
+inline constexpr rt_int32_t dispatcher_wait_ticks(uint32_t timeout_ms) noexcept {
+  if (timeout_ms == 0U) {
+    return static_cast<rt_int32_t>(RT_WAITING_FOREVER);
+  }
+  uint64_t ticks = timeout_ms;
+  if constexpr (RT_TICK_PER_SECOND != 1000U) {
+    ticks = (static_cast<uint64_t>(timeout_ms) * RT_TICK_PER_SECOND + 999U) / 1000U;
+  }
+  const uint64_t forever = static_cast<uint64_t>(RT_WAITING_FOREVER);
+  if (ticks >= forever) {
+    return static_cast<rt_int32_t>(forever - 1U);
+  }
+  return static_cast<rt_int32_t>(ticks);
 }
 
 }  // namespace detail
@@ -120,8 +114,8 @@ inline constexpr rt_int32_t dispatcher_wait_ticks(uint32_t timeout_ms) noexcept
 // Fixed per-thread execution-context slot (design §7.5). Does NOT occupy
 // RT-Thread's single rt_thread::user_data field.
 struct ContextSlot {
-    rt_thread_t tid;           // nullptr == free slot
-    ExecutionContext ctx;
+  rt_thread_t tid;  // nullptr == free slot
+  ExecutionContext ctx;
 };
 
 // SoftIrqOps mailbox capacity (the shared ring embedded in SoftIrqHandle).
@@ -133,8 +127,7 @@ inline constexpr uint32_t kSoftIrqRingSlots = 8U;
 // two threads; tag the atomic width so a non-lock-free atomics port fails at
 // compile time, not at runtime through libatomic.
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
-             "SoftIrq ring indices must stay lock-free (no libatomic fallback)");
-
+              "SoftIrq ring indices must stay lock-free (no libatomic fallback)");
 
 // ---------------------------------------------------------------------------
 // ThreadOps static table (the wake/join precedent extended): one
@@ -144,29 +137,29 @@ static_assert(std::atomic<uint32_t>::is_always_lock_free,
 // frees the slot. ZERO heap: no rt_thread_create anywhere.
 // ---------------------------------------------------------------------------
 struct WorkerThreadSlot {
-    struct rt_thread    thread;    // static worker TCB
-    rt_uint8_t*         stack_base;
-    uint32_t            stack_bytes;
-    struct rt_semaphore join_sem;  // released by worker_thread_entry on exit
-    bool                in_use;
-    void*               user_ctx;  // ThreadEntry context handed to the trampoline
+  struct rt_thread thread;  // static worker TCB
+  rt_uint8_t* stack_base;
+  uint32_t stack_bytes;
+  struct rt_semaphore join_sem;  // released by worker_thread_entry on exit
+  bool in_use;
+  void* user_ctx;  // ThreadEntry context handed to the trampoline
 };
 
 // Resource pointer base: the PAL stores only these references (constructor
 // saves references, never calls kernel API). RtThreadResources<...> derives
 // and owns the actual static storage.
 struct RtThreadResourcesBase {
-    struct rt_thread*    thread_obj;      // static Dispatcher TCB
-    struct rt_semaphore* wake_sem_obj;    // wake signal (ISR-safe release)
-    struct rt_semaphore* join_sem_obj;    // released on Dispatcher exit
-    rt_uint8_t*          stack_base;      // Dispatcher stack (RT_ALIGN_SIZE)
-    uint32_t             stack_bytes;
-    ContextSlot*         slot_table;      // fixed ContextSlot[N]
-    uint16_t             slot_count;
-    // ThreadOps static table (may be null/0: PAL without worker threads).
-    WorkerThreadSlot*    worker_slots;    // fixed WorkerThreadSlot[K]
-    uint16_t             worker_slot_count;
-    uint16_t             worker_slot_used;  // high-water mark of borrowed slots
+  struct rt_thread* thread_obj;       // static Dispatcher TCB
+  struct rt_semaphore* wake_sem_obj;  // wake signal (ISR-safe release)
+  struct rt_semaphore* join_sem_obj;  // released on Dispatcher exit
+  rt_uint8_t* stack_base;             // Dispatcher stack (RT_ALIGN_SIZE)
+  uint32_t stack_bytes;
+  ContextSlot* slot_table;  // fixed ContextSlot[N]
+  uint16_t slot_count;
+  // ThreadOps static table (may be null/0: PAL without worker threads).
+  WorkerThreadSlot* worker_slots;  // fixed WorkerThreadSlot[K]
+  uint16_t worker_slot_count;
+  uint16_t worker_slot_used;  // high-water mark of borrowed slots
 };
 
 // Zero-size placeholder for the WorkerSlots == 0 case (zero-length arrays are
@@ -177,54 +170,40 @@ struct EmptyResource {};
 // storage or on a task stack BEFORE the RtThread that references it. The
 // members are value-initialized so a stack/struct resource never hands the PAL
 // garbage kernel objects.
-template <uint32_t StackBytes, uint16_t ContextSlots,
-          uint16_t WorkerSlots = 0U, uint32_t WorkerStackBytes = 2048U>
+template <uint32_t StackBytes, uint16_t ContextSlots, uint16_t WorkerSlots = 0U, uint32_t WorkerStackBytes = 2048U>
 struct RtThreadResources : public RtThreadResourcesBase {
-    struct rt_thread    thread;           // static Dispatcher TCB
-    struct rt_semaphore wake;             // static wake semaphore
-    struct rt_semaphore join;             // static join semaphore
-    alignas(RT_ALIGN_SIZE) rt_uint8_t stack[StackBytes];
-    ContextSlot slots[ContextSlots];
-    // Worker thread table: K static TCBs + K static stacks. WorkerSlots == 0
-    // (default) degenerates both members to the empty placeholder.
-    typename std::conditional<
-        (WorkerSlots > 0U),
-        std::array<WorkerThreadSlot, WorkerSlots>,
-        EmptyResource>::type worker_threads{};
-    typename std::conditional<
-        (WorkerSlots > 0U),
-        std::array<std::array<rt_uint8_t, WorkerStackBytes>, WorkerSlots>,
-        EmptyResource>::type worker_stacks{};
+  struct rt_thread thread;   // static Dispatcher TCB
+  struct rt_semaphore wake;  // static wake semaphore
+  struct rt_semaphore join;  // static join semaphore
+  alignas(RT_ALIGN_SIZE) rt_uint8_t stack[StackBytes];
+  ContextSlot slots[ContextSlots];
+  // Worker thread table: K static TCBs + K static stacks. WorkerSlots == 0
+  // (default) degenerates both members to the empty placeholder.
+  typename std::conditional<(WorkerSlots > 0U), std::array<WorkerThreadSlot, WorkerSlots>, EmptyResource>::type
+      worker_threads{};
+  typename std::conditional<(WorkerSlots > 0U), std::array<std::array<rt_uint8_t, WorkerStackBytes>, WorkerSlots>,
+                            EmptyResource>::type worker_stacks{};
 
-    RtThreadResources() noexcept
-        : RtThreadResourcesBase(),
-          thread{},
-          wake{},
-          join{},
-          stack{},
-          slots{},
-          worker_threads{},
-          worker_stacks{}
-    {
-        this->thread_obj   = &this->thread;
-        this->wake_sem_obj = &this->wake;
-        this->join_sem_obj = &this->join;
-        this->stack_base   = this->stack;
-        this->stack_bytes  = StackBytes;
-        this->slot_table   = this->slots;
-        this->slot_count   = ContextSlots;
-        if constexpr (WorkerSlots > 0U) {
-            this->worker_slots      = this->worker_threads.data();
-            this->worker_slot_count = WorkerSlots;
-            for (uint16_t i = 0U; i < WorkerSlots; ++i) {
-                this->worker_threads[i].stack_base  =
-                    reinterpret_cast<rt_uint8_t*>(this->worker_stacks[i].data());
-                this->worker_threads[i].stack_bytes = WorkerStackBytes;
-                this->worker_threads[i].in_use      = false;
-                this->worker_threads[i].user_ctx    = nullptr;
-            }
-        }
+  RtThreadResources() noexcept
+      : RtThreadResourcesBase(), thread{}, wake{}, join{}, stack{}, slots{}, worker_threads{}, worker_stacks{} {
+    this->thread_obj = &this->thread;
+    this->wake_sem_obj = &this->wake;
+    this->join_sem_obj = &this->join;
+    this->stack_base = this->stack;
+    this->stack_bytes = StackBytes;
+    this->slot_table = this->slots;
+    this->slot_count = ContextSlots;
+    if constexpr (WorkerSlots > 0U) {
+      this->worker_slots = this->worker_threads.data();
+      this->worker_slot_count = WorkerSlots;
+      for (uint16_t i = 0U; i < WorkerSlots; ++i) {
+        this->worker_threads[i].stack_base = reinterpret_cast<rt_uint8_t*>(this->worker_stacks[i].data());
+        this->worker_threads[i].stack_bytes = WorkerStackBytes;
+        this->worker_threads[i].in_use = false;
+        this->worker_threads[i].user_ctx = nullptr;
+      }
     }
+  }
 };
 
 // ---------------------------------------------------------------------------
@@ -252,263 +231,256 @@ struct RtThreadResources : public RtThreadResourcesBase {
 // Static resources are owned by the caller (RtThreadResources); the PAL holds
 // only references. No rt_sem_create / rt_thread_create / rt_malloc are used.
 // ---------------------------------------------------------------------------
-class RtThread
-{
-public:
-    // ---------------------------------------------------------------------------
-    // SemOps-family handles (pal.hpp): self-contained static kernel objects.
-    // SemHandle EMBEDS the struct rt_semaphore (caller places the handle in
-    // static or task-stack storage); rt_sem_init/detach run in task context only.
-    // The `pal` back-pointer carries the PAL reference for handle-method calls.
-    // ---------------------------------------------------------------------------
-    struct SemHandle {
-        struct rt_semaphore sem;   // embedded static semaphore (no heap)
-        RtThread*           pal;   // set by RtThread::sem_init
-    };
+class RtThread {
+ public:
+  // ---------------------------------------------------------------------------
+  // SemOps-family handles (pal.hpp): self-contained static kernel objects.
+  // SemHandle EMBEDS the struct rt_semaphore (caller places the handle in
+  // static or task-stack storage); rt_sem_init/detach run in task context only.
+  // The `pal` back-pointer carries the PAL reference for handle-method calls.
+  // ---------------------------------------------------------------------------
+  struct SemHandle {
+    struct rt_semaphore sem;  // embedded static semaphore (no heap)
+    RtThread* pal;            // set by RtThread::sem_init
+  };
 
-    struct MutexHandle {
-        struct rt_mutex     mtx;   // embedded static mutex (no heap)
-        RtThread*           pal;   // set by RtThread::mutex_init
-    };
+  struct MutexHandle {
+    struct rt_mutex mtx;  // embedded static mutex (no heap)
+    RtThread* pal;        // set by RtThread::mutex_init
+  };
 
-    // CondHandle: pthread_cond_wait semantics emulated on a counting
-    // rt_semaphore — cond_wait releases the paired mutex, blocks, re-acquires
-    // (see RtThread::cond_wait). waiters counts blocked threads so broadcast
-    // releases exactly that many tokens (rt_sem has no broadcast primitive).
-    struct CondHandle {
-        struct rt_semaphore sem;   // wake signal (released once per waiter)
-        std::atomic<uint32_t> waiters;
-        RtThread*           pal;   // set by RtThread::cond_init
-    };
+  // CondHandle: pthread_cond_wait semantics emulated on a counting
+  // rt_semaphore — cond_wait releases the paired mutex, blocks, re-acquires
+  // (see RtThread::cond_wait). waiters counts blocked threads so broadcast
+  // releases exactly that many tokens (rt_sem has no broadcast primitive).
+  struct CondHandle {
+    struct rt_semaphore sem;  // wake signal (released once per waiter)
+    std::atomic<uint32_t> waiters;
+    RtThread* pal;  // set by RtThread::cond_init
+  };
 
-    // ThreadOps handle: references the borrowed static WorkerThreadSlot. create()
-    // fills pal/slot_idx/entry/context (entry+context are read by the trampoline
-    // through the slot's user_ctx, which points back at this handle — the handle
-    // is caller storage and join() is mandatory, so it outlives the thread, no
-    // heap); join() waits on the slot's join semaphore and frees it.
-    struct ThreadHandle {
-        RtThread*           pal;
-        ThreadEntry         entry;
-        void*               context;
-        uint16_t            slot_idx;
-        bool                valid;
-    };
+  // ThreadOps handle: references the borrowed static WorkerThreadSlot. create()
+  // fills pal/slot_idx/entry/context (entry+context are read by the trampoline
+  // through the slot's user_ctx, which points back at this handle — the handle
+  // is caller storage and join() is mandatory, so it outlives the thread, no
+  // heap); join() waits on the slot's join semaphore and frees it.
+  struct ThreadHandle {
+    RtThread* pal;
+    ThreadEntry entry;
+    void* context;
+    uint16_t slot_idx;
+    bool valid;
+  };
 
-    // SoftIrqHandle (SoftIrqOps family): a fixed-capacity SPSC mailbox
-    // (head/tail atomic indices + int32_t ring) embedded in caller storage.
-    // The signal (SIGUSR1) is a wake hint only — rt_thread_kill does not
-    // carry data on RT-Thread, so the payload is published through the ring
-    // before the signal is raised. The handler registered in init() is empty;
-    // take() polls the ring on a 1 ms tick (see implementation).
-    struct SoftIrqHandle {
-        std::atomic<uint32_t> head;   // producer write index (wraps)
-        std::atomic<uint32_t> tail;   // consumer read index (wraps)
-        int32_t               ring[kSoftIrqRingSlots];
-        rt_thread_t           consumer;
-        RtThread*             pal;
-    };
+  // SoftIrqHandle (SoftIrqOps family): a fixed-capacity SPSC mailbox
+  // (head/tail atomic indices + int32_t ring) embedded in caller storage.
+  // The signal (SIGUSR1) is a wake hint only — rt_thread_kill does not
+  // carry data on RT-Thread, so the payload is published through the ring
+  // before the signal is raised. The handler registered in init() is empty;
+  // take() polls the ring on a 1 ms tick (see implementation).
+  struct SoftIrqHandle {
+    std::atomic<uint32_t> head;  // producer write index (wraps)
+    std::atomic<uint32_t> tail;  // consumer read index (wraps)
+    int32_t ring[kSoftIrqRingSlots];
+    rt_thread_t consumer;
+    RtThread* pal;
+  };
 
-    // Host-test convenience: references an internal static RtThreadResources.
-    // Production boards MUST pass explicit RtThreadResources.
-    RtThread() noexcept;
+  // Host-test convenience: references an internal static RtThreadResources.
+  // Production boards MUST pass explicit RtThreadResources.
+  RtThread() noexcept;
 
-    // Caller-provided static resources. The constructor only saves references;
-    // all kernel API calls happen in initialize() (task context). Accepts any
-    // RtThreadResources instantiation (worker-slot count is a template default).
-    template <typename ResT>
-    explicit RtThread(ResT& res) noexcept
-        : res_(&res),
-          user_entry_(nullptr),
-          user_ctx_(nullptr),
-          state_(Lifecycle::kUninitialized),
-          last_error_(InitError::kOk),
-          dispatcher_stack_bytes_(4096U),
-          clock_ops_(tick_clock_ops()),
-          ns_per_counter_(detail::exact_ns_per_counter(
-              static_cast<uint32_t>(RT_TICK_PER_SECOND)))
-    {
-    }
+  // Caller-provided static resources. The constructor only saves references;
+  // all kernel API calls happen in initialize() (task context). Accepts any
+  // RtThreadResources instantiation (worker-slot count is a template default).
+  template <typename ResT>
+  explicit RtThread(ResT& res) noexcept
+      : res_(&res),
+        user_entry_(nullptr),
+        user_ctx_(nullptr),
+        state_(Lifecycle::kUninitialized),
+        last_error_(InitError::kOk),
+        dispatcher_stack_bytes_(4096U),
+        clock_ops_(tick_clock_ops()),
+        ns_per_counter_(detail::exact_ns_per_counter(static_cast<uint32_t>(RT_TICK_PER_SECOND))) {}
 
-    /* ---- Interrupt masking -------------------------------------------- */
-    CriticalToken irq_save() noexcept;
-    void irq_restore(CriticalToken token) noexcept;
+  /* ---- Interrupt masking -------------------------------------------- */
+  CriticalToken irq_save() noexcept;
+  void irq_restore(CriticalToken token) noexcept;
 
-    /* ---- Execution context -------------------------------------------- */
-    /* Register the calling thread's logical priority (call after initialize(),
-       before start). Returns false when the table is full, the tid is already
-       registered, or registration is frozen after start. */
-    bool register_current_task(LogicalPrio prio) noexcept;
+  /* ---- Execution context -------------------------------------------- */
+  /* Register the calling thread's logical priority (call after initialize(),
+     before start). Returns false when the table is full, the tid is already
+     registered, or registration is frozen after start. */
+  bool register_current_task(LogicalPrio prio) noexcept;
 
-    ExecutionContext current_context() const noexcept;
+  ExecutionContext current_context() const noexcept;
 
-    // Real thread identity (R1): true only on the coact Dispatcher thread.
-    // dispatcher_thread_entry captures its own TCB (the static Dispatcher
-    // thread object) and in_dispatcher_thread() compares rt_thread_self()
-    // against it. No thread_local: RT-Thread targets may build without TLS, and
-    // a thread_local write on a no-TLS ARM target faults at runtime (QEMU
-    // data-abort regression). The TCB comparison is non-forgeable (only the
-    // Dispatcher thread runs on that TCB) and needs no ContextSlot. Static so
-    // cmdfw can bind it as a gate callback without an instance.
-    static bool in_dispatcher_thread() noexcept
-    {
-        const rt_thread_t dispatcher = dispatcher_tcb();
-        return (dispatcher != nullptr) && (rt_thread_self() == dispatcher);
-    }
+  // Real thread identity (R1): true only on the coact Dispatcher thread.
+  // dispatcher_thread_entry captures its own TCB (the static Dispatcher
+  // thread object) and in_dispatcher_thread() compares rt_thread_self()
+  // against it. No thread_local: RT-Thread targets may build without TLS, and
+  // a thread_local write on a no-TLS ARM target faults at runtime (QEMU
+  // data-abort regression). The TCB comparison is non-forgeable (only the
+  // Dispatcher thread runs on that TCB) and needs no ContextSlot. Static so
+  // cmdfw can bind it as a gate callback without an instance.
+  static bool in_dispatcher_thread() noexcept {
+    const rt_thread_t dispatcher = dispatcher_tcb();
+    return (dispatcher != nullptr) && (rt_thread_self() == dispatcher);
+  }
 
-    /* ---- Monotonic clock ---------------------------------------------- */
-    /* ClockOps static function table (design §7.5). Default: rt_tick_get() *
-       ns_per_tick; override with set_clock_ops() before use. */
-    uint64_t monotonic_ns() const noexcept;
-    uint64_t clock_resolution_ns() const noexcept;
-    void set_clock_ops(ClockOps ops) noexcept;
+  /* ---- Monotonic clock ---------------------------------------------- */
+  /* ClockOps static function table (design §7.5). Default: rt_tick_get() *
+     ns_per_tick; override with set_clock_ops() before use. */
+  uint64_t monotonic_ns() const noexcept;
+  uint64_t clock_resolution_ns() const noexcept;
+  void set_clock_ops(ClockOps ops) noexcept;
 
-    /* ---- Dispatcher wait/signal (0 ms = wait forever) ----------------- */
-    void wait_dispatcher(uint32_t timeout_ms) noexcept;
-    void signal_dispatcher_from_task() noexcept;
-    void signal_dispatcher_from_isr() noexcept;
+  /* ---- Dispatcher wait/signal (0 ms = wait forever) ----------------- */
+  void wait_dispatcher(uint32_t timeout_ms) noexcept;
+  void signal_dispatcher_from_task() noexcept;
+  void signal_dispatcher_from_isr() noexcept;
 
-    /* ---- Dispatcher thread lifecycle ---------------------------------- */
-    /* Explicit initialization in task context: rt_sem_init x2 + rt_thread_init.
-       Definite InitError on any failure; idempotent-kOk once initialized;
-       rejected after start/stop. Auto-invoked lazily by the other entry points
-       so the historical host tests keep working. */
-    InitError initialize() noexcept;
+  /* ---- Dispatcher thread lifecycle ---------------------------------- */
+  /* Explicit initialization in task context: rt_sem_init x2 + rt_thread_init.
+     Definite InitError on any failure; idempotent-kOk once initialized;
+     rejected after start/stop. Auto-invoked lazily by the other entry points
+     so the historical host tests keep working. */
+  InitError initialize() noexcept;
 
-    /* Start the Dispatcher thread. Returns kOk only after
-       rt_thread_startup()==RT_EOK; kAlreadyStarted on a second start or after
-       stop. Auto-initializes if initialize() was not called. */
-    InitError start_dispatcher(ThreadEntry entry, void* context) noexcept;
-    void join_dispatcher() noexcept;
-    void watchdog_progress(uint32_t marker) noexcept;
+  /* Start the Dispatcher thread. Returns kOk only after
+     rt_thread_startup()==RT_EOK; kAlreadyStarted on a second start or after
+     stop. Auto-initializes if initialize() was not called. */
+  InitError start_dispatcher(ThreadEntry entry, void* context) noexcept;
+  void join_dispatcher() noexcept;
+  void watchdog_progress(uint32_t marker) noexcept;
 
-    // Override the Dispatcher thread stack size before initialize()/start().
-    // The Runtime pushes Config::kDispatcherStackBytes here; default 4096. A
-    // request larger than the RtThreadResources stack yields kStackTooLarge.
-    void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
-    uint32_t dispatcher_stack_bytes() const noexcept;
+  // Override the Dispatcher thread stack size before initialize()/start().
+  // The Runtime pushes Config::kDispatcherStackBytes here; default 4096. A
+  // request larger than the RtThreadResources stack yields kStackTooLarge.
+  void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
+  uint32_t dispatcher_stack_bytes() const noexcept;
 
-    /* ---- M1 C3: direct-dispatch depth (per-thread, stored in the table) */
-    void enter_direct() noexcept;
-    void leave_direct() noexcept;
+  /* ---- M1 C3: direct-dispatch depth (per-thread, stored in the table) */
+  void enter_direct() noexcept;
+  void leave_direct() noexcept;
 
-    /* ---- SemOps family (pal.hpp): static rt_semaphore ------------------ */
-    /* SemHandle owns its embedded struct rt_semaphore; init (rt_sem_init,
-       task context only) / take / release / deinit (rt_sem_detach).
-       timeout_ms 0 = non-blocking try, kWaitForever = RT_WAITING_FOREVER,
-       any other value converts to ticks (ms at RT_TICK_PER_SECOND). */
-    bool sem_init(SemHandle& sem, uint32_t initial) noexcept;
-    bool sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept;
-    void sem_release(SemHandle& sem) noexcept;
-    /* rt_sem_release IS ISR-safe in RT-Thread (and in the host stub). */
-    void sem_release_from_isr(SemHandle& sem) noexcept;
-    void sem_deinit(SemHandle& sem) noexcept;
+  /* ---- SemOps family (pal.hpp): static rt_semaphore ------------------ */
+  /* SemHandle owns its embedded struct rt_semaphore; init (rt_sem_init,
+     task context only) / take / release / deinit (rt_sem_detach).
+     timeout_ms 0 = non-blocking try, kWaitForever = RT_WAITING_FOREVER,
+     any other value converts to ticks (ms at RT_TICK_PER_SECOND). */
+  bool sem_init(SemHandle& sem, uint32_t initial) noexcept;
+  bool sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept;
+  void sem_release(SemHandle& sem) noexcept;
+  /* rt_sem_release IS ISR-safe in RT-Thread (and in the host stub). */
+  void sem_release_from_isr(SemHandle& sem) noexcept;
+  void sem_deinit(SemHandle& sem) noexcept;
 
-    /* ---- MutexOps family: static rt_mutex ------------------------------ */
-    bool mutex_init(MutexHandle& m) noexcept;
-    void mutex_lock(MutexHandle& m) noexcept;
-    void mutex_unlock(MutexHandle& m) noexcept;
-    void mutex_deinit(MutexHandle& m) noexcept;
+  /* ---- MutexOps family: static rt_mutex ------------------------------ */
+  bool mutex_init(MutexHandle& m) noexcept;
+  void mutex_lock(MutexHandle& m) noexcept;
+  void mutex_unlock(MutexHandle& m) noexcept;
+  void mutex_deinit(MutexHandle& m) noexcept;
 
-    /* ---- CondOps family: hand-off condition variable ------------------- */
-    /* pthread_cond_wait semantics emulated on RT-Thread primitives: the wake
-       signal is a counting rt_semaphore; cond_wait RELEASES the paired mutex,
-       blocks on the signal, then RE-ACQUIRES the mutex before returning — so
-       callers use the exact pthread pattern (lock; while(!cond) wait; unlock;
-       signaler: lock; set state; signal; unlock). waiters counts blocked
-       threads so broadcast releases exactly that many tokens (rt_sem has no
-       broadcast primitive). */
-    bool cond_init(CondHandle& c) noexcept;
-    /* 0 = RT_WAITING_FOREVER. */
-    void cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexcept;
-    void cond_signal(CondHandle& c) noexcept;
-    void cond_broadcast(CondHandle& c) noexcept;
-    void cond_deinit(CondHandle& c) noexcept;
+  /* ---- CondOps family: hand-off condition variable ------------------- */
+  /* pthread_cond_wait semantics emulated on RT-Thread primitives: the wake
+     signal is a counting rt_semaphore; cond_wait RELEASES the paired mutex,
+     blocks on the signal, then RE-ACQUIRES the mutex before returning — so
+     callers use the exact pthread pattern (lock; while(!cond) wait; unlock;
+     signaler: lock; set state; signal; unlock). waiters counts blocked
+     threads so broadcast releases exactly that many tokens (rt_sem has no
+     broadcast primitive). */
+  bool cond_init(CondHandle& c) noexcept;
+  /* 0 = RT_WAITING_FOREVER. */
+  void cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexcept;
+  void cond_signal(CondHandle& c) noexcept;
+  void cond_broadcast(CondHandle& c) noexcept;
+  void cond_deinit(CondHandle& c) noexcept;
 
-    /* ---- ThreadOps family: static thread table ------------------------- */
-    /* create() borrows the NEXT free slot of the PAL's fixed WorkerThreadSlot
-       table (static struct rt_thread + static stack + static join sem, in
-       RtThreadResources) — same zero-heap philosophy as the Dispatcher; there
-       is NO rt_thread_create. Returns false when the table is exhausted or the
-       caller never bound resources with enough slots. join() waits on the
-       slot's join semaphore, released by the slot's trampoline on entry
-       return, then frees the slot for reuse. */
-    bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
-    void thread_join(ThreadHandle& t) noexcept;
+  /* ---- ThreadOps family: static thread table ------------------------- */
+  /* create() borrows the NEXT free slot of the PAL's fixed WorkerThreadSlot
+     table (static struct rt_thread + static stack + static join sem, in
+     RtThreadResources) — same zero-heap philosophy as the Dispatcher; there
+     is NO rt_thread_create. Returns false when the table is exhausted or the
+     caller never bound resources with enough slots. join() waits on the
+     slot's join semaphore, released by the slot's trampoline on entry
+     return, then frees the slot for reuse. */
+  bool thread_create(ThreadHandle& t, ThreadEntry entry, void* context) noexcept;
+  void thread_join(ThreadHandle& t) noexcept;
 
-    // -- SoftIrqOps family (pal.hpp): SPSC mailbox + rt_thread_kill wake ------
-    // See the SoftIrqOps contract in pal.hpp. The signal (SIGUSR1) is a wake
-    // hint only — the payload travels in the embedded ring. init() installs
-    // an EMPTY handler; raise() publishes to the ring (busy-reject when full)
-    // and pokes the consumer with rt_thread_kill; take() polls the ring on a
-    // 1 ms tick and returns the payload or -1 on timeout. Board-level
-    // verification of the real rt_signal_wait wakeup path is pending.
-    bool softirq_init(SoftIrqHandle& h) noexcept;
-    bool softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept;
-    int32_t softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept;
-    void softirq_deinit(SoftIrqHandle& h) noexcept;
+  // -- SoftIrqOps family (pal.hpp): SPSC mailbox + rt_thread_kill wake ------
+  // See the SoftIrqOps contract in pal.hpp. The signal (SIGUSR1) is a wake
+  // hint only — the payload travels in the embedded ring. init() installs
+  // an EMPTY handler; raise() publishes to the ring (busy-reject when full)
+  // and pokes the consumer with rt_thread_kill; take() polls the ring on a
+  // 1 ms tick and returns the payload or -1 on timeout. Board-level
+  // verification of the real rt_signal_wait wakeup path is pending.
+  bool softirq_init(SoftIrqHandle& h) noexcept;
+  bool softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept;
+  int32_t softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept;
+  void softirq_deinit(SoftIrqHandle& h) noexcept;
 
-    // -- Sleep (SemOps family companion): block the calling thread ------------
-    // rt_thread_mdelay rounds to whole milliseconds (1 kHz tick), which is the
-    // real-target resolution for hardware-latency simulation loops.
-    void sleep_us(uint32_t us) noexcept;
+  // -- Sleep (SemOps family companion): block the calling thread ------------
+  // rt_thread_mdelay rounds to whole milliseconds (1 kHz tick), which is the
+  // real-target resolution for hardware-latency simulation loops.
+  void sleep_us(uint32_t us) noexcept;
 
-    /* ---- Queue backend (single-core irq-mask ring, no atomics) --------- */
-    template <typename T, uint16_t Cap>
-    using QueueBackend = coact::SingleCoreCriticalRing<T, Cap>;
+  /* ---- Queue backend (single-core irq-mask ring, no atomics) --------- */
+  template <typename T, uint16_t Cap>
+  using QueueBackend = coact::SingleCoreCriticalRing<T, Cap>;
 
-    // Board profile for single-core RT-Thread product assembly (design §7.4):
-    // Runtime<BoardCfg, RtThread, RtThread::Profile> selects immediate reclaim.
-    // Compile-time contract: the single-core profile REQUIRES RT_CPUS_NR==1 and
-    // no RT_USING_SMP. The target include gate above enforces this; Linux/SMP
-    // assemblies use their own PAL with HostSmpProfile instead.
-    using Profile = coact::RttSingleCoreProfile;
+  // Board profile for single-core RT-Thread product assembly (design §7.4):
+  // Runtime<BoardCfg, RtThread, RtThread::Profile> selects immediate reclaim.
+  // Compile-time contract: the single-core profile REQUIRES RT_CPUS_NR==1 and
+  // no RT_USING_SMP. The target include gate above enforces this; Linux/SMP
+  // assemblies use their own PAL with HostSmpProfile instead.
+  using Profile = coact::RttSingleCoreProfile;
 
-private:
-    enum class Lifecycle : uint8_t {
-        kUninitialized,
-        kReady,        // initialize() succeeded; start allowed
-        kStarted,      // dispatcher running; stop/join allowed
-        kStopped,      // joined; terminal - no restart
-        kInitFailed,   // initialize() or start failed; terminal - no retry
-    };
+ private:
+  enum class Lifecycle : uint8_t {
+    kUninitialized,
+    kReady,       // initialize() succeeded; start allowed
+    kStarted,     // dispatcher running; stop/join allowed
+    kStopped,     // joined; terminal - no restart
+    kInitFailed,  // initialize() or start failed; terminal - no retry
+  };
 
-    static void dispatcher_thread_entry(void* param) noexcept;
-    /* ThreadOps trampoline: runs the user entry, then releases the slot's
-       join semaphore and frees the slot. */
-    static void worker_thread_entry(void* param) noexcept;
+  static void dispatcher_thread_entry(void* param) noexcept;
+  /* ThreadOps trampoline: runs the user entry, then releases the slot's
+     join semaphore and frees the slot. */
+  static void worker_thread_entry(void* param) noexcept;
 
-    /* Runs initialize() once and caches the result. Returns last_error_ when
-       the PAL is in the failed state. */
-    InitError ensure_initialized() noexcept;
+  /* Runs initialize() once and caches the result. Returns last_error_ when
+     the PAL is in the failed state. */
+  InitError ensure_initialized() noexcept;
 
-    /* TCB captured by dispatcher_thread_entry on the Dispatcher thread
-       (design §7.5). Defined in pal_rtthread.cpp. */
-    static rt_thread_t dispatcher_tcb() noexcept;
+  /* TCB captured by dispatcher_thread_entry on the Dispatcher thread
+     (design §7.5). Defined in pal_rtthread.cpp. */
+  static rt_thread_t dispatcher_tcb() noexcept;
 
-    /* Fixed ContextSlot-table lookups over the resource's slot array. Never
-       allocates. */
-    static ContextSlot* find_slot(RtThreadResourcesBase* res,
-                                  rt_thread_t t) noexcept;
-    static ContextSlot* alloc_slot(RtThreadResourcesBase* res,
-                                   rt_thread_t t) noexcept;
-    uint64_t read_extended_counter() const noexcept;
+  /* Fixed ContextSlot-table lookups over the resource's slot array. Never
+     allocates. */
+  static ContextSlot* find_slot(RtThreadResourcesBase* res, rt_thread_t t) noexcept;
+  static ContextSlot* alloc_slot(RtThreadResourcesBase* res, rt_thread_t t) noexcept;
+  uint64_t read_extended_counter() const noexcept;
 
-    /* Returns a pointer to the current thread's ExecutionContext in the fixed
-       table. Null for ISR, the Dispatcher (TCB-identified), or unregistered
-       threads. Never allocates. */
-    ExecutionContext* tls_ctx() const noexcept;
+  /* Returns a pointer to the current thread's ExecutionContext in the fixed
+     table. Null for ISR, the Dispatcher (TCB-identified), or unregistered
+     threads. Never allocates. */
+  ExecutionContext* tls_ctx() const noexcept;
 
-    RtThreadResourcesBase* res_;         /* caller-provided static resources */
-    ThreadEntry user_entry_;
-    void*       user_ctx_;
-    Lifecycle   state_;
-    InitError   last_error_;
-    uint32_t    dispatcher_stack_bytes_; /* default 4096; overridable */
-    ClockOps    clock_ops_;              /* default: RT tick; §7.5 */
-    uint64_t    ns_per_counter_;          /* zero selects exact fallback */
-    mutable uint64_t counter_epoch_ = 0U;
-    mutable uint64_t last_counter_ = 0U;
-    mutable bool counter_seen_ = false;
+  RtThreadResourcesBase* res_; /* caller-provided static resources */
+  ThreadEntry user_entry_;
+  void* user_ctx_;
+  Lifecycle state_;
+  InitError last_error_;
+  uint32_t dispatcher_stack_bytes_; /* default 4096; overridable */
+  ClockOps clock_ops_;              /* default: RT tick; §7.5 */
+  uint64_t ns_per_counter_;         /* zero selects exact fallback */
+  mutable uint64_t counter_epoch_ = 0U;
+  mutable uint64_t last_counter_ = 0U;
+  mutable bool counter_seen_ = false;
 };
 
 }  // namespace pal

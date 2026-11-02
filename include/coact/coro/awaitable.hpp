@@ -19,14 +19,14 @@
 // TimerScheduler with ManualTickSource).
 #pragma once
 
-#include <cstdint>
-
+#include "coact/config.hpp"
 #include "coact/coro/config.hpp"
 #include "coact/coro/error.hpp"
 #include "coact/coro/task.hpp"
 #include "coact/coro/task_id.hpp"
-#include "coact/config.hpp"
 #include "coact/expected.hpp"
+
+#include <cstdint>
 
 namespace coact {
 namespace coro {
@@ -35,33 +35,31 @@ namespace coro {
 // casts: the AO reads the payload region of the composed block through the
 // offset helpers of coact::EventBlockLayout.
 struct CompletionEventPayload {
-    TaskId id;
-    CompletionStatus status;
-    TaskError error;
+  TaskId id;
+  CompletionStatus status;
+  TaskError error;
 };
 
 // Decode a completion event payload from a raw pool block. `block` must be a
 // CompletionBlock allocated by TaskRegistry (the waiter AO received it with
 // its registered signal). Returns the decoded payload; no validation of the
 // signal is possible here (the HSM table already selected the action by it).
-inline CompletionEventPayload decode_completion(const void* block) noexcept
-{
-    const auto* layout = static_cast<const CompletionBlock*>(block);
-    CompletionEventPayload out;
-    out.id = TaskId(layout->meta.task_id);
-    out.status = static_cast<CompletionStatus>(layout->meta.status);
-    out.error = static_cast<TaskError>(layout->meta.error_code);
-    return out;
+inline CompletionEventPayload decode_completion(const void* block) noexcept {
+  const auto* layout = static_cast<const CompletionBlock*>(block);
+  CompletionEventPayload out;
+  out.id = TaskId(layout->meta.task_id);
+  out.status = static_cast<CompletionStatus>(layout->meta.status);
+  out.error = static_cast<TaskError>(layout->meta.error_code);
+  return out;
 }
 
 // Decode from a coact::Event base pointer when the AO holds the Event& the
 // dispatcher handed it. Equivalent to decode_completion(block) with the
 // composed-layout offset math done once.
-inline CompletionEventPayload decode_completion(const Event& event) noexcept
-{
-    // The Event header sits at offset 0 of a CompletionBlock, so the block
-    // address equals the event address (coact::EventBlockLayout contract).
-    return decode_completion(static_cast<const void*>(&event));
+inline CompletionEventPayload decode_completion(const Event& event) noexcept {
+  // The Event header sits at offset 0 of a CompletionBlock, so the block
+  // address equals the event address (coact::EventBlockLayout contract).
+  return decode_completion(static_cast<const void*>(&event));
 }
 
 // Trait: a completion source can bind a waiter (TargetId + resume signal)
@@ -71,14 +69,11 @@ inline CompletionEventPayload decode_completion(const Event& event) noexcept
 // must not depend on TaskRegistry's concrete type.
 template <typename Source>
 struct CompletionSourceTraits {
-    // By default any registry-like type exposes set_awaiter(id, t, s):
-    // the trait adapts the argument order so glue code reads uniformly.
-    static Expected<void, TaskError> bind_waiter(Source& src, TaskId id,
-                                                 TargetId waiter,
-                                                 uint16_t signal) noexcept
-    {
-        return src.set_awaiter(id, waiter, signal);
-    }
+  // By default any registry-like type exposes set_awaiter(id, t, s):
+  // the trait adapts the argument order so glue code reads uniformly.
+  static Expected<void, TaskError> bind_waiter(Source& src, TaskId id, TargetId waiter, uint16_t signal) noexcept {
+    return src.set_awaiter(id, waiter, signal);
+  }
 };
 
 }  // namespace coro

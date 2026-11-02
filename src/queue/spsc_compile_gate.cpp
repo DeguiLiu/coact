@@ -5,16 +5,15 @@
 // non-power-of-two capacity is instantiated.
 // SPDX-License-Identifier: MIT
 
-#include <cstdint>
-
 #include "coact/spsc_ring.hpp"
 
-void instantiate_spsc_invalid_gate()
-{
+#include <cstdint>
+
+void instantiate_spsc_invalid_gate() {
 #ifdef COACT_GATE_CAPACITY_ONE
-    coact::SpscRing<int, 1> q;   // rejected: capacity < 2
+  coact::SpscRing<int, 1> q;  // rejected: capacity < 2
 #else
-    coact::SpscRing<int, 6> q;   // rejected: non-power-of-two
+  coact::SpscRing<int, 6> q;  // rejected: non-power-of-two
 #endif
-    (void)q;
+  (void)q;
 }

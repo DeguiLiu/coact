@@ -37,4 +37,3 @@
  */
 
 #include "video_stream.hpp"
-

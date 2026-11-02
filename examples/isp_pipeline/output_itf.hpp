@@ -50,18 +50,19 @@
  */
 #pragma once
 
-#include <array>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
+#include "common.hpp"
+#include "isp_chain.hpp"
 
 #include "coact/ao.hpp"
 #include "coact/hsm.hpp"
 #include "coact/runtime.hpp"
 
-#include "common.hpp"
-#include "isp_chain.hpp"
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+
+#include <array>
+#include <atomic>
 
 namespace isp_demo {
 
@@ -69,43 +70,42 @@ namespace isp_demo {
 // Sinks: USB (PIC) and MIPI (TEMP).
 // ---------------------------------------------------------------------------
 struct SinkCtx {
-    const char* name{""};
-    const char* expected_tag{""};
-    DdrCtx*    ddr{nullptr};        // serve point: verify real DDR bytes
-    uint32_t    frames_received{0U};
-    uint32_t    total_us{0U};
-    uint32_t    first_frame_id{0xFFFFFFFFU};
-    uint32_t    last_frame_id{0U};
-    uint32_t    tag_mismatch{0U};
-    uint32_t    byte_mismatch{0U};
-    uint32_t    frame_overrun{0U};   // DDR slot recycled before read (real
-                                     // 3-frame ring overrun behavior)
-    bool        banner_printed{false};
-    // MIPI path only: async CSI TX completion channel.
-    PoolT*      pool{nullptr};       // event plane (self-submitted completions)
-    Rt*         rt{nullptr};
-    MipiIrqWorker* tx_channel{nullptr};
-    TargetId    self_target{};       // this AO (self-submitted completions)
-    // Lane parking ring: frame ids handed to the TX line buffer and not yet
-    // confirmed. Depth 2 matches the channel depth; completion matches by id.
-    static constexpr uint8_t kTxParkDepth = 2U;
-    uint32_t    tx_parked[kTxParkDepth]{};
-    uint8_t     tx_park_head{0U};
-    uint32_t    tx_subs{0U};         // frames handed to the line buffer
-    uint32_t    tx_rejects{0U};      // line buffer full (dropped submits)
-    uint32_t    tx_done_count{0U};   // TX-done interrupts observed
-    uint32_t    tx_stale{0U};        // completions matching no parked frame
-    uint32_t    stream_errs{0U};     // CSI stream-error interrupts observed
+  const char* name{""};
+  const char* expected_tag{""};
+  DdrCtx* ddr{nullptr};  // serve point: verify real DDR bytes
+  uint32_t frames_received{0U};
+  uint32_t total_us{0U};
+  uint32_t first_frame_id{0xFFFFFFFFU};
+  uint32_t last_frame_id{0U};
+  uint32_t tag_mismatch{0U};
+  uint32_t byte_mismatch{0U};
+  uint32_t frame_overrun{0U};  // DDR slot recycled before read (real
+                               // 3-frame ring overrun behavior)
+  bool banner_printed{false};
+  // MIPI path only: async CSI TX completion channel.
+  PoolT* pool{nullptr};  // event plane (self-submitted completions)
+  Rt* rt{nullptr};
+  MipiIrqWorker* tx_channel{nullptr};
+  TargetId self_target{};  // this AO (self-submitted completions)
+  // Lane parking ring: frame ids handed to the TX line buffer and not yet
+  // confirmed. Depth 2 matches the channel depth; completion matches by id.
+  static constexpr uint8_t kTxParkDepth = 2U;
+  uint32_t tx_parked[kTxParkDepth]{};
+  uint8_t tx_park_head{0U};
+  uint32_t tx_subs{0U};        // frames handed to the line buffer
+  uint32_t tx_rejects{0U};     // line buffer full (dropped submits)
+  uint32_t tx_done_count{0U};  // TX-done interrupts observed
+  uint32_t tx_stale{0U};       // completions matching no parked frame
+  uint32_t stream_errs{0U};    // CSI stream-error interrupts observed
 };
 
-inline void check_tag(SinkCtx& ctx, const Layout& e)
-{
-    const Payload* p = reinterpret_cast<const Payload*>(&e.payload[0]);
-    if (p->control[0] != static_cast<uint8_t>(ctx.expected_tag[0])
-     || p->control[1] != static_cast<uint8_t>(ctx.expected_tag[1])
-     || p->control[2] != static_cast<uint8_t>(ctx.expected_tag[2])) {
-        ++ctx.tag_mismatch;
-    }
+inline void check_tag(SinkCtx& ctx, const Layout& e) {
+  const Payload* p = reinterpret_cast<const Payload*>(&e.payload[0]);
+  if (p->control[0] != static_cast<uint8_t>(ctx.expected_tag[0]) ||
+      p->control[1] != static_cast<uint8_t>(ctx.expected_tag[1]) ||
+      p->control[2] != static_cast<uint8_t>(ctx.expected_tag[2])) {
+    ++ctx.tag_mismatch;
+  }
 }
 
 // Data-plane verify: re-read the DDR region the frame lives in and confirm the
@@ -113,139 +113,128 @@ inline void check_tag(SinkCtx& ctx, const Layout& e)
 //   PIC out   = 6/5 * fused, fused = (2*lg + 3*hg)/5
 //   lg = 3/4*dn, hg = 5/4*dn
 // We recompute the exact pipeline in uint32 to avoid rounding drift.
-inline void verify_pic_bytes(SinkCtx& ctx, const Layout& e)
-{
-    uint8_t got[kSlotPayloadBytes];
-    if (!ctx.ddr->read(DdrId::kDdrPicOut, e.meta.buffer_idx, e.meta.frame_id, got)) {
-        ++ctx.frame_overrun;   // slot recycled before we read it
-        return;
+inline void verify_pic_bytes(SinkCtx& ctx, const Layout& e) {
+  uint8_t got[kSlotPayloadBytes];
+  if (!ctx.ddr->read(DdrId::kDdrPicOut, e.meta.buffer_idx, e.meta.frame_id, got)) {
+    ++ctx.frame_overrun;  // slot recycled before we read it
+    return;
+  }
+  const uint32_t fid = e.meta.frame_id;
+  for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
+    const uint32_t dn = (fid * 7U + i) & 0xFFu;
+    const uint32_t lg = (dn * 3U) / 4U;
+    const uint32_t hg = ((dn * 5U) / 4U) & 0xFFu;  // chain truncates
+    const uint32_t fus = ((lg * 2U) + (hg * 3U)) / 5U;
+    const uint32_t exp = ((fus * 6U) / 5U) & 0xFFu;  // chain truncates
+    if (got[i] != static_cast<uint8_t>(exp)) {
+      ++ctx.byte_mismatch;
     }
-    const uint32_t fid = e.meta.frame_id;
-    for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
-        const uint32_t dn  = (fid * 7U + i) & 0xFFu;
-        const uint32_t lg  = (dn * 3U) / 4U;
-        const uint32_t hg  = ((dn * 5U) / 4U) & 0xFFu;   // chain truncates
-        const uint32_t fus = ((lg * 2U) + (hg * 3U)) / 5U;
-        const uint32_t exp = ((fus * 6U) / 5U) & 0xFFu;  // chain truncates
-        if (got[i] != static_cast<uint8_t>(exp)) {
-            ++ctx.byte_mismatch;
-        }
-    }
+  }
 }
-inline void verify_temp_bytes(SinkCtx& ctx, const Layout& e)
-{
-    uint8_t got[kSlotPayloadBytes];
-    if (!ctx.ddr->read(DdrId::kDdrTemp, e.meta.buffer_idx, e.meta.frame_id, got)) {
-        ++ctx.frame_overrun;   // slot recycled before we read it
-        return;
+inline void verify_temp_bytes(SinkCtx& ctx, const Layout& e) {
+  uint8_t got[kSlotPayloadBytes];
+  if (!ctx.ddr->read(DdrId::kDdrTemp, e.meta.buffer_idx, e.meta.frame_id, got)) {
+    ++ctx.frame_overrun;  // slot recycled before we read it
+    return;
+  }
+  const uint32_t fid = e.meta.frame_id;
+  for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
+    const uint32_t dn = (fid * 7U + i) & 0xFFu;
+    const uint32_t lg = (dn * 3U) / 4U;
+    const uint32_t hg = ((dn * 5U) / 4U) & 0xFFu;
+    const uint32_t fus = ((lg * 2U) + (hg * 3U)) / 5U;
+    const uint32_t exp = ((fus / 2U) + 32U) & 0xFFu;  // chain truncates
+    if (got[i] != static_cast<uint8_t>(exp)) {
+      ++ctx.byte_mismatch;
     }
-    const uint32_t fid = e.meta.frame_id;
-    for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
-        const uint32_t dn  = (fid * 7U + i) & 0xFFu;
-        const uint32_t lg  = (dn * 3U) / 4U;
-        const uint32_t hg  = ((dn * 5U) / 4U) & 0xFFu;
-        const uint32_t fus = ((lg * 2U) + (hg * 3U)) / 5U;
-        const uint32_t exp = ((fus / 2U) + 32U) & 0xFFu;  // chain truncates
-        if (got[i] != static_cast<uint8_t>(exp)) {
-            ++ctx.byte_mismatch;
-        }
-    }
+  }
 }
 
-inline void onPicPacked(SinkCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    check_tag(ctx, e);
-    verify_pic_bytes(ctx, e);   // data-plane byte check
-    /* 阻塞记账（原真睡 800us）：USB UVC 帧提交耗时。latency 统计只依赖
-       模拟值，无真实时间窗口断言，改记账不睡眠（T37 后 PIC 数据面走
-       WRAPE，本 handler 已不在主数据路径上） */
-    ctx.total_us += 800U;  // USB UVC submit (accounting only)
-    if (ctx.first_frame_id == 0xFFFFFFFFU) { ctx.first_frame_id = e.meta.frame_id; }
-    ctx.last_frame_id = e.meta.frame_id;
-    ++ctx.frames_received;
-    if (!ctx.banner_printed) {
-        std::printf("[%s] first PIC frame: id=%u buf=%u kind=%u\n",
-                    ctx.name, e.meta.frame_id, e.meta.buffer_idx, e.meta.payload_kind);
-        g_log.record_from_task<LogLevel::kInfo, kEvtSinkFirst>(
-            0U, e.meta.frame_id, e.meta.buffer_idx, e.meta.payload_kind);
-        ctx.banner_printed = true;
-    }
+inline void onPicPacked(SinkCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  check_tag(ctx, e);
+  verify_pic_bytes(ctx, e);  // data-plane byte check
+  /* 阻塞记账（原真睡 800us）：USB UVC 帧提交耗时。latency 统计只依赖
+     模拟值，无真实时间窗口断言，改记账不睡眠（T37 后 PIC 数据面走
+     WRAPE，本 handler 已不在主数据路径上） */
+  ctx.total_us += 800U;  // USB UVC submit (accounting only)
+  if (ctx.first_frame_id == 0xFFFFFFFFU) {
+    ctx.first_frame_id = e.meta.frame_id;
+  }
+  ctx.last_frame_id = e.meta.frame_id;
+  ++ctx.frames_received;
+  if (!ctx.banner_printed) {
+    std::printf("[%s] first PIC frame: id=%u buf=%u kind=%u\n", ctx.name, e.meta.frame_id, e.meta.buffer_idx,
+                e.meta.payload_kind);
+    g_log.record_from_task<LogLevel::kInfo, kEvtSinkFirst>(0U, e.meta.frame_id, e.meta.buffer_idx, e.meta.payload_kind);
+    ctx.banner_printed = true;
+  }
 }
 
 // Self-submitted TX-done (drop path): the frame never reached the lane; the
 // synthetic completion walks the sink home through its normal arc.
-inline void self_complete_tx(SinkCtx& ctx, uint32_t frame_id)
-{
-    Layout* e = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-        static_cast<uint16_t>(Sig::kMipiTxDone));
-    if (nullptr != e) {
-        e->meta.frame_id = frame_id;
-        ctx.rt->coordinator().submit_from_task(ctx.self_target, &e->event,
-                                               {false, false});
-    }
+inline void self_complete_tx(SinkCtx& ctx, uint32_t frame_id) {
+  Layout* e = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kMipiTxDone));
+  if (nullptr != e) {
+    e->meta.frame_id = frame_id;
+    ctx.rt->coordinator().submit_from_task(ctx.self_target, &e->event, {false, false});
+  }
 }
 
-inline void onTempPacked(SinkCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    check_tag(ctx, e);
-    verify_temp_bytes(ctx, e);   // data-plane byte check
+inline void onTempPacked(SinkCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  check_tag(ctx, e);
+  verify_temp_bytes(ctx, e);  // data-plane byte check
 
-    // Data-plane pass is DONE; the frame goes onto the MIPI TX line buffer.
-    // The submit latency is paid by the IRQ worker (kMipiTxLatencyUs), not
-    // here — the sink returns as soon as the lane accepts the descriptor.
-    if (ctx.tx_channel != nullptr
-        && ctx.tx_channel->submit(static_cast<uint16_t>(e.meta.frame_id))) {
-        ++ctx.tx_subs;
-        ctx.tx_parked[ctx.tx_park_head] = e.meta.frame_id;
-        ctx.tx_park_head = static_cast<uint8_t>(
-            (ctx.tx_park_head + 1U) % SinkCtx::kTxParkDepth);
-    } else {
-        // Busy line buffer: the frame is dropped; a self-submitted completion
-        // for THIS frame walks the HSM home (counted, never a stall).
-        ++ctx.tx_rejects;
-        std::printf("[warn] mipi_irq submit rejected (busy), frame=%u\n",
-                    static_cast<unsigned>(e.meta.frame_id));
-        self_complete_tx(ctx, e.meta.frame_id);
-    }
-    if (ctx.first_frame_id == 0xFFFFFFFFU) { ctx.first_frame_id = e.meta.frame_id; }
-    ctx.last_frame_id = e.meta.frame_id;
-    if (!ctx.banner_printed) {
-        std::printf("[%s] first TEMP frame: id=%u buf=%u\n",
-                    ctx.name, e.meta.frame_id, e.meta.buffer_idx);
-        g_log.record_from_task<LogLevel::kInfo, kEvtSinkFirst>(
-            1U, e.meta.frame_id, e.meta.buffer_idx, e.meta.payload_kind);
-        ctx.banner_printed = true;
-    }
+  // Data-plane pass is DONE; the frame goes onto the MIPI TX line buffer.
+  // The submit latency is paid by the IRQ worker (kMipiTxLatencyUs), not
+  // here — the sink returns as soon as the lane accepts the descriptor.
+  if (ctx.tx_channel != nullptr && ctx.tx_channel->submit(static_cast<uint16_t>(e.meta.frame_id))) {
+    ++ctx.tx_subs;
+    ctx.tx_parked[ctx.tx_park_head] = e.meta.frame_id;
+    ctx.tx_park_head = static_cast<uint8_t>((ctx.tx_park_head + 1U) % SinkCtx::kTxParkDepth);
+  } else {
+    // Busy line buffer: the frame is dropped; a self-submitted completion
+    // for THIS frame walks the HSM home (counted, never a stall).
+    ++ctx.tx_rejects;
+    std::printf("[warn] mipi_irq submit rejected (busy), frame=%u\n", static_cast<unsigned>(e.meta.frame_id));
+    self_complete_tx(ctx, e.meta.frame_id);
+  }
+  if (ctx.first_frame_id == 0xFFFFFFFFU) {
+    ctx.first_frame_id = e.meta.frame_id;
+  }
+  ctx.last_frame_id = e.meta.frame_id;
+  if (!ctx.banner_printed) {
+    std::printf("[%s] first TEMP frame: id=%u buf=%u\n", ctx.name, e.meta.frame_id, e.meta.buffer_idx);
+    g_log.record_from_task<LogLevel::kInfo, kEvtSinkFirst>(1U, e.meta.frame_id, e.meta.buffer_idx, e.meta.payload_kind);
+    ctx.banner_printed = true;
+  }
 }
 
 // TX-done interrupt: the frame is on the lane. Account completion here (the
 // sink's observable "frame shipped" moment), exactly where the CSI ISR would
 // fire in the real driver.
-inline void onMipiTxDone(SinkCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    // Match: the completion must name a frame on the lane; a stale one is
-    // counted and ignored (the parked frames keep waiting for their turn).
-    bool hit = false;
-    for (uint8_t i = 0U; i < SinkCtx::kTxParkDepth; ++i) {
-        if (ctx.tx_parked[i] == e.meta.frame_id) {
-            ctx.tx_parked[i] = 0xFFFFFFFFU;   // consume the parked id
-            hit = true;
-            break;
-        }
+inline void onMipiTxDone(SinkCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  // Match: the completion must name a frame on the lane; a stale one is
+  // counted and ignored (the parked frames keep waiting for their turn).
+  bool hit = false;
+  for (uint8_t i = 0U; i < SinkCtx::kTxParkDepth; ++i) {
+    if (ctx.tx_parked[i] == e.meta.frame_id) {
+      ctx.tx_parked[i] = 0xFFFFFFFFU;  // consume the parked id
+      hit = true;
+      break;
     }
-    if (!hit) {
-        ++ctx.tx_stale;
-        return;
-    }
-    // Latency paid on the worker; accounted here at the completion moment.
-    ctx.total_us += kMipiTxLatencyUs;
-    ++ctx.frames_received;
-    ++ctx.tx_done_count;
-    HsmTrace::transition("mipi", "TX_PENDING",
-                         static_cast<uint16_t>(Sig::kMipiTxDone), "ACTIVE");
+  }
+  if (!hit) {
+    ++ctx.tx_stale;
+    return;
+  }
+  // Latency paid on the worker; accounted here at the completion moment.
+  ctx.total_us += kMipiTxLatencyUs;
+  ++ctx.frames_received;
+  ++ctx.tx_done_count;
+  HsmTrace::transition("mipi", "TX_PENDING", static_cast<uint16_t>(Sig::kMipiTxDone), "ACTIVE");
 }
 
 COACT_HSM_STATES(kSinkStates, SinkCtx, "Root", "Active");
@@ -255,13 +244,13 @@ COACT_HSM_TRANS(kUsbSinkTransitions, SinkCtx, Sig::kPicPacked, onPicPacked);
 // the error — deliberately NO FSM transition (the manual's "interrupt does
 // not auto-change the Stream FSM" rule); the frame on the lane stays parked
 // until its own TX-done (or a stale accounting) resolves it. Injection-only.
-inline void onMipiStreamErr(SinkCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    ++ctx.stream_errs;
-    std::printf("[warn] mipi stream error interrupt: frame=%u "
-                "(counted, FSM unchanged per §9 rule)\n",
-                static_cast<unsigned>(e.meta.frame_id));
+inline void onMipiStreamErr(SinkCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  ++ctx.stream_errs;
+  std::printf(
+      "[warn] mipi stream error interrupt: frame=%u "
+      "(counted, FSM unchanged per §9 rule)\n",
+      static_cast<unsigned>(e.meta.frame_id));
 }
 
 // MIPI sink HSM: ACTIVE --(kTempPacked)--> TX_PENDING (frame on the lane);
@@ -269,30 +258,29 @@ inline void onMipiStreamErr(SinkCtx& ctx, const Event& evt)
 enum : int8_t { kMipiRoot = 0, kMipiActive = 1, kMipiTxPending = 2 };
 
 inline const StateDef<SinkCtx> kMipiStates[] = {
-    { -1,              nullptr, nullptr, "Root" },
-    { kMipiRoot,       nullptr, nullptr, "ACTIVE" },
-    { kMipiRoot,       nullptr, nullptr, "TX_PENDING" },
+    {-1, nullptr, nullptr, "Root"},
+    {kMipiRoot, nullptr, nullptr, "ACTIVE"},
+    {kMipiRoot, nullptr, nullptr, "TX_PENDING"},
 };
 
 inline const TransitionDef<SinkCtx> kMipiSinkTransitions[] = {
     // Frame in: verify + hand to the lane, from any state.
-    { kMipiActive,    static_cast<uint16_t>(Sig::kTempPacked), kMipiTxPending,
-      TransitionKind::External, nullptr, onTempPacked },
-    { kMipiTxPending, static_cast<uint16_t>(Sig::kTempPacked), kMipiTxPending,
-      TransitionKind::Internal, nullptr, onTempPacked },
+    {kMipiActive, static_cast<uint16_t>(Sig::kTempPacked), kMipiTxPending, TransitionKind::External, nullptr,
+     onTempPacked},
+    {kMipiTxPending, static_cast<uint16_t>(Sig::kTempPacked), kMipiTxPending, TransitionKind::Internal, nullptr,
+     onTempPacked},
     // TX-done: match + release, from any state.
-    { kMipiTxPending, static_cast<uint16_t>(Sig::kMipiTxDone), kMipiActive,
-      TransitionKind::External, nullptr, onMipiTxDone },
-    { kMipiActive,    static_cast<uint16_t>(Sig::kMipiTxDone), kMipiActive,
-      TransitionKind::Internal, nullptr, onMipiTxDone },
+    {kMipiTxPending, static_cast<uint16_t>(Sig::kMipiTxDone), kMipiActive, TransitionKind::External, nullptr,
+     onMipiTxDone},
+    {kMipiActive, static_cast<uint16_t>(Sig::kMipiTxDone), kMipiActive, TransitionKind::Internal, nullptr,
+     onMipiTxDone},
     // kMipiStreamErr (§9): error interrupt — counted only, Internal from
     // either state (interrupt never auto-changes the Stream FSM).
-    { kMipiTxPending, static_cast<uint16_t>(Sig::kMipiStreamErr), kMipiTxPending,
-      TransitionKind::Internal, nullptr, onMipiStreamErr },
-    { kMipiActive,    static_cast<uint16_t>(Sig::kMipiStreamErr), kMipiActive,
-      TransitionKind::Internal, nullptr, onMipiStreamErr },
+    {kMipiTxPending, static_cast<uint16_t>(Sig::kMipiStreamErr), kMipiTxPending, TransitionKind::Internal, nullptr,
+     onMipiStreamErr},
+    {kMipiActive, static_cast<uint16_t>(Sig::kMipiStreamErr), kMipiActive, TransitionKind::Internal, nullptr,
+     onMipiStreamErr},
 };
-
 
 // ---------------------------------------------------------------------------
 // UVC output chain (the T37 module set): the packed PIC stream leaves through
@@ -343,8 +331,8 @@ inline const TransitionDef<SinkCtx> kMipiSinkTransitions[] = {
 // here, so the owner-AO discipline applies.
 // =========================================================================
 struct ZoomBlock {
-    bool active{true};               // Identity rule: NEVER turned off
-    uint16_t step{kZoomStep2x};      // 128 = 2x, 256 = identity
+  bool active{true};           // Identity rule: NEVER turned off
+  uint16_t step{kZoomStep2x};  // 128 = 2x, 256 = identity
 };
 // Stream SEL (manual 7.5.5/7.5.6): selects the source stream entering the
 // physical output interface. Each source stream carries its OWN valid-data
@@ -353,153 +341,136 @@ struct ZoomBlock {
 // separate constant. This register is the authority that keeps the downstream
 // geometry constant across X1/X2 — exactly what Identity Zoom relies on.
 struct StreamSelBlock {
-    uint32_t stream_vld_num{kStreamVldNum};
+  uint32_t stream_vld_num{kStreamVldNum};
 };
 struct WrapeBlock {
-    uint32_t configured_frame_bytes{kOutFrameBytes};
-    bool stale_x1_framing{false};    // the T37 bug switch
+  uint32_t configured_frame_bytes{kOutFrameBytes};
+  bool stale_x1_framing{false};  // the T37 bug switch
 };
 
 struct HwStateBlackboard {
-    ZoomBlock      zoom;    // W: hw_bb_set_zoom_step / R: WRAPE geometry check
-    StreamSelBlock sel;     // W: static init only / R: WRAPE frame-length derivation
-    WrapeBlock     wrape;   // W: hw_bb_set_wrape_framing / R: WRAPE framing verdict
+  ZoomBlock zoom;      // W: hw_bb_set_zoom_step / R: WRAPE geometry check
+  StreamSelBlock sel;  // W: static init only / R: WRAPE frame-length derivation
+  WrapeBlock wrape;    // W: hw_bb_set_wrape_framing / R: WRAPE framing verdict
 };
 inline HwStateBlackboard g_hw_bb;
 
 // Sanctioned write sites (the auditable register interface).
-inline void hw_bb_set_zoom_step(uint16_t step) noexcept
-{
-    // Identity rule: only the coefficient changes; zoom.active stays true.
-    g_hw_bb.zoom.step = step;
+inline void hw_bb_set_zoom_step(uint16_t step) noexcept {
+  // Identity rule: only the coefficient changes; zoom.active stays true.
+  g_hw_bb.zoom.step = step;
 }
-inline void hw_bb_set_wrape_framing(uint32_t frame_bytes, bool stale_x1) noexcept
-{
-    g_hw_bb.wrape.configured_frame_bytes = frame_bytes;
-    g_hw_bb.wrape.stale_x1_framing = stale_x1;
+inline void hw_bb_set_wrape_framing(uint32_t frame_bytes, bool stale_x1) noexcept {
+  g_hw_bb.wrape.configured_frame_bytes = frame_bytes;
+  g_hw_bb.wrape.stale_x1_framing = stale_x1;
 }
 
 // Framing verdict: how the WRAPE closes a frame vs its configured geometry.
 struct FrameVerdict {
-    uint32_t payload_bytes{0U};
-    bool     err_eof{false};
+  uint32_t payload_bytes{0U};
+  bool err_eof{false};
 };
 // Compile-time framing policies (fault vs fix, same signature).
 struct StaleFraming {
-    [[nodiscard]] static constexpr FrameVerdict frame(uint32_t actual,
-                                                      uint32_t configured) noexcept
-    {
-        return (actual > configured) ? FrameVerdict{configured, true}
-                                     : FrameVerdict{actual, false};
-    }
+  [[nodiscard]] static constexpr FrameVerdict frame(uint32_t actual, uint32_t configured) noexcept {
+    return (actual > configured) ? FrameVerdict{configured, true} : FrameVerdict{actual, false};
+  }
 };
 struct AlignedFraming {
-    [[nodiscard]] static constexpr FrameVerdict frame(uint32_t actual,
-                                                      uint32_t) noexcept
-    {
-        return FrameVerdict{actual, false};
-    }
+  [[nodiscard]] static constexpr FrameVerdict frame(uint32_t actual, uint32_t) noexcept {
+    return FrameVerdict{actual, false};
+  }
 };
-
 
 // ---------------------------------------------------------------------------
 // WrapeAo: frames the packed PIC payload per its CONFIGURED geometry.
 // ---------------------------------------------------------------------------
 struct WrapeCtx {
-    PoolT*   pool{nullptr};
-    Rt*      rt{nullptr};
-    DdrCtx*  ddr{nullptr};        // data-plane byte verification at the input
-    UsbDmaWorker* dma_engine{nullptr};   // non-AO USB Bulk engine
-    uint32_t frames_framed{0U};
-    uint32_t err_eof_frames{0U};
-    uint32_t complete_frames{0U};
-    uint32_t byte_mismatch{0U};
-    uint32_t tag_mismatch{0U};
-    uint32_t zoom_geometry_mismatch{0U};
+  PoolT* pool{nullptr};
+  Rt* rt{nullptr};
+  DdrCtx* ddr{nullptr};               // data-plane byte verification at the input
+  UsbDmaWorker* dma_engine{nullptr};  // non-AO USB Bulk engine
+  uint32_t frames_framed{0U};
+  uint32_t err_eof_frames{0U};
+  uint32_t complete_frames{0U};
+  uint32_t byte_mismatch{0U};
+  uint32_t tag_mismatch{0U};
+  uint32_t zoom_geometry_mismatch{0U};
 };
 
-inline void onPicPackedWrape(WrapeCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+inline void onPicPackedWrape(WrapeCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
 
-    // Data-plane verification at the WRAPE input (was the USB sink's job):
-    // re-read the DDR region and confirm the pipeline transform is intact.
-    {
-        const Payload* p = reinterpret_cast<const Payload*>(&e.payload[0]);
-        if (p->control[0] != 'P' || p->control[1] != 'I' || p->control[2] != 'C') {
-            ++ctx.tag_mismatch;
-        }
-        uint8_t got[kSlotPayloadBytes];
-        if (!ctx.ddr->read(DdrId::kDdrPicOut, e.meta.buffer_idx,
-                           e.meta.frame_id, got)) {
-            ++ctx.byte_mismatch;   // slot overrun counts as corruption
-        } else {
-            const uint32_t fid = e.meta.frame_id;
-            for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
-                const uint32_t dn  = (fid * 7U + i) & 0xFFu;
-                const uint32_t lg  = (dn * 3U) / 4U;
-                const uint32_t hg  = ((dn * 5U) / 4U) & 0xFFu;
-                const uint32_t fus = ((lg * 2U) + (hg * 3U)) / 5U;
-                const uint32_t exp = ((fus * 6U) / 5U) & 0xFFu;
-                if (got[i] != static_cast<uint8_t>(exp)) {
-                    ++ctx.byte_mismatch;
-                }
-            }
-        }
+  // Data-plane verification at the WRAPE input (was the USB sink's job):
+  // re-read the DDR region and confirm the pipeline transform is intact.
+  {
+    const Payload* p = reinterpret_cast<const Payload*>(&e.payload[0]);
+    if (p->control[0] != 'P' || p->control[1] != 'I' || p->control[2] != 'C') {
+      ++ctx.tag_mismatch;
     }
-
-    // The stream delivered a full output-geometry frame; the WRAPE frames
-    // per its OWN configured geometry (the T37 lag point).
-    // Stream SEL (7.5.5/7.5.6): the selected source stream carries its OWN
-    // valid pixel count; the USB frame length is DERIVED from it (pixels x 2B),
-    // never a separate constant. This register is the module that keeps the
-    // downstream geometry constant across X1/X2.
-    const uint32_t actual = g_hw_bb.sel.stream_vld_num * 2U;
-    static_assert(2U * kStreamVldNum == kOutFrameBytes, "SEL derivation == geometry");
-    const uint32_t configured = g_hw_bb.wrape.configured_frame_bytes;
-
-    // Video Zoom (7.4.1) geometry consistency: the zoom step and the frame
-    // actually reaching the WRAPE must agree — a step applied while the frame
-    // geometry expects the other coefficient is the coordinate-desync fault
-    // class (U6 analog). X1 input needs the 2x step to reach the 1280x1024
-    // output; X2 input is identity pass-through. The frame byte length seen
-    // here IS the post-zoom output geometry, so both steps are legal only if
-    // the output stays kOutFrameBytes — the Identity-Zoom contract. Detecting
-    // a mismatch is the point; in the fixed scenario it never fires.
-    if (actual != kOutFrameBytes
-            || (g_hw_bb.zoom.step != kZoomStep2x
-                    && g_hw_bb.zoom.step != kZoomStepIdentity)) {
-        ++ctx.zoom_geometry_mismatch;
-    }
-
-    const FrameVerdict v =
-        g_hw_bb.wrape.stale_x1_framing
-            ? StaleFraming::frame(actual, configured)
-            : AlignedFraming::frame(actual, configured);
-
-    if (v.err_eof) {
-        ++ctx.err_eof_frames;
-        std::printf("[wrape] frame %u: actual %u B > configured %u B -> "
-                    "ERR+EOF at %u B (%u%% of frame)\n",
-                    e.meta.frame_id, actual, configured, v.payload_bytes,
-                    v.payload_bytes * 100U / actual);
+    uint8_t got[kSlotPayloadBytes];
+    if (!ctx.ddr->read(DdrId::kDdrPicOut, e.meta.buffer_idx, e.meta.frame_id, got)) {
+      ++ctx.byte_mismatch;  // slot overrun counts as corruption
     } else {
-        ++ctx.complete_frames;
-    }
-
-    // Hand the framed payload to the non-AO USB DMA engine; it ships the
-    // bulk transactions and posts the EOF back (completion-IRQ pattern).
-    // A busy engine drops the frame — the check is the "rejected submission
-    // must not silently pass" contract (WARN, asserted-0 counter analog).
-    if (ctx.dma_engine != nullptr) {
-        if (!ctx.dma_engine->submit(
-                UsbDmaWorker::Job{true, e.meta.frame_id, v.payload_bytes,
-                                  v.err_eof})) {
-            std::printf("[warn] usb_dma submit rejected (busy), frame=%u\n",
-                        static_cast<unsigned>(e.meta.frame_id));
+      const uint32_t fid = e.meta.frame_id;
+      for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
+        const uint32_t dn = (fid * 7U + i) & 0xFFu;
+        const uint32_t lg = (dn * 3U) / 4U;
+        const uint32_t hg = ((dn * 5U) / 4U) & 0xFFu;
+        const uint32_t fus = ((lg * 2U) + (hg * 3U)) / 5U;
+        const uint32_t exp = ((fus * 6U) / 5U) & 0xFFu;
+        if (got[i] != static_cast<uint8_t>(exp)) {
+          ++ctx.byte_mismatch;
         }
+      }
     }
-    ++ctx.frames_framed;
+  }
+
+  // The stream delivered a full output-geometry frame; the WRAPE frames
+  // per its OWN configured geometry (the T37 lag point).
+  // Stream SEL (7.5.5/7.5.6): the selected source stream carries its OWN
+  // valid pixel count; the USB frame length is DERIVED from it (pixels x 2B),
+  // never a separate constant. This register is the module that keeps the
+  // downstream geometry constant across X1/X2.
+  const uint32_t actual = g_hw_bb.sel.stream_vld_num * 2U;
+  static_assert(2U * kStreamVldNum == kOutFrameBytes, "SEL derivation == geometry");
+  const uint32_t configured = g_hw_bb.wrape.configured_frame_bytes;
+
+  // Video Zoom (7.4.1) geometry consistency: the zoom step and the frame
+  // actually reaching the WRAPE must agree — a step applied while the frame
+  // geometry expects the other coefficient is the coordinate-desync fault
+  // class (U6 analog). X1 input needs the 2x step to reach the 1280x1024
+  // output; X2 input is identity pass-through. The frame byte length seen
+  // here IS the post-zoom output geometry, so both steps are legal only if
+  // the output stays kOutFrameBytes — the Identity-Zoom contract. Detecting
+  // a mismatch is the point; in the fixed scenario it never fires.
+  if (actual != kOutFrameBytes || (g_hw_bb.zoom.step != kZoomStep2x && g_hw_bb.zoom.step != kZoomStepIdentity)) {
+    ++ctx.zoom_geometry_mismatch;
+  }
+
+  const FrameVerdict v = g_hw_bb.wrape.stale_x1_framing ? StaleFraming::frame(actual, configured)
+                                                        : AlignedFraming::frame(actual, configured);
+
+  if (v.err_eof) {
+    ++ctx.err_eof_frames;
+    std::printf(
+        "[wrape] frame %u: actual %u B > configured %u B -> "
+        "ERR+EOF at %u B (%u%% of frame)\n",
+        e.meta.frame_id, actual, configured, v.payload_bytes, v.payload_bytes * 100U / actual);
+  } else {
+    ++ctx.complete_frames;
+  }
+
+  // Hand the framed payload to the non-AO USB DMA engine; it ships the
+  // bulk transactions and posts the EOF back (completion-IRQ pattern).
+  // A busy engine drops the frame — the check is the "rejected submission
+  // must not silently pass" contract (WARN, asserted-0 counter analog).
+  if (ctx.dma_engine != nullptr) {
+    if (!ctx.dma_engine->submit(UsbDmaWorker::Job{true, e.meta.frame_id, v.payload_bytes, v.err_eof})) {
+      std::printf("[warn] usb_dma submit rejected (busy), frame=%u\n", static_cast<unsigned>(e.meta.frame_id));
+    }
+  }
+  ++ctx.frames_framed;
 }
 
 COACT_HSM_STATES(kWrapeStates, WrapeCtx, "Root", "Active");
@@ -511,44 +482,48 @@ COACT_HSM_TRANS(kWrapeTransitions, WrapeCtx, Sig::kPicPacked, onPicPackedWrape);
 // continuity are the end-to-end process checks.
 // ---------------------------------------------------------------------------
 struct WinHostCtx {
-    uint32_t frames_received{0U};
-    uint32_t complete_frames{0U};
-    uint32_t truncated_frames{0U};
-    uint32_t min_payload{0xFFFFFFFFU};
-    uint32_t max_payload{0U};
-    uint32_t frame_gaps{0U};
-    uint32_t last_frame_id{0xFFFFFFFFU};
-    uint32_t error_interrupts{0U};   // driver-side USB error interrupts (T37 §2.2)
+  uint32_t frames_received{0U};
+  uint32_t complete_frames{0U};
+  uint32_t truncated_frames{0U};
+  uint32_t min_payload{0xFFFFFFFFU};
+  uint32_t max_payload{0U};
+  uint32_t frame_gaps{0U};
+  uint32_t last_frame_id{0xFFFFFFFFU};
+  uint32_t error_interrupts{0U};  // driver-side USB error interrupts (T37 §2.2)
 };
 
-inline void onFrameEofHost(WinHostCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    const uint32_t payload =
-        static_cast<uint32_t>(e.meta.result);   // EOF carries payload bytes
-    ++ctx.frames_received;
-    if (payload < ctx.min_payload) { ctx.min_payload = payload; }
-    if (payload > ctx.max_payload) { ctx.max_payload = payload; }
-    if (0U != (e.meta.flags & 0x1U)) { ++ctx.truncated_frames; }
-    else { ++ctx.complete_frames; }
-    if (ctx.last_frame_id != 0xFFFFFFFFU
-        && e.meta.frame_id != ctx.last_frame_id + 1U) {
-        ++ctx.frame_gaps;
-    }
-    ctx.last_frame_id = e.meta.frame_id;
+inline void onFrameEofHost(WinHostCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  const uint32_t payload = static_cast<uint32_t>(e.meta.result);  // EOF carries payload bytes
+  ++ctx.frames_received;
+  if (payload < ctx.min_payload) {
+    ctx.min_payload = payload;
+  }
+  if (payload > ctx.max_payload) {
+    ctx.max_payload = payload;
+  }
+  if (0U != (e.meta.flags & 0x1U)) {
+    ++ctx.truncated_frames;
+  } else {
+    ++ctx.complete_frames;
+  }
+  if (ctx.last_frame_id != 0xFFFFFFFFU && e.meta.frame_id != ctx.last_frame_id + 1U) {
+    ++ctx.frame_gaps;
+  }
+  ctx.last_frame_id = e.meta.frame_id;
 }
 
 // USB error interrupt (T37 §2.2 fault chain "error interrupt -> DRV"): a
 // driver-side line DISTINCT from the EOF's err_eof data attribute. The host
 // observer counts it; the USB controller driver-side retry/recovery policy
 // is out of the demo's scope. Injection-only; asserted 0 in normal runs.
-inline void onUsbErrIntHost(WinHostCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    ++ctx.error_interrupts;
-    std::printf("[warn] usb error interrupt: frame=%u (driver counts, "
-                "EOF data path unaffected)\n",
-                static_cast<unsigned>(e.meta.frame_id));
+inline void onUsbErrIntHost(WinHostCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  ++ctx.error_interrupts;
+  std::printf(
+      "[warn] usb error interrupt: frame=%u (driver counts, "
+      "EOF data path unaffected)\n",
+      static_cast<unsigned>(e.meta.frame_id));
 }
 
 COACT_HSM_STATES(kWinHostStates, WinHostCtx, "Root", "Active");
@@ -556,10 +531,8 @@ COACT_HSM_STATES(kWinHostStates, WinHostCtx, "Root", "Active");
 // (kUsbErrInt is an interrupt signal, not an EOF data attribute — see
 // onUsbErrIntHost). Same single-state discipline as the orchestrator's table.
 inline const TransitionDef<WinHostCtx> kWinHostTransitions[] = {
-    { 1, static_cast<uint16_t>(Sig::kFrameEof), 1,
-      TransitionKind::Internal, nullptr, onFrameEofHost },
-    { 1, static_cast<uint16_t>(Sig::kUsbErrInt), 1,
-      TransitionKind::Internal, nullptr, onUsbErrIntHost },
+    {1, static_cast<uint16_t>(Sig::kFrameEof), 1, TransitionKind::Internal, nullptr, onFrameEofHost},
+    {1, static_cast<uint16_t>(Sig::kUsbErrInt), 1, TransitionKind::Internal, nullptr, onUsbErrIntHost},
 };
 
 // ---------------------------------------------------------------------------
@@ -568,45 +541,39 @@ inline const TransitionDef<WinHostCtx> kWinHostTransitions[] = {
 // rte_call_sync response — modeled here as a single in-process AO.
 // ---------------------------------------------------------------------------
 struct OrchCtx {
-    uint32_t irsc_ready{0U};
-    uint32_t isp_ready{0U};
-    uint32_t pic_video_ready{0U};
-    uint32_t temp_video_ready{0U};
-    uint32_t last_irsc_step{0xFFU};
+  uint32_t irsc_ready{0U};
+  uint32_t isp_ready{0U};
+  uint32_t pic_video_ready{0U};
+  uint32_t temp_video_ready{0U};
+  uint32_t last_irsc_step{0xFFU};
 };
 
-inline void onIrscReadyAck(OrchCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    ctx.last_irsc_step = e.meta.cmd_arg;
-    ++ctx.irsc_ready;
+inline void onIrscReadyAck(OrchCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  ctx.last_irsc_step = e.meta.cmd_arg;
+  ++ctx.irsc_ready;
 }
-inline void onIspReadyAck(OrchCtx& ctx, const Event&)
-{
-    ++ctx.isp_ready;
+inline void onIspReadyAck(OrchCtx& ctx, const Event&) {
+  ++ctx.isp_ready;
 }
-inline void onVideoReadyAck(OrchCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    // payload_kind carries the VideoStreamKind: 0=PIC, 1=TEMP.
-    ++(e.meta.payload_kind ? ctx.temp_video_ready : ctx.pic_video_ready);
+inline void onVideoReadyAck(OrchCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  // payload_kind carries the VideoStreamKind: 0=PIC, 1=TEMP.
+  ++(e.meta.payload_kind ? ctx.temp_video_ready : ctx.pic_video_ready);
 }
 
 COACT_HSM_STATES(kOrchStates, OrchCtx, "Root", "Active");
 inline const TransitionDef<OrchCtx> kOrchTransitions[] = {
-    { 1, static_cast<uint16_t>(Sig::kIrscReady),  1, TransitionKind::Internal, nullptr, onIrscReadyAck },
-    { 1, static_cast<uint16_t>(Sig::kIspReady),   1, TransitionKind::Internal, nullptr, onIspReadyAck },
-    { 1, static_cast<uint16_t>(Sig::kVideoReady), 1, TransitionKind::Internal, nullptr, onVideoReadyAck },
+    {1, static_cast<uint16_t>(Sig::kIrscReady), 1, TransitionKind::Internal, nullptr, onIrscReadyAck},
+    {1, static_cast<uint16_t>(Sig::kIspReady), 1, TransitionKind::Internal, nullptr, onIspReadyAck},
+    {1, static_cast<uint16_t>(Sig::kVideoReady), 1, TransitionKind::Internal, nullptr, onVideoReadyAck},
 };
 
-
 // AO aliases: sinks (USB/MIPI), T37 WRAPE, Windows host, boot orchestrator.
-using UsbSinkAo   = coact::Ao<SinkCtx, Hsm<SinkCtx>, AoTrait<40>>;
-using MipiSinkAo  = coact::Ao<SinkCtx, Hsm<SinkCtx>, AoTrait<39>>;
-using WrapeAo        = coact::Ao<WrapeCtx, Hsm<WrapeCtx>, AoTrait<38>>;
-using WinHostAo      = coact::Ao<WinHostCtx, Hsm<WinHostCtx>, LowAoTrait>;
+using UsbSinkAo = coact::Ao<SinkCtx, Hsm<SinkCtx>, AoTrait<40>>;
+using MipiSinkAo = coact::Ao<SinkCtx, Hsm<SinkCtx>, AoTrait<39>>;
+using WrapeAo = coact::Ao<WrapeCtx, Hsm<WrapeCtx>, AoTrait<38>>;
+using WinHostAo = coact::Ao<WinHostCtx, Hsm<WinHostCtx>, LowAoTrait>;
 using OrchestratorAo = coact::Ao<OrchCtx, Hsm<OrchCtx>, HighAoTrait>;
 
-
 }  // namespace isp_demo
-

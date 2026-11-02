@@ -10,15 +10,10 @@ namespace coro {
 // Library version. Bump kMinor on additive changes, kMajor on any break of
 // the public handle semantics (Task/Promise/AwaitableRef lifetimes, TaskId
 // packing, completion-event layout).
-enum : uint32_t {
-    kVersionMajor = 0U,
-    kVersionMinor = 1U,
-    kVersionPatch = 0U
-};
+enum : uint32_t { kVersionMajor = 0U, kVersionMinor = 1U, kVersionPatch = 0U };
 
-inline constexpr uint32_t version() noexcept
-{
-    return (kVersionMajor << 16U) | (kVersionMinor << 8U) | kVersionPatch;
+inline constexpr uint32_t version() noexcept {
+  return (kVersionMajor << 16U) | (kVersionMinor << 8U) | kVersionPatch;
 }
 
 // Compile-time ABI guards evaluated wherever this header is included: the

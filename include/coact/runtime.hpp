@@ -3,10 +3,6 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <cstdint>
-#include <cstring>
-#include <type_traits>
-
 #include "coact/ao.hpp"
 #include "coact/assert.hpp"
 #include "coact/config.hpp"
@@ -17,42 +13,42 @@
 #include "coact/queue.hpp"
 #include "coact/staging.hpp"
 
+#include <cstdint>
+#include <cstring>
+
+#include <type_traits>
+
 namespace coact {
 
 namespace detail {
 
 /* ThreadEntry trampoline so Dispatcher::run() can be passed to PAL. */
 template <typename DispatcherT>
-void dispatcher_trampoline(void* ctx) noexcept
-{
-    static_cast<DispatcherT*>(ctx)->run();
+void dispatcher_trampoline(void* ctx) noexcept {
+  static_cast<DispatcherT*>(ctx)->run();
 }
 
 /* Starts the PAL dispatcher thread, propagating a status when the PAL reports
    one (RtThread returns pal::InitError, design §7.5). Posix keeps void: the
    if-constexpr discards the status branch so Posix still compiles. */
 template <typename PalT>
-inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry,
-                                 void* ctx) noexcept
-{
-    using StatusT = decltype(pal.start_dispatcher(entry, ctx));
-    if constexpr (std::is_same<StatusT, void>::value) {
-        pal.start_dispatcher(entry, ctx);
-        return true;
-    }
-    else if constexpr (std::is_same<StatusT, bool>::value) {
-        /* A bool PAL reports success as true (not as the enum convention of
-           zero). Comparing against decltype(status){0} here would invert the
-           result, because value-initialised bool is false. */
-        return pal.start_dispatcher(entry, ctx);
-    }
-    else {
-        /* Status-returning PAL (RtThread, design §7.5): success == the enum's
-           0 value. decltype(status) keeps the name dependent so this branch is
-           only instantiated for PALs that actually return a status. */
-        auto status = pal.start_dispatcher(entry, ctx);
-        return status == decltype(status){0};
-    }
+inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry, void* ctx) noexcept {
+  using StatusT = decltype(pal.start_dispatcher(entry, ctx));
+  if constexpr (std::is_same<StatusT, void>::value) {
+    pal.start_dispatcher(entry, ctx);
+    return true;
+  } else if constexpr (std::is_same<StatusT, bool>::value) {
+    /* A bool PAL reports success as true (not as the enum convention of
+       zero). Comparing against decltype(status){0} here would invert the
+       result, because value-initialised bool is false. */
+    return pal.start_dispatcher(entry, ctx);
+  } else {
+    /* Status-returning PAL (RtThread, design §7.5): success == the enum's
+       0 value. decltype(status) keeps the name dependent so this branch is
+       only instantiated for PALs that actually return a status. */
+    auto status = pal.start_dispatcher(entry, ctx);
+    return status == decltype(status){0};
+  }
 }
 
 }  // namespace detail
@@ -82,124 +78,106 @@ inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry,
 //                         successful dispatcher start (design §7.5).
 //   stop()              - request stop, join Dispatcher thread.
 // ---------------------------------------------------------------------------
-template <typename Config, typename PalT,
-          typename Profile = coact::HostSmpProfile,
-          typename AdmissionT = NoAdmission>
-class Runtime
-{
-public:
-    using ConfigType = Config;
-    using AdmissionType = AdmissionT;
-    using StagingType = Staging<Config,
-        PalT::template QueueBackend>;
-    using BreakerBankType   = BreakerBank<Config>;
-    using DispatcherType    = Dispatcher<StagingType, PalT, Profile,
-                                         BreakerBankType>;
-    using CoordinatorType   = DispatchCoordinator<StagingType, PalT,
-                                                  BreakerBankType,
-                                                  AdmissionT>;
+template <typename Config, typename PalT, typename Profile = coact::HostSmpProfile, typename AdmissionT = NoAdmission>
+class Runtime {
+ public:
+  using ConfigType = Config;
+  using AdmissionType = AdmissionT;
+  using StagingType = Staging<Config, PalT::template QueueBackend>;
+  using BreakerBankType = BreakerBank<Config>;
+  using DispatcherType = Dispatcher<StagingType, PalT, Profile, BreakerBankType>;
+  using CoordinatorType = DispatchCoordinator<StagingType, PalT, BreakerBankType, AdmissionT>;
 
-    explicit Runtime(PalT& pal) noexcept
-        : pal_(pal),
-          cfg_{},
-          staging_(make_critical_section(pal_)),
-          dispatcher_(staging_, registry_, monitor_, breakers_, pal_),
-          coordinator_(staging_, registry_, monitor_, breakers_, pal_),
-          initialized_(false),
-          started_(false)
-    {
+  explicit Runtime(PalT& pal) noexcept
+      : pal_(pal),
+        cfg_{},
+        staging_(make_critical_section(pal_)),
+        dispatcher_(staging_, registry_, monitor_, breakers_, pal_),
+        coordinator_(staging_, registry_, monitor_, breakers_, pal_),
+        initialized_(false),
+        started_(false) {}
+
+  /* Phase 1: register an AO. Returns false if registry is full or prio
+     conflicts; must be called before initialize(). */
+  bool bind(AoBase* ao) noexcept {
+    if (initialized_) {
+      return false; /* too late */
     }
-
-    /* Phase 1: register an AO. Returns false if registry is full or prio
-       conflicts; must be called before initialize(). */
-    bool bind(AoBase* ao) noexcept
-    {
-        if (initialized_) {
-            return false;  /* too late */
-        }
-        if (nullptr == ao) {
-            return false;
-        }
-        return registry_.bind(ao, ao->logical_prio());
+    if (nullptr == ao) {
+      return false;
     }
+    return registry_.bind(ao, ao->logical_prio());
+  }
 
-    // Phase 1 variant for a board's constexpr domain table. The caller owns
-    // the stable target assignment; Runtime still prevents changes after
-    // initialize() and AoRegistry validates target/prio uniqueness.
-    bool bind_at(TargetId target, AoBase& ao) noexcept
-    {
-        if (initialized_) {
-            return false;
-        }
-        return registry_.bind_at(target, ao, ao.logical_prio());
+  // Phase 1 variant for a board's constexpr domain table. The caller owns
+  // the stable target assignment; Runtime still prevents changes after
+  // initialize() and AoRegistry validates target/prio uniqueness.
+  bool bind_at(TargetId target, AoBase& ao) noexcept {
+    if (initialized_) {
+      return false;
     }
+    return registry_.bind_at(target, ao, ao.logical_prio());
+  }
 
-    /* Phase 2: validate and commit. Idempotent on the second call. */
-    bool initialize() noexcept
-    {
-        if (initialized_) {
-            return true;
-        }
-        for (uint16_t i = 1U; i <= static_cast<uint16_t>(Config::kMaxAo); ++i) {
-            AoBase* ao = registry_.lookup(TargetId(static_cast<uint8_t>(i)));
-            if (nullptr != ao) {
-                ao->init_default();
-            }
-        }
-        initialized_ = true;
-        return true;
+  /* Phase 2: validate and commit. Idempotent on the second call. */
+  bool initialize() noexcept {
+    if (initialized_) {
+      return true;
     }
-
-    /* Phase 3: start the Dispatcher thread. Returns false (leaving started_
-       false) when the PAL reports a definite init/start error - the Runtime
-       never enters started on a PAL failure (design §7.5). */
-    bool start() noexcept
-    {
-        COACT_ASSERT(initialized_);
-        if (started_) {
-            return false;
-        }
-        pal_.set_dispatcher_stack_bytes(Config::kDispatcherStackBytes);
-        const bool ok = detail::pal_start_dispatcher(
-            pal_, &detail::dispatcher_trampoline<DispatcherType>, &dispatcher_);
-        if (!ok) {
-            return false;
-        }
-        started_ = true;
-        return true;
+    for (uint16_t i = 1U; i <= static_cast<uint16_t>(Config::kMaxAo); ++i) {
+      AoBase* ao = registry_.lookup(TargetId(static_cast<uint8_t>(i)));
+      if (nullptr != ao) {
+        ao->init_default();
+      }
     }
+    initialized_ = true;
+    return true;
+  }
 
-    void stop() noexcept
-    {
-        if (started_) {
-            dispatcher_.request_stop();
-            pal_.join_dispatcher();
-            started_ = false;
-        }
+  /* Phase 3: start the Dispatcher thread. Returns false (leaving started_
+     false) when the PAL reports a definite init/start error - the Runtime
+     never enters started on a PAL failure (design §7.5). */
+  bool start() noexcept {
+    COACT_ASSERT(initialized_);
+    if (started_) {
+      return false;
     }
-
-    CoordinatorType& coordinator() noexcept { return coordinator_; }
-    Monitor<Config>& monitor()     noexcept { return monitor_; }
-    BreakerBankType& breakers()    noexcept { return breakers_; }
-    BreakerBankType& breaker()     noexcept { return breakers_; }
-
-    // Read-only view of the admission policy, e.g. per-target gate state.
-    const AdmissionT& admission_policy() const noexcept
-    {
-        return coordinator_.admission_policy();
+    pal_.set_dispatcher_stack_bytes(Config::kDispatcherStackBytes);
+    const bool ok = detail::pal_start_dispatcher(pal_, &detail::dispatcher_trampoline<DispatcherType>, &dispatcher_);
+    if (!ok) {
+      return false;
     }
+    started_ = true;
+    return true;
+  }
 
-private:
-    PalT&           pal_;
-    ConfigType      cfg_;
-    AoRegistry<Config> registry_;
-    Monitor<Config> monitor_;
-    BreakerBankType breakers_{cfg_};
-    StagingType     staging_;
-    DispatcherType  dispatcher_;
-    CoordinatorType coordinator_;
-    bool            initialized_;
-    bool            started_;
+  void stop() noexcept {
+    if (started_) {
+      dispatcher_.request_stop();
+      pal_.join_dispatcher();
+      started_ = false;
+    }
+  }
+
+  CoordinatorType& coordinator() noexcept { return coordinator_; }
+  Monitor<Config>& monitor() noexcept { return monitor_; }
+  BreakerBankType& breakers() noexcept { return breakers_; }
+  BreakerBankType& breaker() noexcept { return breakers_; }
+
+  // Read-only view of the admission policy, e.g. per-target gate state.
+  const AdmissionT& admission_policy() const noexcept { return coordinator_.admission_policy(); }
+
+ private:
+  PalT& pal_;
+  ConfigType cfg_;
+  AoRegistry<Config> registry_;
+  Monitor<Config> monitor_;
+  BreakerBankType breakers_{cfg_};
+  StagingType staging_;
+  DispatcherType dispatcher_;
+  CoordinatorType coordinator_;
+  bool initialized_;
+  bool started_;
 };
 
 }  // namespace coact

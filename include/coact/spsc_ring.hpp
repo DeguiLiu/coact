@@ -31,13 +31,14 @@
 // lock fallback is never silently accepted.
 #pragma once
 
-#include <atomic>
+#include "coact/config.hpp"
+
 #include <cstdint>
+
+#include <atomic>
 #include <new>
 #include <type_traits>
 #include <utility>
-
-#include "coact/config.hpp"
 
 namespace coact {
 
@@ -46,7 +47,7 @@ namespace detail {
 // Raw byte storage for a not-yet-constructed T, aligned for placement new.
 template <typename T>
 struct alignas(alignof(T)) SpscSlotStorage {
-    unsigned char bytes[sizeof(T)];
+  unsigned char bytes[sizeof(T)];
 };
 
 }  // namespace detail
@@ -57,148 +58,135 @@ struct alignas(alignof(T)) SpscSlotStorage {
 // the (rejected) class.
 template <typename T, uint16_t Capacity>
 struct is_spsc_ring_config {
-    static constexpr bool value =
-        std::atomic<uint16_t>::is_always_lock_free &&
-        std::is_nothrow_move_assignable<T>::value &&
-        std::is_nothrow_default_constructible<T>::value &&
-        (Capacity >= 2U) &&
-        ((Capacity & (Capacity - 1U)) == 0U) &&
-        (Capacity <= 0x7FFFU);
+  static constexpr bool value = std::atomic<uint16_t>::is_always_lock_free &&
+                                std::is_nothrow_move_assignable<T>::value &&
+                                std::is_nothrow_default_constructible<T>::value && (Capacity >= 2U) &&
+                                ((Capacity & (Capacity - 1U)) == 0U) && (Capacity <= 0x7FFFU);
 };
 
 template <typename T, uint16_t Capacity>
 class SpscRing final {
-public:
-    static_assert(is_spsc_ring_config<T, Capacity>::value,
-                  "coact: SpscRing requires lock-free uint16 atomics, a "
-                  "power-of-two capacity in [2, 0x7FFF], and a payload that is "
-                  "nothrow-move-assignable and nothrow-default-constructible");
+ public:
+  static_assert(is_spsc_ring_config<T, Capacity>::value,
+                "coact: SpscRing requires lock-free uint16 atomics, a "
+                "power-of-two capacity in [2, 0x7FFF], and a payload that is "
+                "nothrow-move-assignable and nothrow-default-constructible");
 
-    SpscRing() noexcept = default;
-    SpscRing(const SpscRing&) = delete;
-    SpscRing& operator=(const SpscRing&) = delete;
+  SpscRing() noexcept = default;
+  SpscRing(const SpscRing&) = delete;
+  SpscRing& operator=(const SpscRing&) = delete;
 
-    // T is a fixed class-template parameter, so T&& is an rvalue reference and
-    // NOT a forwarding reference: without a const T& overload an lvalue payload
-    // cannot bind at all. MSVC additionally keeps the lvalue category through
-    // static_cast<uint16_t>(an existing uint16_t), which is exactly how
-    // bench_spsc's warm-up loop calls this (C2664, "you cannot bind an lvalue to
-    // an rvalue reference"). The other two ring classes already expose this
-    // overload pair for the same reason; SpscRing was simply missed.
-    //
-    // The body is written out rather than delegating to try_push(T(value)):
-    // because MSVC treats that identity cast as an lvalue it would select THIS
-    // overload again, which it reports as C4717 "recursive on all control paths"
-    // and, with tail-call optimisation, turns into an infinite loop - the test
-    // suite hung for the full ctest timeout before this was understood. GCC
-    // picks the rvalue overload and silently does the right thing, so only the
-    // Windows build was affected. Never route the copy path back through the
-    // overload set.
-    [[nodiscard]] bool try_push(const T& value) noexcept
-    {
-        const uint16_t h = head_.load(std::memory_order_relaxed);
-        const uint16_t t = tail_.load(std::memory_order_acquire);
-        const uint16_t n = static_cast<uint16_t>(h - t);
-        if (n >= Capacity) {
-            return false;
-        }
-        T* slot = slot_at(h);
-        new (static_cast<void*>(slot)) T(value);
-        head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
-        return true;
+  // T is a fixed class-template parameter, so T&& is an rvalue reference and
+  // NOT a forwarding reference: without a const T& overload an lvalue payload
+  // cannot bind at all. MSVC additionally keeps the lvalue category through
+  // static_cast<uint16_t>(an existing uint16_t), which is exactly how
+  // bench_spsc's warm-up loop calls this (C2664, "you cannot bind an lvalue to
+  // an rvalue reference"). The other two ring classes already expose this
+  // overload pair for the same reason; SpscRing was simply missed.
+  //
+  // The body is written out rather than delegating to try_push(T(value)):
+  // because MSVC treats that identity cast as an lvalue it would select THIS
+  // overload again, which it reports as C4717 "recursive on all control paths"
+  // and, with tail-call optimisation, turns into an infinite loop - the test
+  // suite hung for the full ctest timeout before this was understood. GCC
+  // picks the rvalue overload and silently does the right thing, so only the
+  // Windows build was affected. Never route the copy path back through the
+  // overload set.
+  [[nodiscard]] bool try_push(const T& value) noexcept {
+    const uint16_t h = head_.load(std::memory_order_relaxed);
+    const uint16_t t = tail_.load(std::memory_order_acquire);
+    const uint16_t n = static_cast<uint16_t>(h - t);
+    if (n >= Capacity) {
+      return false;
     }
+    T* slot = slot_at(h);
+    new (static_cast<void*>(slot)) T(value);
+    head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
+    return true;
+  }
 
-    // Push a payload. On failure (full) the caller's value is NOT consumed.
-    [[nodiscard]] bool try_push(T&& value) noexcept
-    {
-        const uint16_t h = head_.load(std::memory_order_relaxed);
-        const uint16_t t = tail_.load(std::memory_order_acquire);
-        const uint16_t n = static_cast<uint16_t>(h - t);
-        if (n >= Capacity) {
-            return false;
-        }
-        T* slot = slot_at(h);
-        new (static_cast<void*>(slot)) T(std::move(value));
-        head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
-        return true;
+  // Push a payload. On failure (full) the caller's value is NOT consumed.
+  [[nodiscard]] bool try_push(T&& value) noexcept {
+    const uint16_t h = head_.load(std::memory_order_relaxed);
+    const uint16_t t = tail_.load(std::memory_order_acquire);
+    const uint16_t n = static_cast<uint16_t>(h - t);
+    if (n >= Capacity) {
+      return false;
     }
+    T* slot = slot_at(h);
+    new (static_cast<void*>(slot)) T(std::move(value));
+    head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
+    return true;
+  }
 
-    // Const-reference twin of the above, written out for the same reason: see
-    // the comment on try_push(const T&). Delegating to try_push_observed(T(value))
-    // would recurse on MSVC.
-    [[nodiscard]] QueueResult try_push_observed(const T& value) noexcept
-    {
-        const uint16_t h = head_.load(std::memory_order_relaxed);
-        const uint16_t t = tail_.load(std::memory_order_acquire);
-        const uint16_t n = static_cast<uint16_t>(h - t);
-        if (n >= Capacity) {
-            return QueueResult{false, n};
-        }
-        T* slot = slot_at(h);
-        new (static_cast<void*>(slot)) T(value);
-        head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
-        return QueueResult{true, static_cast<uint16_t>(n + 1U)};
+  // Const-reference twin of the above, written out for the same reason: see
+  // the comment on try_push(const T&). Delegating to try_push_observed(T(value))
+  // would recurse on MSVC.
+  [[nodiscard]] QueueResult try_push_observed(const T& value) noexcept {
+    const uint16_t h = head_.load(std::memory_order_relaxed);
+    const uint16_t t = tail_.load(std::memory_order_acquire);
+    const uint16_t n = static_cast<uint16_t>(h - t);
+    if (n >= Capacity) {
+      return QueueResult{false, n};
     }
+    T* slot = slot_at(h);
+    new (static_cast<void*>(slot)) T(value);
+    head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
+    return QueueResult{true, static_cast<uint16_t>(n + 1U)};
+  }
 
-    // Fused push + size-after (design 5.4). On success size_after is the fill
-    // level at the moment of the publish store; on failure it equals the
-    // current (full) level. No second tail load is needed.
-    [[nodiscard]] QueueResult try_push_observed(T&& value) noexcept
-    {
-        const uint16_t h = head_.load(std::memory_order_relaxed);
-        const uint16_t t = tail_.load(std::memory_order_acquire);
-        const uint16_t n = static_cast<uint16_t>(h - t);
-        if (n >= Capacity) {
-            return QueueResult{false, n};
-        }
-        T* slot = slot_at(h);
-        new (static_cast<void*>(slot)) T(std::move(value));
-        head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
-        return QueueResult{true, static_cast<uint16_t>(n + 1U)};
+  // Fused push + size-after (design 5.4). On success size_after is the fill
+  // level at the moment of the publish store; on failure it equals the
+  // current (full) level. No second tail load is needed.
+  [[nodiscard]] QueueResult try_push_observed(T&& value) noexcept {
+    const uint16_t h = head_.load(std::memory_order_relaxed);
+    const uint16_t t = tail_.load(std::memory_order_acquire);
+    const uint16_t n = static_cast<uint16_t>(h - t);
+    if (n >= Capacity) {
+      return QueueResult{false, n};
     }
+    T* slot = slot_at(h);
+    new (static_cast<void*>(slot)) T(std::move(value));
+    head_.store(static_cast<uint16_t>(h + 1U), std::memory_order_release);
+    return QueueResult{true, static_cast<uint16_t>(n + 1U)};
+  }
 
-    // Pop a payload into `out`. On failure (empty) `out` is untouched.
-    [[nodiscard]] bool try_pop(T& out) noexcept
-    {
-        const uint16_t t = tail_.load(std::memory_order_relaxed);
-        const uint16_t h = head_.load(std::memory_order_acquire);
-        if (t == h) {
-            return false;
-        }
-        T* slot = slot_at(t);
-        out = std::move(*slot);
-        slot->~T();
-        tail_.store(static_cast<uint16_t>(t + 1U), std::memory_order_release);
-        return true;
+  // Pop a payload into `out`. On failure (empty) `out` is untouched.
+  [[nodiscard]] bool try_pop(T& out) noexcept {
+    const uint16_t t = tail_.load(std::memory_order_relaxed);
+    const uint16_t h = head_.load(std::memory_order_acquire);
+    if (t == h) {
+      return false;
     }
+    T* slot = slot_at(t);
+    out = std::move(*slot);
+    slot->~T();
+    tail_.store(static_cast<uint16_t>(t + 1U), std::memory_order_release);
+    return true;
+  }
 
-    // Point-in-time fill level (relaxed read of both sequences).
-    [[nodiscard]] uint16_t size() const noexcept
-    {
-        const uint16_t h = head_.load(std::memory_order_relaxed);
-        const uint16_t t = tail_.load(std::memory_order_relaxed);
-        const uint16_t n = static_cast<uint16_t>(h - t);
-        return (n > Capacity) ? Capacity : n;
-    }
+  // Point-in-time fill level (relaxed read of both sequences).
+  [[nodiscard]] uint16_t size() const noexcept {
+    const uint16_t h = head_.load(std::memory_order_relaxed);
+    const uint16_t t = tail_.load(std::memory_order_relaxed);
+    const uint16_t n = static_cast<uint16_t>(h - t);
+    return (n > Capacity) ? Capacity : n;
+  }
 
-    [[nodiscard]] static constexpr uint16_t capacity() noexcept
-    {
-        return Capacity;
-    }
+  [[nodiscard]] static constexpr uint16_t capacity() noexcept { return Capacity; }
 
-private:
-    T* slot_at(uint16_t seq) noexcept
-    {
-        const uint16_t idx = static_cast<uint16_t>(seq & (Capacity - 1U));
-        return static_cast<T*>(static_cast<void*>(&cells_[idx]));
-    }
+ private:
+  T* slot_at(uint16_t seq) noexcept {
+    const uint16_t idx = static_cast<uint16_t>(seq & (Capacity - 1U));
+    return static_cast<T*>(static_cast<void*>(&cells_[idx]));
+  }
 
-    // Producer-owned head and consumer-owned tail live on separate cache
-    // lines: each sequence is written by one role and read by the other, so
-    // they must not ping-pong inside the same line on SMP hosts.
-    alignas(64) std::atomic<uint16_t> head_{0U};
-    alignas(64) std::atomic<uint16_t> tail_{0U};
-    alignas(32) detail::SpscSlotStorage<T> cells_[Capacity];
+  // Producer-owned head and consumer-owned tail live on separate cache
+  // lines: each sequence is written by one role and read by the other, so
+  // they must not ping-pong inside the same line on SMP hosts.
+  alignas(64) std::atomic<uint16_t> head_{0U};
+  alignas(64) std::atomic<uint16_t> tail_{0U};
+  alignas(32) detail::SpscSlotStorage<T> cells_[Capacity];
 };
 
 }  // namespace coact

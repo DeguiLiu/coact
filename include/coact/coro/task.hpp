@@ -18,13 +18,13 @@
 // (see task_registry.hpp).
 #pragma once
 
-#include <utility>
-
+#include "coact/config.hpp"
 #include "coact/coro/error.hpp"
 #include "coact/coro/task_id.hpp"
-#include "coact/config.hpp"
 #include "coact/event.hpp"
 #include "coact/expected.hpp"
+
+#include <utility>
 
 namespace coact {
 namespace coro {
@@ -39,82 +39,64 @@ class TaskRegistry;
 // -------------------------------------------------------------------------
 template <typename T, typename RegistryT>
 class Task final {
-public:
-    Task() noexcept : registry_(nullptr), id_(kInvalidTaskId) {}
+ public:
+  Task() noexcept : registry_(nullptr), id_(kInvalidTaskId) {}
 
-    Task(RegistryT& registry, TaskId id) noexcept
-        : registry_(&registry), id_(id)
-    {
+  Task(RegistryT& registry, TaskId id) noexcept : registry_(&registry), id_(id) {}
+
+  Task(Task&& other) noexcept : registry_(other.registry_), id_(other.id_) {
+    other.registry_ = nullptr;
+    other.id_ = kInvalidTaskId;
+  }
+
+  Task& operator=(Task&& other) noexcept {
+    if (this != &other) {
+      registry_ = other.registry_;
+      id_ = other.id_;
+      other.registry_ = nullptr;
+      other.id_ = kInvalidTaskId;
     }
+    return *this;
+  }
 
-    Task(Task&& other) noexcept
-        : registry_(other.registry_), id_(other.id_)
-    {
-        other.registry_ = nullptr;
-        other.id_ = kInvalidTaskId;
+  Task(const Task&) = delete;
+  Task& operator=(const Task&) = delete;
+
+  bool is_valid() const noexcept { return (nullptr != registry_) && static_cast<bool>(id_); }
+
+  TaskId id() const noexcept { return id_; }
+
+  // Observation (delegates to the registry).
+  bool is_ready() const noexcept { return is_valid() && registry_->is_ready(id_); }
+
+  bool has_error() const noexcept { return is_valid() && registry_->has_error(id_); }
+
+  // Register the waiter AO for the completion event. Rejected when the
+  // task already has a waiter or is completed.
+  Expected<void, TaskError> set_awaiter(TargetId waiter, uint16_t signal) noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    return registry_->set_awaiter(id_, waiter, signal);
+  }
 
-    Task& operator=(Task&& other) noexcept
-    {
-        if (this != &other) {
-            registry_ = other.registry_;
-            id_ = other.id_;
-            other.registry_ = nullptr;
-            other.id_ = kInvalidTaskId;
-        }
-        return *this;
+  // Release the registry slot. The handle becomes invalid.
+  Expected<void, TaskError> release() noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    const Expected<void, TaskError> result = registry_->release_task(id_);
+    registry_ = nullptr;
+    id_ = kInvalidTaskId;
+    return result;
+  }
 
-    Task(const Task&) = delete;
-    Task& operator=(const Task&) = delete;
+  // Internal: registry reference access for AwaitableRef construction.
+  RegistryT* registry_of() const noexcept { return registry_; }
 
-    bool is_valid() const noexcept
-    {
-        return (nullptr != registry_) && static_cast<bool>(id_);
-    }
-
-    TaskId id() const noexcept { return id_; }
-
-    // Observation (delegates to the registry).
-    bool is_ready() const noexcept
-    {
-        return is_valid() && registry_->is_ready(id_);
-    }
-
-    bool has_error() const noexcept
-    {
-        return is_valid() && registry_->has_error(id_);
-    }
-
-    // Register the waiter AO for the completion event. Rejected when the
-    // task already has a waiter or is completed.
-    Expected<void, TaskError> set_awaiter(TargetId waiter,
-                                          uint16_t signal) noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        return registry_->set_awaiter(id_, waiter, signal);
-    }
-
-    // Release the registry slot. The handle becomes invalid.
-    Expected<void, TaskError> release() noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        const Expected<void, TaskError> result = registry_->release_task(id_);
-        registry_ = nullptr;
-        id_ = kInvalidTaskId;
-        return result;
-    }
-
-    // Internal: registry reference access for AwaitableRef construction.
-    RegistryT* registry_of() const noexcept { return registry_; }
-
-private:
-    RegistryT* registry_;
-    TaskId id_;
+ private:
+  RegistryT* registry_;
+  TaskId id_;
 };
 
 // -------------------------------------------------------------------------
@@ -122,72 +104,60 @@ private:
 // -------------------------------------------------------------------------
 template <typename T, typename RegistryT>
 class Promise final {
-public:
-    Promise() noexcept : registry_(nullptr), id_(kInvalidTaskId) {}
+ public:
+  Promise() noexcept : registry_(nullptr), id_(kInvalidTaskId) {}
 
-    Promise(RegistryT& registry, TaskId id) noexcept
-        : registry_(&registry), id_(id)
-    {
+  Promise(RegistryT& registry, TaskId id) noexcept : registry_(&registry), id_(id) {}
+
+  Promise(Promise&& other) noexcept : registry_(other.registry_), id_(other.id_) {
+    other.registry_ = nullptr;
+    other.id_ = kInvalidTaskId;
+  }
+
+  Promise& operator=(Promise&& other) noexcept {
+    if (this != &other) {
+      registry_ = other.registry_;
+      id_ = other.id_;
+      other.registry_ = nullptr;
+      other.id_ = kInvalidTaskId;
     }
+    return *this;
+  }
 
-    Promise(Promise&& other) noexcept
-        : registry_(other.registry_), id_(other.id_)
-    {
-        other.registry_ = nullptr;
-        other.id_ = kInvalidTaskId;
+  Promise(const Promise&) = delete;
+  Promise& operator=(const Promise&) = delete;
+
+  bool is_valid() const noexcept { return (nullptr != registry_) && static_cast<bool>(id_); }
+
+  TaskId id() const noexcept { return id_; }
+
+  // Complete the task with a result value.
+  Expected<void, TaskError> complete(const T& value) noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    return registry_->complete(id_, value);
+  }
 
-    Promise& operator=(Promise&& other) noexcept
-    {
-        if (this != &other) {
-            registry_ = other.registry_;
-            id_ = other.id_;
-            other.registry_ = nullptr;
-            other.id_ = kInvalidTaskId;
-        }
-        return *this;
+  // Complete the task with a failure code.
+  Expected<void, TaskError> fail(TaskError err) noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    return registry_->fail(id_, err);
+  }
 
-    Promise(const Promise&) = delete;
-    Promise& operator=(const Promise&) = delete;
-
-    bool is_valid() const noexcept
-    {
-        return (nullptr != registry_) && static_cast<bool>(id_);
+  // Cancel a pending task; the waiter (if any) is notified.
+  Expected<void, TaskError> cancel() noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    return registry_->cancel(id_);
+  }
 
-    TaskId id() const noexcept { return id_; }
-
-    // Complete the task with a result value.
-    Expected<void, TaskError> complete(const T& value) noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        return registry_->complete(id_, value);
-    }
-
-    // Complete the task with a failure code.
-    Expected<void, TaskError> fail(TaskError err) noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        return registry_->fail(id_, err);
-    }
-
-    // Cancel a pending task; the waiter (if any) is notified.
-    Expected<void, TaskError> cancel() noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        return registry_->cancel(id_);
-    }
-
-private:
-    RegistryT* registry_;
-    TaskId id_;
+ private:
+  RegistryT* registry_;
+  TaskId id_;
 };
 
 // -------------------------------------------------------------------------
@@ -195,102 +165,79 @@ private:
 // -------------------------------------------------------------------------
 template <typename T, typename RegistryT>
 class AwaitableRef final {
-public:
-    AwaitableRef() noexcept : registry_(nullptr), id_(kInvalidTaskId) {}
+ public:
+  AwaitableRef() noexcept : registry_(nullptr), id_(kInvalidTaskId) {}
 
-    AwaitableRef(RegistryT& registry, TaskId id) noexcept
-        : registry_(&registry), id_(id)
-    {
+  AwaitableRef(RegistryT& registry, TaskId id) noexcept : registry_(&registry), id_(id) {}
+
+  AwaitableRef(const Task<T, RegistryT>& task) noexcept : registry_(task.registry_of()), id_(task.id()) {}
+
+  AwaitableRef(AwaitableRef&& other) noexcept : registry_(other.registry_), id_(other.id_) {
+    other.registry_ = nullptr;
+    other.id_ = kInvalidTaskId;
+  }
+
+  AwaitableRef& operator=(AwaitableRef&& other) noexcept {
+    if (this != &other) {
+      registry_ = other.registry_;
+      id_ = other.id_;
+      other.registry_ = nullptr;
+      other.id_ = kInvalidTaskId;
     }
+    return *this;
+  }
 
-    AwaitableRef(const Task<T, RegistryT>& task) noexcept
-        : registry_(task.registry_of()), id_(task.id())
-    {
+  AwaitableRef(const AwaitableRef&) = delete;
+  AwaitableRef& operator=(const AwaitableRef&) = delete;
+
+  bool is_valid() const noexcept { return (nullptr != registry_) && static_cast<bool>(id_); }
+
+  TaskId id() const noexcept { return id_; }
+
+  bool is_ready() const noexcept { return is_valid() && registry_->is_ready(id_); }
+
+  bool has_error() const noexcept { return is_valid() && registry_->has_error(id_); }
+
+  // Move the result out of the completed slot (one-shot).
+  Expected<T, TaskError> take_result() noexcept {
+    if (!is_valid()) {
+      return Expected<T, TaskError>::error(TaskError::kInvalidId);
     }
+    return registry_->take_result(id_);
+  }
 
-    AwaitableRef(AwaitableRef&& other) noexcept
-        : registry_(other.registry_), id_(other.id_)
-    {
-        other.registry_ = nullptr;
-        other.id_ = kInvalidTaskId;
+  // Stored error of a completed task, or kOk when none.
+  TaskError take_error() const noexcept {
+    if (!is_valid()) {
+      return TaskError::kInvalidId;
     }
+    return registry_->take_error(id_);
+  }
 
-    AwaitableRef& operator=(AwaitableRef&& other) noexcept
-    {
-        if (this != &other) {
-            registry_ = other.registry_;
-            id_ = other.id_;
-            other.registry_ = nullptr;
-            other.id_ = kInvalidTaskId;
-        }
-        return *this;
+  // Register the waiter AO (TargetId + resume signal) in the task slot.
+  // The completion event is generated by the registry - no callback
+  // pointer is ever stored. Rejected when a waiter already exists.
+  Expected<void, TaskError> set_awaiter(TargetId waiter, uint16_t signal) noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    return registry_->set_awaiter(id_, waiter, signal);
+  }
 
-    AwaitableRef(const AwaitableRef&) = delete;
-    AwaitableRef& operator=(const AwaitableRef&) = delete;
-
-    bool is_valid() const noexcept
-    {
-        return (nullptr != registry_) && static_cast<bool>(id_);
+  // Release the registry slot. The handle becomes invalid.
+  Expected<void, TaskError> release() noexcept {
+    if (!is_valid()) {
+      return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
+    const Expected<void, TaskError> result = registry_->release_task(id_);
+    registry_ = nullptr;
+    id_ = kInvalidTaskId;
+    return result;
+  }
 
-    TaskId id() const noexcept { return id_; }
-
-    bool is_ready() const noexcept
-    {
-        return is_valid() && registry_->is_ready(id_);
-    }
-
-    bool has_error() const noexcept
-    {
-        return is_valid() && registry_->has_error(id_);
-    }
-
-    // Move the result out of the completed slot (one-shot).
-    Expected<T, TaskError> take_result() noexcept
-    {
-        if (!is_valid()) {
-            return Expected<T, TaskError>::error(TaskError::kInvalidId);
-        }
-        return registry_->take_result(id_);
-    }
-
-    // Stored error of a completed task, or kOk when none.
-    TaskError take_error() const noexcept
-    {
-        if (!is_valid()) {
-            return TaskError::kInvalidId;
-        }
-        return registry_->take_error(id_);
-    }
-
-    // Register the waiter AO (TargetId + resume signal) in the task slot.
-    // The completion event is generated by the registry - no callback
-    // pointer is ever stored. Rejected when a waiter already exists.
-    Expected<void, TaskError> set_awaiter(TargetId waiter,
-                                          uint16_t signal) noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        return registry_->set_awaiter(id_, waiter, signal);
-    }
-
-    // Release the registry slot. The handle becomes invalid.
-    Expected<void, TaskError> release() noexcept
-    {
-        if (!is_valid()) {
-            return Expected<void, TaskError>::error(TaskError::kInvalidId);
-        }
-        const Expected<void, TaskError> result = registry_->release_task(id_);
-        registry_ = nullptr;
-        id_ = kInvalidTaskId;
-        return result;
-    }
-
-private:
-    RegistryT* registry_;
-    TaskId id_;
+ private:
+  RegistryT* registry_;
+  TaskId id_;
 };
 
 }  // namespace coro

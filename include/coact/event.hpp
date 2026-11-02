@@ -7,10 +7,11 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <atomic>
+#include "coact/pal.hpp"  // CriticalSection: gate for pool head RMW
+
 #include <cstdint>
 
-#include "coact/pal.hpp"   // CriticalSection: gate for pool head RMW
+#include <atomic>
 
 namespace coact {
 
@@ -20,9 +21,9 @@ namespace coact {
 // (event_ref_inc), -1 per consumer or owner release (event_gc); reaching 0
 // returns the block to its pool.
 struct Event {
-    uint16_t signal;
-    uint8_t pool_id;   // 0 = static event; otherwise a 1-based registry index
-    uint8_t ref_ctr;   // 1 after alloc; +1 per additional post; 0 => recycle
+  uint16_t signal;
+  uint8_t pool_id;  // 0 = static event; otherwise a 1-based registry index
+  uint8_t ref_ctr;  // 1 after alloc; +1 per additional post; 0 => recycle
 };
 
 // Packing for the pool free-list head.
@@ -34,20 +35,20 @@ struct Event {
 // empty sentinel). Blocks are fixed-stride from the pool's aligned base, so an
 // index maps to (base + index*block_size).
 struct PoolRecord {
-    // free_head is the only write-contended atomic (every alloc/reclaim CAS
-    // targets it). Give it its own cache line so concurrent producers and the
-    // reclaiming thread never invalidate each other's copy of the used/hwm
-    // stats, which also change on every operation.
-    alignas(64) std::atomic<uint32_t> free_head{0};   // [31:16]=ABA tag, [15:0]=free index
-    uintptr_t base;                       // aligned base of the block area
-    uint16_t block_size;                  // aligned stride between blocks
-    uint16_t capacity;
-    // Start a fresh cache line so free_head's line never carries used/hwm.
-    alignas(64) std::atomic<uint16_t> used{0};
-    std::atomic<uint16_t> high_watermark{0};
-    void (*reclaim)(Event* e);            // returns a block to this pool (lock-free)
-    void* owner;                          // owning EventPool* (for its CriticalSection)
-    CriticalSection cs;                   // gate for free_head RMW (irq mask / no-op)
+  // free_head is the only write-contended atomic (every alloc/reclaim CAS
+  // targets it). Give it its own cache line so concurrent producers and the
+  // reclaiming thread never invalidate each other's copy of the used/hwm
+  // stats, which also change on every operation.
+  alignas(64) std::atomic<uint32_t> free_head{0};  // [31:16]=ABA tag, [15:0]=free index
+  uintptr_t base;                                  // aligned base of the block area
+  uint16_t block_size;                             // aligned stride between blocks
+  uint16_t capacity;
+  // Start a fresh cache line so free_head's line never carries used/hwm.
+  alignas(64) std::atomic<uint16_t> used{0};
+  std::atomic<uint16_t> high_watermark{0};
+  void (*reclaim)(Event* e);  // returns a block to this pool (lock-free)
+  void* owner;                // owning EventPool* (for its CriticalSection)
+  CriticalSection cs;         // gate for free_head RMW (irq mask / no-op)
 };
 
 // Maximum number of event pools that can be registered at once. pool_id is a
@@ -64,34 +65,32 @@ inline PoolRecord* g_pool_registry[kMaxEventPools] = {};
 
 // Look up a pool record by 1-based pool_id. Returns nullptr for 0 (static
 // events) and for unknown ids.
-inline PoolRecord* pool_record(uint8_t pool_id) noexcept
-{
-    if (pool_id == 0U || pool_id > kMaxEventPools) {
-        return nullptr;
-    }
-    return detail::g_pool_registry[pool_id - 1U];
+inline PoolRecord* pool_record(uint8_t pool_id) noexcept {
+  if (pool_id == 0U || pool_id > kMaxEventPools) {
+    return nullptr;
+  }
+  return detail::g_pool_registry[pool_id - 1U];
 }
 
 // Register a pool record and assign it a 1-based pool_id. Returns 0 if the
 // record is null or the registry is full. Idempotent for an already
 // registered record.
-inline uint8_t register_pool(PoolRecord* rec) noexcept
-{
-    if (rec == nullptr) {
-        return 0U;
-    }
-    for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
-        if (detail::g_pool_registry[i] == rec) {
-            return static_cast<uint8_t>(i + 1U);
-        }
-    }
-    for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
-        if (detail::g_pool_registry[i] == nullptr) {
-            detail::g_pool_registry[i] = rec;
-            return static_cast<uint8_t>(i + 1U);
-        }
-    }
+inline uint8_t register_pool(PoolRecord* rec) noexcept {
+  if (rec == nullptr) {
     return 0U;
+  }
+  for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
+    if (detail::g_pool_registry[i] == rec) {
+      return static_cast<uint8_t>(i + 1U);
+    }
+  }
+  for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
+    if (detail::g_pool_registry[i] == nullptr) {
+      detail::g_pool_registry[i] = rec;
+      return static_cast<uint8_t>(i + 1U);
+    }
+  }
+  return 0U;
 }
 
 // Detach a pool record from the registry, releasing its slot. Call only once
@@ -104,17 +103,16 @@ inline uint8_t register_pool(PoolRecord* rec) noexcept
 //
 // Idempotent: a record that is not registered is simply not found, so the
 // explicit teardown path and any later destructor compose.
-inline void unregister_pool(PoolRecord* rec) noexcept
-{
-    if (rec == nullptr) {
-        return;
+inline void unregister_pool(PoolRecord* rec) noexcept {
+  if (rec == nullptr) {
+    return;
+  }
+  for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
+    if (detail::g_pool_registry[i] == rec) {
+      detail::g_pool_registry[i] = nullptr;
+      return;
     }
-    for (uint8_t i = 0U; i < kMaxEventPools; ++i) {
-        if (detail::g_pool_registry[i] == rec) {
-            detail::g_pool_registry[i] = nullptr;
-            return;
-        }
-    }
+  }
 }
 
 }  // namespace coact

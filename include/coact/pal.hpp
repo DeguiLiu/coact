@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-#include <atomic>
+#include "coact/config.hpp"
+
 #include <cstdint>
 
-#include "coact/config.hpp"
+#include <atomic>
 
 namespace coact {
 
@@ -18,10 +19,10 @@ namespace coact {
 // Per contract 4.3 the function pointers carry no noexcept qualifier.
 // ---------------------------------------------------------------------------
 struct CriticalSection {
-    using Token = uintptr_t;
-    void* ctx;                             // opaque PAL context (passed to hooks)
-    Token (*save)(void* ctx);
-    void (*restore)(void* ctx, Token);
+  using Token = uintptr_t;
+  void* ctx;  // opaque PAL context (passed to hooks)
+  Token (*save)(void* ctx);
+  void (*restore)(void* ctx, Token);
 };
 
 // Unified RAII guard for a CriticalSection: save() on construction (a null
@@ -32,30 +33,25 @@ struct CriticalSection {
 // Value-initialized token field makes a null save leave the token in a safe
 // state. Trivial inline, zero heap, no exceptions.
 class CriticalSectionGuard {
-public:
-    explicit CriticalSectionGuard(const CriticalSection& cs) noexcept
-        : cs_(cs),
-          token_((cs_.save != nullptr) ? cs_.save(cs_.ctx)
-                                       : CriticalSection::Token{})
-    {
+ public:
+  explicit CriticalSectionGuard(const CriticalSection& cs) noexcept
+      : cs_(cs), token_((cs_.save != nullptr) ? cs_.save(cs_.ctx) : CriticalSection::Token{}) {}
+  CriticalSectionGuard(const CriticalSectionGuard&) = delete;
+  CriticalSectionGuard& operator=(const CriticalSectionGuard&) = delete;
+  ~CriticalSectionGuard() noexcept {
+    if (cs_.restore != nullptr) {
+      cs_.restore(cs_.ctx, token_);
     }
-    CriticalSectionGuard(const CriticalSectionGuard&) = delete;
-    CriticalSectionGuard& operator=(const CriticalSectionGuard&) = delete;
-    ~CriticalSectionGuard() noexcept
-    {
-        if (cs_.restore != nullptr) {
-            cs_.restore(cs_.ctx, token_);
-        }
-    }
+  }
 
-private:
-    CriticalSection cs_;
-    CriticalSection::Token token_;
+ private:
+  CriticalSection cs_;
+  CriticalSection::Token token_;
 };
 
 namespace pal {
 struct CriticalToken {
-    uintptr_t value;
+  uintptr_t value;
 };
 
 // High-resolution monotonic counter injected into a PAL as a static function
@@ -64,10 +60,10 @@ struct CriticalToken {
 // counter_bits declares a wrapping hardware width (64 means already extended).
 // RT tick remains the source for Dispatcher blocking waits and long deadlines.
 struct ClockOps {
-    uint64_t (*read_counter)(void* ctx);
-    uint32_t frequency_hz;
-    void* ctx;
-    uint8_t counter_bits = 64U;
+  uint64_t (*read_counter)(void* ctx);
+  uint32_t frequency_hz;
+  void* ctx;
+  uint8_t counter_bits = 64U;
 };
 }  // namespace pal
 
@@ -79,19 +75,16 @@ struct ClockOps {
 // backend so single-core targets guard the pool / queue head RMW in O(1)
 // without libatomic.
 template <typename PalT>
-inline CriticalSection make_critical_section(PalT& pal) noexcept
-{
-    CriticalSection cs;
-    cs.ctx     = static_cast<void*>(&pal);
-    cs.save    = [](void* ctx) -> CriticalSection::Token {
-        return static_cast<PalT*>(ctx)->irq_save().value;
-    };
-    cs.restore = [](void* ctx, CriticalSection::Token v) {
-        pal::CriticalToken tok;
-        tok.value = v;
-        static_cast<PalT*>(ctx)->irq_restore(tok);
-    };
-    return cs;
+inline CriticalSection make_critical_section(PalT& pal) noexcept {
+  CriticalSection cs;
+  cs.ctx = static_cast<void*>(&pal);
+  cs.save = [](void* ctx) -> CriticalSection::Token { return static_cast<PalT*>(ctx)->irq_save().value; };
+  cs.restore = [](void* ctx, CriticalSection::Token v) {
+    pal::CriticalToken tok;
+    tok.value = v;
+    static_cast<PalT*>(ctx)->irq_restore(tok);
+  };
+  return cs;
 }
 
 // A CriticalSection that actually serializes on SMP hosts. The POSIX PAL's
@@ -107,24 +100,22 @@ inline CriticalSection make_critical_section(PalT& pal) noexcept
 // is O(1) and unaffected by the race (alloc and reclaim are never concurrent
 // on one core).
 struct SpinCriticalSection {
-    std::atomic_flag flag = ATOMIC_FLAG_INIT;
+  std::atomic_flag flag = ATOMIC_FLAG_INIT;
 };
-inline CriticalSection make_spin_critical_section(SpinCriticalSection& scs) noexcept
-{
-    CriticalSection cs;
-    cs.ctx = static_cast<void*>(&scs);
-    cs.save = [](void* ctx) -> CriticalSection::Token {
-        auto* s = static_cast<SpinCriticalSection*>(ctx);
-        // Acquire: spin until the flag was clear. Token 1 marks "held".
-        while (s->flag.test_and_set(std::memory_order_acquire)) {
-        }
-        return 1U;
-    };
-    cs.restore = [](void* ctx, CriticalSection::Token) {
-        auto* s = static_cast<SpinCriticalSection*>(ctx);
-        s->flag.clear(std::memory_order_release);
-    };
-    return cs;
+inline CriticalSection make_spin_critical_section(SpinCriticalSection& scs) noexcept {
+  CriticalSection cs;
+  cs.ctx = static_cast<void*>(&scs);
+  cs.save = [](void* ctx) -> CriticalSection::Token {
+    auto* s = static_cast<SpinCriticalSection*>(ctx);
+    // Acquire: spin until the flag was clear. Token 1 marks "held".
+    while (s->flag.test_and_set(std::memory_order_acquire)) {}
+    return 1U;
+  };
+  cs.restore = [](void* ctx, CriticalSection::Token) {
+    auto* s = static_cast<SpinCriticalSection*>(ctx);
+    s->flag.clear(std::memory_order_release);
+  };
+  return cs;
 }
 
 namespace pal {
@@ -245,13 +236,13 @@ constexpr uint32_t kWaitForever = 0xFFFFFFFFU;
 // (RtThread, FreeRtos). kOk is zero so runtime.hpp's `status == 0` check is
 // PAL-independent. POSIX keeps void returns.
 enum class InitError : uint8_t {
-    kOk = 0,
-    kSemInitFailed,        // wake/join semaphore creation failed
-    kThreadInitFailed,     // TCB/stack creation failed
-    kThreadStartFailed,    // scheduler-side start failed
-    kStackTooLarge,        // requested stack > caller-provided storage
-    kAlreadyInitialized,   // initialize() after start/stop
-    kAlreadyStarted,       // start after start, or after stop (no restart)
+  kOk = 0,
+  kSemInitFailed,       // wake/join semaphore creation failed
+  kThreadInitFailed,    // TCB/stack creation failed
+  kThreadStartFailed,   // scheduler-side start failed
+  kStackTooLarge,       // requested stack > caller-provided storage
+  kAlreadyInitialized,  // initialize() after start/stop
+  kAlreadyStarted,      // start after start, or after stop (no restart)
 };
 
 // Semaphore/mutex/condvar/thread handles: the concrete TYPE is defined by

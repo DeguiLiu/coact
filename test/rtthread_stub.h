@@ -5,32 +5,33 @@
  */
 #pragma once
 
+#include <cerrno>
 #include <cstdarg>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cerrno>
+
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
 
-typedef uint8_t   rt_uint8_t;
-typedef uint32_t  rt_uint32_t;
-typedef int32_t   rt_int32_t;
-typedef uint32_t  rt_tick_t;
-typedef int       rt_err_t;
-typedef long      rt_size_t;
+typedef uint8_t rt_uint8_t;
+typedef uint32_t rt_uint32_t;
+typedef int32_t rt_int32_t;
+typedef uint32_t rt_tick_t;
+typedef int rt_err_t;
+typedef long rt_size_t;
 typedef uintptr_t rt_ubase_t;
-typedef intptr_t  rt_base_t;
+typedef intptr_t rt_base_t;
 
-#define RT_EOK             0
-#define RT_ETIMEOUT        7
-#define RT_ENOMEM          8
-#define RT_EINVAL          10
+#define RT_EOK 0
+#define RT_ETIMEOUT 7
+#define RT_ENOMEM 8
+#define RT_EINVAL 10
 #define RT_WAITING_FOREVER ((rt_int32_t)0x7FFFFFFF)
-#define RT_WAITING_NO      0
-#define RT_IPC_FLAG_PRIO   0x01
+#define RT_WAITING_NO 0
+#define RT_IPC_FLAG_PRIO 0x01
 #define RT_TICK_PER_SECOND 1000
 
 #ifndef RT_ALIGN_SIZE
@@ -44,32 +45,33 @@ typedef intptr_t  rt_base_t;
    genuinely mutually exclusive in the host tests. Coact usage is strictly
    non-nested (one save/restore pair per pool/ring op); the depth counter is a
    safety net. inline thread_local so every TU shares one depth variable. */
-inline pthread_mutex_t& stub_irq_mutex() noexcept
-{
-    static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
-    return m;
+inline pthread_mutex_t& stub_irq_mutex() noexcept {
+  static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+  return m;
 }
 inline thread_local int g_irq_depth = 0;
-inline rt_base_t rt_hw_interrupt_disable() noexcept
-{
-    if (0 == g_irq_depth++) {
-        pthread_mutex_lock(&stub_irq_mutex());
-    }
-    return static_cast<rt_base_t>(g_irq_depth);
+inline rt_base_t rt_hw_interrupt_disable() noexcept {
+  if (0 == g_irq_depth++) {
+    pthread_mutex_lock(&stub_irq_mutex());
+  }
+  return static_cast<rt_base_t>(g_irq_depth);
 }
-inline void rt_hw_interrupt_enable(rt_base_t) noexcept
-{
-    if (0 == --g_irq_depth) {
-        pthread_mutex_unlock(&stub_irq_mutex());
-    }
+inline void rt_hw_interrupt_enable(rt_base_t) noexcept {
+  if (0 == --g_irq_depth) {
+    pthread_mutex_unlock(&stub_irq_mutex());
+  }
 }
 
 /* --- ISR nesting: always 0 on host -------------------------------------- */
 /* inline (external linkage) so the test TU and the PAL TU share one counter;
    a `static thread_local` copy would diverge per TU. */
 inline thread_local uint8_t g_isr_nest = 0U;
-inline uint8_t rt_interrupt_get_nest() noexcept { return g_isr_nest; }
-inline void stub_set_isr_nest(uint8_t n) noexcept { g_isr_nest = n; }
+inline uint8_t rt_interrupt_get_nest() noexcept {
+  return g_isr_nest;
+}
+inline void stub_set_isr_nest(uint8_t n) noexcept {
+  g_isr_nest = n;
+}
 
 /* --- Semaphore ---------------------------------------------------------- */
 /* rt_sem_init/rt_sem_create initialize these pthread primitives
@@ -81,11 +83,11 @@ inline void stub_set_isr_nest(uint8_t n) noexcept { g_isr_nest = n; }
    backed by uninitialized primitives - the host-test deadlock/abort root
    cause.) Re-initializing a live object remains a caller error, as on target. */
 struct rt_semaphore {
-    pthread_mutex_t mtx;
-    pthread_cond_t  cond;
-    uint32_t        count;
+  pthread_mutex_t mtx;
+  pthread_cond_t cond;
+  uint32_t count;
 };
-typedef struct rt_semaphore *rt_sem_t;
+typedef struct rt_semaphore* rt_sem_t;
 
 /* --- Fault injection (host-only) ----------------------------------------- */
 /* Static PAL tests inject definite kernel failures (design §7.5: init/start
@@ -93,149 +95,168 @@ typedef struct rt_semaphore *rt_sem_t;
    injected rt_err_t instead of RT_EOK. rt_sem_init/rt_thread_init return the
    fault WITHOUT side effects; rt_thread_startup returns the fault WITHOUT
    spawning the pthread. Reset with stub_reset_faults() between tests. */
-inline rt_err_t& stub_sem_init_fault() noexcept
-{
-    static rt_err_t v = RT_EOK;
-    return v;
+inline rt_err_t& stub_sem_init_fault() noexcept {
+  static rt_err_t v = RT_EOK;
+  return v;
 }
-inline rt_err_t& stub_thread_init_fault() noexcept
-{
-    static rt_err_t v = RT_EOK;
-    return v;
+inline rt_err_t& stub_thread_init_fault() noexcept {
+  static rt_err_t v = RT_EOK;
+  return v;
 }
-inline rt_err_t& stub_thread_startup_fault() noexcept
-{
-    static rt_err_t v = RT_EOK;
-    return v;
+inline rt_err_t& stub_thread_startup_fault() noexcept {
+  static rt_err_t v = RT_EOK;
+  return v;
 }
-inline void stub_reset_faults() noexcept
-{
-    stub_sem_init_fault()      = RT_EOK;
-    stub_thread_init_fault()   = RT_EOK;
-    stub_thread_startup_fault() = RT_EOK;
+inline void stub_reset_faults() noexcept {
+  stub_sem_init_fault() = RT_EOK;
+  stub_thread_init_fault() = RT_EOK;
+  stub_thread_startup_fault() = RT_EOK;
 }
 
-inline rt_sem_t rt_sem_create(const char*, rt_uint32_t val, rt_uint8_t) noexcept
-{
-    rt_sem_t s = static_cast<rt_sem_t>(std::malloc(sizeof(rt_semaphore)));
-    if (nullptr == s) { return nullptr; }
-    pthread_mutex_init(&s->mtx, nullptr);
-    pthread_cond_init(&s->cond, nullptr);
-    s->count = val;
-    return s;
+inline rt_sem_t rt_sem_create(const char*, rt_uint32_t val, rt_uint8_t) noexcept {
+  rt_sem_t s = static_cast<rt_sem_t>(std::malloc(sizeof(rt_semaphore)));
+  if (nullptr == s) {
+    return nullptr;
+  }
+  pthread_mutex_init(&s->mtx, nullptr);
+  pthread_cond_init(&s->cond, nullptr);
+  s->count = val;
+  return s;
 }
-inline rt_err_t rt_sem_init(rt_sem_t s, const char*, rt_uint32_t val, rt_uint8_t) noexcept
-{
-    if (nullptr == s) { return -RT_EINVAL; }
-    if (RT_EOK != stub_sem_init_fault()) { return stub_sem_init_fault(); }
-    /* Unconditional init (see rt_semaphore comment): never consult prior
-       storage, which the caller may hand over uninitialized. */
-    pthread_mutex_init(&s->mtx, nullptr);
-    pthread_cond_init(&s->cond, nullptr);
-    s->count = val;
-    return RT_EOK;
+inline rt_err_t rt_sem_init(rt_sem_t s, const char*, rt_uint32_t val, rt_uint8_t) noexcept {
+  if (nullptr == s) {
+    return -RT_EINVAL;
+  }
+  if (RT_EOK != stub_sem_init_fault()) {
+    return stub_sem_init_fault();
+  }
+  /* Unconditional init (see rt_semaphore comment): never consult prior
+     storage, which the caller may hand over uninitialized. */
+  pthread_mutex_init(&s->mtx, nullptr);
+  pthread_cond_init(&s->cond, nullptr);
+  s->count = val;
+  return RT_EOK;
 }
-inline rt_err_t rt_sem_detach(rt_sem_t s) noexcept
-{
-    if (nullptr == s) { return -RT_EINVAL; }
-    pthread_mutex_destroy(&s->mtx);
-    pthread_cond_destroy(&s->cond);
-    return RT_EOK;
+inline rt_err_t rt_sem_detach(rt_sem_t s) noexcept {
+  if (nullptr == s) {
+    return -RT_EINVAL;
+  }
+  pthread_mutex_destroy(&s->mtx);
+  pthread_cond_destroy(&s->cond);
+  return RT_EOK;
 }
-inline rt_err_t rt_sem_delete(rt_sem_t s) noexcept
-{
-    if (nullptr == s) { return -RT_EINVAL; }
-    pthread_mutex_destroy(&s->mtx);
-    pthread_cond_destroy(&s->cond);
-    std::free(s);
-    return RT_EOK;
+inline rt_err_t rt_sem_delete(rt_sem_t s) noexcept {
+  if (nullptr == s) {
+    return -RT_EINVAL;
+  }
+  pthread_mutex_destroy(&s->mtx);
+  pthread_cond_destroy(&s->cond);
+  std::free(s);
+  return RT_EOK;
 }
-inline rt_err_t rt_sem_take(rt_sem_t s, rt_int32_t ticks) noexcept
-{
-    if (nullptr == s) { return -RT_EINVAL; }
-    pthread_mutex_lock(&s->mtx);
-    if (RT_WAITING_NO == ticks) {
-        rt_err_t r = (s->count > 0U) ? RT_EOK : -RT_ETIMEOUT;
-        if (RT_EOK == r) { --s->count; }
-        pthread_mutex_unlock(&s->mtx);
-        return r;
+inline rt_err_t rt_sem_take(rt_sem_t s, rt_int32_t ticks) noexcept {
+  if (nullptr == s) {
+    return -RT_EINVAL;
+  }
+  pthread_mutex_lock(&s->mtx);
+  if (RT_WAITING_NO == ticks) {
+    rt_err_t r = (s->count > 0U) ? RT_EOK : -RT_ETIMEOUT;
+    if (RT_EOK == r) {
+      --s->count;
     }
-    if (RT_WAITING_FOREVER != ticks) {
-        struct timespec dl;
-        clock_gettime(CLOCK_REALTIME, &dl);
-        const long ms = static_cast<long>(ticks); /* 1 tick == 1 ms at 1kHz */
-        dl.tv_sec  += ms / 1000L;
-        dl.tv_nsec += (ms % 1000L) * 1000000L;
-        if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
-        while (s->count == 0U) {
-            if (ETIMEDOUT == pthread_cond_timedwait(&s->cond, &s->mtx, &dl)) { break; }
-        }
-        rt_err_t r = (s->count > 0U) ? RT_EOK : -RT_ETIMEOUT;
-        if (RT_EOK == r) { --s->count; }
-        pthread_mutex_unlock(&s->mtx);
-        return r;
+    pthread_mutex_unlock(&s->mtx);
+    return r;
+  }
+  if (RT_WAITING_FOREVER != ticks) {
+    struct timespec dl;
+    clock_gettime(CLOCK_REALTIME, &dl);
+    const long ms = static_cast<long>(ticks); /* 1 tick == 1 ms at 1kHz */
+    dl.tv_sec += ms / 1000L;
+    dl.tv_nsec += (ms % 1000L) * 1000000L;
+    if (dl.tv_nsec >= 1000000000L) {
+      dl.tv_sec++;
+      dl.tv_nsec -= 1000000000L;
     }
-    while (s->count == 0U) { pthread_cond_wait(&s->cond, &s->mtx); }
-    --s->count;
+    while (s->count == 0U) {
+      if (ETIMEDOUT == pthread_cond_timedwait(&s->cond, &s->mtx, &dl)) {
+        break;
+      }
+    }
+    rt_err_t r = (s->count > 0U) ? RT_EOK : -RT_ETIMEOUT;
+    if (RT_EOK == r) {
+      --s->count;
+    }
     pthread_mutex_unlock(&s->mtx);
-    return RT_EOK;
+    return r;
+  }
+  while (s->count == 0U) {
+    pthread_cond_wait(&s->cond, &s->mtx);
+  }
+  --s->count;
+  pthread_mutex_unlock(&s->mtx);
+  return RT_EOK;
 }
-inline rt_err_t rt_sem_release(rt_sem_t s) noexcept
-{
-    if (nullptr == s) { return -RT_EINVAL; }
-    pthread_mutex_lock(&s->mtx);
-    ++s->count;
-    pthread_cond_signal(&s->cond);
-    pthread_mutex_unlock(&s->mtx);
-    return RT_EOK;
+inline rt_err_t rt_sem_release(rt_sem_t s) noexcept {
+  if (nullptr == s) {
+    return -RT_EINVAL;
+  }
+  pthread_mutex_lock(&s->mtx);
+  ++s->count;
+  pthread_cond_signal(&s->cond);
+  pthread_mutex_unlock(&s->mtx);
+  return RT_EOK;
 }
 
 /* --- Mutex (SemOps MutexOps support) ------------------------------------- */
 /* Same unconditional-init contract as rt_semaphore above. */
 struct rt_mutex {
-    pthread_mutex_t mtx;
+  pthread_mutex_t mtx;
 };
-typedef struct rt_mutex *rt_mutex_t;
+typedef struct rt_mutex* rt_mutex_t;
 
-inline rt_err_t rt_mutex_init(rt_mutex_t m, const char*, rt_uint8_t) noexcept
-{
-    if (nullptr == m) { return -RT_EINVAL; }
-    pthread_mutex_init(&m->mtx, nullptr);
-    return RT_EOK;
+inline rt_err_t rt_mutex_init(rt_mutex_t m, const char*, rt_uint8_t) noexcept {
+  if (nullptr == m) {
+    return -RT_EINVAL;
+  }
+  pthread_mutex_init(&m->mtx, nullptr);
+  return RT_EOK;
 }
-inline rt_err_t rt_mutex_detach(rt_mutex_t m) noexcept
-{
-    if (nullptr == m) { return -RT_EINVAL; }
-    pthread_mutex_destroy(&m->mtx);
-    return RT_EOK;
+inline rt_err_t rt_mutex_detach(rt_mutex_t m) noexcept {
+  if (nullptr == m) {
+    return -RT_EINVAL;
+  }
+  pthread_mutex_destroy(&m->mtx);
+  return RT_EOK;
 }
-inline rt_err_t rt_mutex_take(rt_mutex_t m, rt_int32_t ticks) noexcept
-{
-    if (nullptr == m) { return -RT_EINVAL; }
-    if (RT_WAITING_NO == ticks) {
-        return (0 == pthread_mutex_trylock(&m->mtx)) ? RT_EOK : -RT_ETIMEOUT;
-    }
-    if (RT_WAITING_FOREVER == ticks) {
-        return (0 == pthread_mutex_lock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
-    }
-    /* bounded take: not exercised by the coact paths (mutex_lock uses
-       forever); approximate with a lock (host convenience only). */
+inline rt_err_t rt_mutex_take(rt_mutex_t m, rt_int32_t ticks) noexcept {
+  if (nullptr == m) {
+    return -RT_EINVAL;
+  }
+  if (RT_WAITING_NO == ticks) {
+    return (0 == pthread_mutex_trylock(&m->mtx)) ? RT_EOK : -RT_ETIMEOUT;
+  }
+  if (RT_WAITING_FOREVER == ticks) {
     return (0 == pthread_mutex_lock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
+  }
+  /* bounded take: not exercised by the coact paths (mutex_lock uses
+     forever); approximate with a lock (host convenience only). */
+  return (0 == pthread_mutex_lock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
 }
-inline rt_err_t rt_mutex_release(rt_mutex_t m) noexcept
-{
-    if (nullptr == m) { return -RT_EINVAL; }
-    return (0 == pthread_mutex_unlock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
+inline rt_err_t rt_mutex_release(rt_mutex_t m) noexcept {
+  if (nullptr == m) {
+    return -RT_EINVAL;
+  }
+  return (0 == pthread_mutex_unlock(&m->mtx)) ? RT_EOK : -RT_EINVAL;
 }
 
 /* --- Thread ------------------------------------------------------------- */
 struct rt_thread {
-    pthread_t   tid;
-    void      (*entry)(void*);
-    void*       param;
-    rt_ubase_t  user_data;
+  pthread_t tid;
+  void (*entry)(void*);
+  void* param;
+  rt_ubase_t user_data;
 };
-typedef struct rt_thread *rt_thread_t;
+typedef struct rt_thread* rt_thread_t;
 
 /* thread_local rt_thread_self storage. MUST be inline (external linkage) so the
    test TU and the PAL TU share ONE per-thread copy: a `static thread_local`
@@ -244,88 +265,107 @@ typedef struct rt_thread *rt_thread_t;
    (compiled in pal_rtthread.cpp) never sees. See g_isr_nest above. */
 inline thread_local rt_thread_t tls_rtt_self = nullptr;
 
-inline void* rtt_stub_run(void* arg) noexcept
-{
-    rt_thread_t t = static_cast<rt_thread_t>(arg);
-    tls_rtt_self = t;
-    t->entry(t->param);
-    return nullptr;
+inline void* rtt_stub_run(void* arg) noexcept {
+  rt_thread_t t = static_cast<rt_thread_t>(arg);
+  tls_rtt_self = t;
+  t->entry(t->param);
+  return nullptr;
 }
-inline rt_thread_t rt_thread_create(const char*, void(*entry)(void*), void* p,
-                                    rt_uint32_t, rt_uint8_t, rt_uint32_t) noexcept
-{
-    rt_thread_t t = static_cast<rt_thread_t>(std::malloc(sizeof(rt_thread)));
-    if (nullptr == t) { return nullptr; }
-    t->entry = entry; t->param = p; t->user_data = 0U; t->tid = {};
-    return t;
+inline rt_thread_t rt_thread_create(const char*, void (*entry)(void*), void* p, rt_uint32_t, rt_uint8_t,
+                                    rt_uint32_t) noexcept {
+  rt_thread_t t = static_cast<rt_thread_t>(std::malloc(sizeof(rt_thread)));
+  if (nullptr == t) {
+    return nullptr;
+  }
+  t->entry = entry;
+  t->param = p;
+  t->user_data = 0U;
+  t->tid = {};
+  return t;
 }
 /* Static thread init: the PAL (pal_rtthread.cpp) uses rt_thread_init for the
    Dispatcher. The stub stores entry/param; the fixed stack array is ignored
    (the pthread gets the default stack). */
-inline rt_err_t rt_thread_init(struct rt_thread *thread, const char* /*name*/,
-                               void(*entry)(void*), void* parameter,
-                               void* /*stack_start*/, rt_uint32_t /*stack_size*/,
-                               rt_uint8_t /*priority*/, rt_uint32_t /*tick*/) noexcept
-{
-    if (nullptr == thread) { return -RT_EINVAL; }
-    if (RT_EOK != stub_thread_init_fault()) { return stub_thread_init_fault(); }
-    thread->entry = entry;
-    thread->param = parameter;
-    thread->user_data = 0U;
-    thread->tid = {};
-    return RT_EOK;
+inline rt_err_t rt_thread_init(struct rt_thread* thread, const char* /*name*/, void (*entry)(void*), void* parameter,
+                               void* /*stack_start*/, rt_uint32_t /*stack_size*/, rt_uint8_t /*priority*/,
+                               rt_uint32_t /*tick*/) noexcept {
+  if (nullptr == thread) {
+    return -RT_EINVAL;
+  }
+  if (RT_EOK != stub_thread_init_fault()) {
+    return stub_thread_init_fault();
+  }
+  thread->entry = entry;
+  thread->param = parameter;
+  thread->user_data = 0U;
+  thread->tid = {};
+  return RT_EOK;
 }
-inline rt_err_t rt_thread_startup(rt_thread_t t) noexcept
-{
-    if (nullptr == t) { return -RT_EINVAL; }
-    if (RT_EOK != stub_thread_startup_fault()) { return stub_thread_startup_fault(); }
-    return (0 == pthread_create(&t->tid, nullptr, rtt_stub_run, t)) ? RT_EOK : -RT_ENOMEM;
+inline rt_err_t rt_thread_startup(rt_thread_t t) noexcept {
+  if (nullptr == t) {
+    return -RT_EINVAL;
+  }
+  if (RT_EOK != stub_thread_startup_fault()) {
+    return stub_thread_startup_fault();
+  }
+  return (0 == pthread_create(&t->tid, nullptr, rtt_stub_run, t)) ? RT_EOK : -RT_ENOMEM;
 }
-inline rt_err_t rt_thread_delete(rt_thread_t t) noexcept
-{
-    if (nullptr == t) { return -RT_EINVAL; }
-    if (t->tid != pthread_t{}) { pthread_join(t->tid, nullptr); }
-    std::free(t); return RT_EOK;
+inline rt_err_t rt_thread_delete(rt_thread_t t) noexcept {
+  if (nullptr == t) {
+    return -RT_EINVAL;
+  }
+  if (t->tid != pthread_t{}) {
+    pthread_join(t->tid, nullptr);
+  }
+  std::free(t);
+  return RT_EOK;
 }
-inline rt_thread_t rt_thread_self() noexcept { return tls_rtt_self; }
+inline rt_thread_t rt_thread_self() noexcept {
+  return tls_rtt_self;
+}
 
 /* --- Time --------------------------------------------------------------- */
-inline rt_tick_t rt_tick_get() noexcept
-{
-    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
-    return static_cast<rt_tick_t>(
-        static_cast<uint64_t>(ts.tv_sec) * 1000U
-        + static_cast<uint64_t>(ts.tv_nsec) / 1000000U);
+inline rt_tick_t rt_tick_get() noexcept {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return static_cast<rt_tick_t>(static_cast<uint64_t>(ts.tv_sec) * 1000U +
+                                static_cast<uint64_t>(ts.tv_nsec) / 1000000U);
 }
 
 /* --- Delay (PAL sleep_us backing) ----------------------------------------- */
 /* rt_thread_mdelay: milliseconds (the real 1 kHz tick resolution). Host stub
    rounds sub-millisecond requests up to 1 ms to match PAL::sleep_us. */
-inline void rt_thread_mdelay(int ms) noexcept
-{
-    if (ms <= 0) { ms = 1; }
-    const long ns = static_cast<long>(ms) * 1000000L;
-    struct timespec ts{ns / 1000000000L, ns % 1000000000L};
-    nanosleep(&ts, nullptr);
+inline void rt_thread_mdelay(int ms) noexcept {
+  if (ms <= 0) {
+    ms = 1;
+  }
+  const long ns = static_cast<long>(ms) * 1000000L;
+  struct timespec ts{ns / 1000000000L, ns % 1000000000L};
+  nanosleep(&ts, nullptr);
 }
 
-
 /* --- Memory / console --------------------------------------------------- */
-inline void* rt_malloc(rt_size_t n) noexcept { return std::malloc(static_cast<size_t>(n)); }
-inline void  rt_free(void* p)       noexcept { std::free(p); }
-inline int   rt_kprintf(const char* fmt, ...) noexcept
-{
-    va_list ap; va_start(ap, fmt);
-    const int n = std::vfprintf(stderr, fmt, ap);
-    va_end(ap); return n;
+inline void* rt_malloc(rt_size_t n) noexcept {
+  return std::malloc(static_cast<size_t>(n));
+}
+inline void rt_free(void* p) noexcept {
+  std::free(p);
+}
+inline int rt_kprintf(const char* fmt, ...) noexcept {
+  va_list ap;
+  va_start(ap, fmt);
+  const int n = std::vfprintf(stderr, fmt, ap);
+  va_end(ap);
+  return n;
 }
 /* rt_snprintf mirrors the real RT-Thread kstdio API (included via rtthread.h
    -> rtklibc.h); the log adapter's writer renders into a fixed line buffer. */
-inline int rt_snprintf(char* buf, rt_size_t size, const char* fmt, ...) noexcept
-{
-    va_list ap; va_start(ap, fmt);
-    const int n = std::vsnprintf(buf, static_cast<size_t>(size), fmt, ap);
-    va_end(ap); return n;
+inline int rt_snprintf(char* buf, rt_size_t size, const char* fmt, ...) noexcept {
+  va_list ap;
+  va_start(ap, fmt);
+  const int n = std::vsnprintf(buf, static_cast<size_t>(size), fmt, ap);
+  va_end(ap);
+  return n;
 }
 
 /* --- Signals (SoftIrq SoftIrqOps support) --------------------------------- */
@@ -340,15 +380,12 @@ inline int rt_snprintf(char* buf, rt_size_t size, const char* fmt, ...) noexcept
 #define SIGUSR1 10
 #endif
 typedef void (*rt_sighandler_t)(int);
-inline rt_sighandler_t rt_signal_install(int /*signo*/,
-                                        rt_sighandler_t handler) noexcept
-{
-    /* Install/remove are no-ops on host: the handler never runs, and the
-       shared ring carries the data either way. */
-    return handler;
+inline rt_sighandler_t rt_signal_install(int /*signo*/, rt_sighandler_t handler) noexcept {
+  /* Install/remove are no-ops on host: the handler never runs, and the
+     shared ring carries the data either way. */
+  return handler;
 }
-inline rt_err_t rt_thread_kill(rt_thread_t /*tid*/, int /*sig*/) noexcept
-{
-    /* Wake-hint only; the mailbox ring is the actual data path. */
-    return RT_EOK;
+inline rt_err_t rt_thread_kill(rt_thread_t /*tid*/, int /*sig*/) noexcept {
+  /* Wake-hint only; the mailbox ring is the actual data path. */
+  return RT_EOK;
 }

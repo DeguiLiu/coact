@@ -8,12 +8,13 @@
 // usable out of the box in host tests.
 #pragma once
 
-#include <cstddef>
-#include <cstdint>
-#include <type_traits>
-
 #include "coact/event.hpp"
 #include "coact/pool.hpp"
+
+#include <cstddef>
+#include <cstdint>
+
+#include <type_traits>
 
 namespace coact {
 namespace coro {
@@ -23,33 +24,32 @@ namespace coro {
 // combinators. All values are fixed at compile time - there is no runtime
 // capacity tuning.
 struct AsyncConfig {
-    // Default task-slot capacity of a TaskRegistry instantiation.
-    enum : uint16_t { kDefaultMaxTasks = 8U };
+  // Default task-slot capacity of a TaskRegistry instantiation.
+  enum : uint16_t { kDefaultMaxTasks = 8U };
 
-    // Default combinator capacity (max tasks per TaskGroup).
-    enum : uint16_t { kDefaultGroupCapacity = 8U };
+  // Default combinator capacity (max tasks per TaskGroup).
+  enum : uint16_t { kDefaultGroupCapacity = 8U };
 
-    // Completion events carry the TaskId plus a status word; large results
-    // stay in the task slot and travel by reference (result descriptor rule).
-    // Block size must still fit a pool block (Event header + payload).
-    enum : uint16_t { kCompletionEventBlockBytes = 16U };
+  // Completion events carry the TaskId plus a status word; large results
+  // stay in the task slot and travel by reference (result descriptor rule).
+  // Block size must still fit a pool block (Event header + payload).
+  enum : uint16_t { kCompletionEventBlockBytes = 16U };
 
-    // Generation counter guard: a TaskId packs slot index + generation so a
-    // stale handle cannot alias a recycled slot.
-    enum : uint16_t { kSlotGenerationBits = 8U };
+  // Generation counter guard: a TaskId packs slot index + generation so a
+  // stale handle cannot alias a recycled slot.
+  enum : uint16_t { kSlotGenerationBits = 8U };
 
-    static_assert(kDefaultGroupCapacity <= 32U,
-                  "TaskGroup completed bitmap is uint32_t: capacity <= 32");
+  static_assert(kDefaultGroupCapacity <= 32U, "TaskGroup completed bitmap is uint32_t: capacity <= 32");
 };
 
 // Completion-event payload (trivially copyable, pool lifecycle contract).
 // The result itself NEVER travels in the event: the consumer reads it from
 // the task slot through the registry before release_task().
 struct CompletionPayload {
-    uint16_t task_id;     // raw TaskId value (slot index + generation packing)
-    uint8_t status;       // 0 = success, 1 = failed, 2 = cancelled
-    uint8_t reserved;     // alignment padding, always 0
-    uint32_t error_code;  // TaskError raw value when status != 0
+  uint16_t task_id;     // raw TaskId value (slot index + generation packing)
+  uint8_t status;       // 0 = success, 1 = failed, 2 = cancelled
+  uint8_t reserved;     // alignment padding, always 0
+  uint32_t error_code;  // TaskError raw value when status != 0
 };
 
 static_assert(std::is_standard_layout<CompletionPayload>::value &&
@@ -65,21 +65,15 @@ static_assert(std::is_standard_layout<CompletionPayload>::value &&
 // default constructor must be explicitly declared defaulted here (a
 // synthesized one would be non-trivial and still nothrow, but the contract
 // checks nothrow only - declaring it keeps intent explicit).
-struct CompletionBlock
-    : EventBlockLayout<CompletionPayload, sizeof(CompletionPayload),
-                       alignof(CompletionPayload)> {
-    // Explicitly defaulted: keeps the layout nothrow default constructible
-    // (a member initializer on CompletionPayload would otherwise synthesize
-    // a constructor the pool contract still accepts, but this pins intent).
-    CompletionBlock() noexcept = default;
+struct CompletionBlock : EventBlockLayout<CompletionPayload, sizeof(CompletionPayload), alignof(CompletionPayload)> {
+  // Explicitly defaulted: keeps the layout nothrow default constructible
+  // (a member initializer on CompletionPayload would otherwise synthesize
+  // a constructor the pool contract still accepts, but this pins intent).
+  CompletionBlock() noexcept = default;
 };
 
 // Status codes carried in CompletionPayload::status.
-enum class CompletionStatus : uint8_t {
-    kSucceeded = 0U,
-    kFailed = 1U,
-    kCancelled = 2U
-};
+enum class CompletionStatus : uint8_t { kSucceeded = 0U, kFailed = 1U, kCancelled = 2U };
 
 // Compile-time check that a result type satisfies the coro result contract:
 // results are stored in-place in task slots (raw byte storage + launder),
@@ -87,10 +81,8 @@ enum class CompletionStatus : uint8_t {
 // Large data (frames, buffers, strings) must travel by descriptor instead.
 template <typename T>
 inline constexpr bool is_coro_result_v =
-    std::is_standard_layout<T>::value &&
-    std::is_trivially_copyable<T>::value &&
-    std::is_trivially_destructible<T>::value &&
-    std::is_nothrow_move_constructible<T>::value;
+    std::is_standard_layout<T>::value && std::is_trivially_copyable<T>::value &&
+    std::is_trivially_destructible<T>::value && std::is_nothrow_move_constructible<T>::value;
 
 }  // namespace coro
 }  // namespace coact

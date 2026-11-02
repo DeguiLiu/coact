@@ -39,4 +39,3 @@
  */
 
 #include "output_itf.hpp"
-

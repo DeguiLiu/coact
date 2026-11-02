@@ -41,11 +41,12 @@
  */
 #pragma once
 
-#include <array>
-#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+
+#include <array>
+#include <atomic>
 #include <iterator>
 
 // PAL alias switch (see the DemoPal alias below): pull the RT-Thread PAL
@@ -64,7 +65,6 @@
 #include "coact/hsm.hpp"
 #include "coact/pool.hpp"
 #include "coact/runtime.hpp"
-
 #include "isp_pipeline/coro_pal.hpp"
 
 namespace isp_demo {
@@ -110,25 +110,25 @@ using LogLevel = coact::diag::LogLevel;
 inline coact::diag::LogRtThread<> g_log;
 
 enum LogEvt : uint16_t {
-    kEvtBoot         = 1U,
-    kEvtPhase1       = 2U,
-    kEvtPhase3       = 3U,
-    kEvtPhase4       = 4U,
-    kEvtIrscStep     = 5U,
-    kEvtIspNode      = 6U,
-    kEvtVideoCmd     = 7U,
-    kEvtFrameEmitted = 8U,
-    kEvtFrameDone    = 9U,
-    kEvtSinkFirst    = 10U,
-    kEvtStop         = 11U,
-    // Runtime-migration events (args are raw uint32_t; the writer renders
-    // raw-hex "[cnt] e=... a0..a3"). String context (AO/state names) is not
-    // carried by the record; the printf/hsm trace remains the readable view.
-    kEvtHsmTrace    = 12U,  // a0=ao_id a1=src a2=sig a3=dst (0x100|idx = reject)
-    kEvtRecfg       = 13U,  // a0=stage a1..a3 stage-specific
-    kEvtWorkerStat  = 14U,  // a0=worker_id a1=executed a2=rejected a3=extra
-    kEvtSession     = 15U,  // a0=prev a1=next (SessionState raw values)
-    kEvtVideoFsm    = 16U,  // a0=stream a1=cmd a2=fsm
+  kEvtBoot = 1U,
+  kEvtPhase1 = 2U,
+  kEvtPhase3 = 3U,
+  kEvtPhase4 = 4U,
+  kEvtIrscStep = 5U,
+  kEvtIspNode = 6U,
+  kEvtVideoCmd = 7U,
+  kEvtFrameEmitted = 8U,
+  kEvtFrameDone = 9U,
+  kEvtSinkFirst = 10U,
+  kEvtStop = 11U,
+  // Runtime-migration events (args are raw uint32_t; the writer renders
+  // raw-hex "[cnt] e=... a0..a3"). String context (AO/state names) is not
+  // carried by the record; the printf/hsm trace remains the readable view.
+  kEvtHsmTrace = 12U,    // a0=ao_id a1=src a2=sig a3=dst (0x100|idx = reject)
+  kEvtRecfg = 13U,       // a0=stage a1..a3 stage-specific
+  kEvtWorkerStat = 14U,  // a0=worker_id a1=executed a2=rejected a3=extra
+  kEvtSession = 15U,     // a0=prev a1=next (SessionState raw values)
+  kEvtVideoFsm = 16U,    // a0=stream a1=cmd a2=fsm
 };
 
 // ---------------------------------------------------------------------------
@@ -141,15 +141,15 @@ enum class Itf : uint8_t { kUsbS0 = 13U, kMipiTx0CsiS0 = 3U };
 enum class ArchStream : uint8_t { kPicTemp = 0U, kPicOnly = 1U };
 
 struct PreviewCmdInfo {
-    ArchStream arch{ArchStream::kPicTemp};
-    Itf        itf{Itf::kUsbS0};
-    uint16_t   width{640U};
-    uint16_t   height{512U};
-    uint8_t    fps{30U};
-    SoutMode   sout{SoutMode::kNoSout};
-    StreamMode mode{StreamMode::kDmo};
-    OutFmt     fmt{OutFmt::kYuv422};
-    bool       stream_out_direct{true};
+  ArchStream arch{ArchStream::kPicTemp};
+  Itf itf{Itf::kUsbS0};
+  uint16_t width{640U};
+  uint16_t height{512U};
+  uint8_t fps{30U};
+  SoutMode sout{SoutMode::kNoSout};
+  StreamMode mode{StreamMode::kDmo};
+  OutFmt fmt{OutFmt::kYuv422};
+  bool stream_out_direct{true};
 };
 
 // Mirror of app_fill_preview_cmd_by_mode's product branch (non-RCALI).
@@ -158,27 +158,34 @@ struct PreviewCmdInfo {
 // Mode 4 -> MIPI 1920x1442@30 PIC_TEMP, NV12 SOUT, direct output.
 // Mode 5 -> USB  1920x1442@3  PIC_TEMP, NV12 SOUT, direct output (USB2 low-fps).
 inline constexpr PreviewCmdInfo kProductModes[] = {
-    { ArchStream::kPicTemp, Itf::kUsbS0,          640U,  514U,  30U, SoutMode::kNoSout,       StreamMode::kDmo, OutFmt::kYuv422, true  }, // 0
-    { ArchStream::kPicTemp, Itf::kMipiTx0CsiS0,   640U,  514U,  30U, SoutMode::kYuv420spNv12, StreamMode::kDmo, OutFmt::kYuv422, true  }, // 1
-    { ArchStream::kPicTemp, Itf::kUsbS0,          640U,  514U,  30U, SoutMode::kNoSout,       StreamMode::kDmo, OutFmt::kYuv422, false }, // 2
-    { ArchStream::kPicTemp, Itf::kMipiTx0CsiS0,   640U,  514U,  30U, SoutMode::kYuv420spNv12, StreamMode::kDmo, OutFmt::kYuv422, false }, // 3
-    { ArchStream::kPicTemp, Itf::kMipiTx0CsiS0,   1920U, 1442U, 30U, SoutMode::kYuv420spNv12, StreamMode::kDmo, OutFmt::kYuv422, true  }, // 4
-    { ArchStream::kPicTemp, Itf::kUsbS0,          1920U, 1442U, 3U,  SoutMode::kYuv420spNv12, StreamMode::kDmo, OutFmt::kYuv422, true  }, // 5
+    {ArchStream::kPicTemp, Itf::kUsbS0, 640U, 514U, 30U, SoutMode::kNoSout, StreamMode::kDmo, OutFmt::kYuv422,
+     true},  // 0
+    {ArchStream::kPicTemp, Itf::kMipiTx0CsiS0, 640U, 514U, 30U, SoutMode::kYuv420spNv12, StreamMode::kDmo,
+     OutFmt::kYuv422, true},  // 1
+    {ArchStream::kPicTemp, Itf::kUsbS0, 640U, 514U, 30U, SoutMode::kNoSout, StreamMode::kDmo, OutFmt::kYuv422,
+     false},  // 2
+    {ArchStream::kPicTemp, Itf::kMipiTx0CsiS0, 640U, 514U, 30U, SoutMode::kYuv420spNv12, StreamMode::kDmo,
+     OutFmt::kYuv422, false},  // 3
+    {ArchStream::kPicTemp, Itf::kMipiTx0CsiS0, 1920U, 1442U, 30U, SoutMode::kYuv420spNv12, StreamMode::kDmo,
+     OutFmt::kYuv422, true},  // 4
+    {ArchStream::kPicTemp, Itf::kUsbS0, 1920U, 1442U, 3U, SoutMode::kYuv420spNv12, StreamMode::kDmo, OutFmt::kYuv422,
+     true},  // 5
 };
 
 // Mirror of RS500_CALI branch (all PIC_ONLY Y16 3LOOP).
 inline constexpr PreviewCmdInfo kCaliModes[] = {
-    { ArchStream::kPicOnly, Itf::kUsbS0,          640U,  512U,  30U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16, true }, // 0
-    { ArchStream::kPicOnly, Itf::kMipiTx0CsiS0,   1920U, 1440U, 30U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16, true }, // 1
-    { ArchStream::kPicOnly, Itf::kUsbS0,          1920U, 1440U, 5U,  SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16, true }, // 2
+    {ArchStream::kPicOnly, Itf::kUsbS0, 640U, 512U, 30U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16,
+     true},  // 0
+    {ArchStream::kPicOnly, Itf::kMipiTx0CsiS0, 1920U, 1440U, 30U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16,
+     true},  // 1
+    {ArchStream::kPicOnly, Itf::kUsbS0, 1920U, 1440U, 5U, SoutMode::kNoSout, StreamMode::k3Loop, OutFmt::kY16,
+     true},  // 2
 };
 
-inline const PreviewCmdInfo& select_cmd(bool cali, uint8_t mode_sel)
-{
-    const auto& tbl = cali ? kCaliModes : kProductModes;
-    const uint8_t n = cali ? static_cast<uint8_t>(std::size(kCaliModes))
-                           : static_cast<uint8_t>(std::size(kProductModes));
-    return (mode_sel < n) ? tbl[mode_sel] : tbl[n - 1U];
+inline const PreviewCmdInfo& select_cmd(bool cali, uint8_t mode_sel) {
+  const auto& tbl = cali ? kCaliModes : kProductModes;
+  const uint8_t n = cali ? static_cast<uint8_t>(std::size(kCaliModes)) : static_cast<uint8_t>(std::size(kProductModes));
+  return (mode_sel < n) ? tbl[mode_sel] : tbl[n - 1U];
 }
 
 // ---------------------------------------------------------------------------
@@ -191,19 +198,16 @@ inline const PreviewCmdInfo& select_cmd(bool cali, uint8_t mode_sel)
 // from raw config — they all ask the authority.
 // ---------------------------------------------------------------------------
 struct FrameGeometry {
-    uint16_t width{0U};
-    uint16_t height{0U};
-    uint16_t bytes_per_pixel{2U};
+  uint16_t width{0U};
+  uint16_t height{0U};
+  uint16_t bytes_per_pixel{2U};
 
-    [[nodiscard]] constexpr uint32_t bytes_per_frame() const noexcept
-    {
-        return static_cast<uint32_t>(width) * height * bytes_per_pixel;
-    }
-    [[nodiscard]] constexpr bool operator==(const FrameGeometry& o) const noexcept
-    {
-        return width == o.width && height == o.height
-            && bytes_per_pixel == o.bytes_per_pixel;
-    }
+  [[nodiscard]] constexpr uint32_t bytes_per_frame() const noexcept {
+    return static_cast<uint32_t>(width) * height * bytes_per_pixel;
+  }
+  [[nodiscard]] constexpr bool operator==(const FrameGeometry& o) const noexcept {
+    return width == o.width && height == o.height && bytes_per_pixel == o.bytes_per_pixel;
+  }
 };
 
 // AI super-resolution modes. kX4 EXISTS in the request vocabulary but the
@@ -211,24 +215,21 @@ struct FrameGeometry {
 // that a dirty-NVM X4 passes sanitize but fails runtime reconfig.
 enum class SrMagx : uint8_t { kOff = 0U, kX1 = 1U, kX2 = 2U, kX4 = 4U };
 
-[[nodiscard]] constexpr FrameGeometry apply_magx(FrameGeometry in, SrMagx m) noexcept
-{
-    switch (m) {
-        case SrMagx::kX2:
-            return { static_cast<uint16_t>(in.width * 2U),
-                     static_cast<uint16_t>(in.height * 2U), in.bytes_per_pixel };
-        case SrMagx::kX1:
-        case SrMagx::kX4:      // geometry math exists; the MATRIX still rejects it
-        case SrMagx::kOff:
-        default:
-            return in;
-    }
+[[nodiscard]] constexpr FrameGeometry apply_magx(FrameGeometry in, SrMagx m) noexcept {
+  switch (m) {
+    case SrMagx::kX2:
+      return {static_cast<uint16_t>(in.width * 2U), static_cast<uint16_t>(in.height * 2U), in.bytes_per_pixel};
+    case SrMagx::kX1:
+    case SrMagx::kX4:  // geometry math exists; the MATRIX still rejects it
+    case SrMagx::kOff:
+    default:
+      return in;
+  }
 }
 
 // The capability matrix: the single authority for which magx values may run.
-[[nodiscard]] constexpr bool magx_supported(SrMagx m) noexcept
-{
-    return (SrMagx::kOff == m) || (SrMagx::kX1 == m) || (SrMagx::kX2 == m);
+[[nodiscard]] constexpr bool magx_supported(SrMagx m) noexcept {
+  return (SrMagx::kOff == m) || (SrMagx::kX1 == m) || (SrMagx::kX2 == m);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,134 +237,134 @@ enum class SrMagx : uint8_t { kOff = 0U, kX1 = 1U, kX2 = 2U, kX4 = 4U };
 // "阶段枚举替代布尔组合"). Every stage is enumerable; recovery is a switch.
 // ---------------------------------------------------------------------------
 enum class RecfgStage : uint8_t {
-    kIdle = 0U,       // no reconfig in flight
-    kPrecheck,        // read-only validation, zero hardware touch
-    kQuiescing,       // SOUT_STOP_FRAME issued, waiting for frame-boundary IDLE
-    kApplying,        // dependency-ordered register writes (AI -> DMA -> SOUT)
-    kSyncing,         // FS_SYNC
-    kResuming,        // SOUT_START + first-frame confirmation
-    // Terminal outcomes (commit/recover) go straight to kIdle: the mirror
-    // never stores a "terminal posture" value, so no enum entry for them.
+  kIdle = 0U,  // no reconfig in flight
+  kPrecheck,   // read-only validation, zero hardware touch
+  kQuiescing,  // SOUT_STOP_FRAME issued, waiting for frame-boundary IDLE
+  kApplying,   // dependency-ordered register writes (AI -> DMA -> SOUT)
+  kSyncing,    // FS_SYNC
+  kResuming,   // SOUT_START + first-frame confirmation
+               // Terminal outcomes (commit/recover) go straight to kIdle: the mirror
+               // never stores a "terminal posture" value, so no enum entry for them.
 };
 
 // Reconfig context: old/target snapshots + stage. The ONLY input to recovery.
 // Commit happens last: std::exchange(active_cfg, target) only after success.
 struct RecfgCtx {
-    RecfgCtx*   next_pending{nullptr};   // intrusive queue (static, no heap)
-    RecfgStage  stage{RecfgStage::kIdle};
-    SrMagx      target_magx{SrMagx::kX1};
-    FrameGeometry old_geom{};
-    FrameGeometry target_geom{};
-    uint32_t    layout_version{0U};      // bump on geometry change; stale
-                                         // address records die on first query
-    bool        inject_stale_sout{false}; // fault injection: SOUT frames with
-                                          // the OLD geometry after apply
+  RecfgCtx* next_pending{nullptr};  // intrusive queue (static, no heap)
+  RecfgStage stage{RecfgStage::kIdle};
+  SrMagx target_magx{SrMagx::kX1};
+  FrameGeometry old_geom{};
+  FrameGeometry target_geom{};
+  uint32_t layout_version{0U};    // bump on geometry change; stale
+                                  // address records die on first query
+  bool inject_stale_sout{false};  // fault injection: SOUT frames with
+                                  // the OLD geometry after apply
 };
 
 // ---------------------------------------------------------------------------
 // Tunables (host-side frame period & per-node latency).
 // ---------------------------------------------------------------------------
-constexpr uint32_t kFrameCount    = 30U;
-constexpr uint8_t  kSubscriberCount = 2U;
+constexpr uint32_t kFrameCount = 30U;
+constexpr uint8_t kSubscriberCount = 2U;
 
 struct NodeLatency {
-    uint32_t irsc_setup_us;
-    uint32_t low_gain_us;
-    uint32_t high_gain_us;
-    uint32_t hl_fuse_us;
-    uint32_t enhance_us;
-    uint32_t tpd_us;
-    uint32_t pic_video_us;
-    uint32_t temp_video_us;
+  uint32_t irsc_setup_us;
+  uint32_t low_gain_us;
+  uint32_t high_gain_us;
+  uint32_t hl_fuse_us;
+  uint32_t enhance_us;
+  uint32_t tpd_us;
+  uint32_t pic_video_us;
+  uint32_t temp_video_us;
 };
 inline constexpr NodeLatency kLat{300, 400, 600, 200, 300, 500, 400, 300};
 
 // Async-channel latencies (modeled by the non-AO workers; see WorkerBase).
-constexpr uint32_t kIrscCmdLatencyUs = 500U;   // vdcmd rt_device_control
-                                             // register-write path per step
-constexpr uint32_t kMipiTxLatencyUs  = 600U;   // MIPI CSI TX line-buffer transfer
+constexpr uint32_t kIrscCmdLatencyUs = 500U;  // vdcmd rt_device_control
+                                              // register-write path per step
+constexpr uint32_t kMipiTxLatencyUs = 600U;   // MIPI CSI TX line-buffer transfer
 
 // ---------------------------------------------------------------------------
 // Event vocabulary (single unified layout).
 // ---------------------------------------------------------------------------
 enum class Sig : uint16_t {
-    kBoot         = 1U,    // orchestrator -> boot path (auto_preview_start)
-    kInitPreview  = 2U,    // App -> StreamConfigService (RTE-style)
-    kStopPreview  = 3U,    // App -> StreamConfigService (deinit reverse)
-    kPhaseEnter   = 4U,    // orchestrator -> driver AOs (Phase enter marker)
-    kIrscCmd      = 5U,    // App -> IrscDriver (init/start/ctrl/output_enable)
-    kIspCmd       = 6U,    // App -> IspPipelineAO (init)
-    kVideoCmd     = 7U,    // App -> VideoStreamFSM (init/start/stream_enable)
-    kIrscReady    = 8U,    // IrscDriver -> orchestrator
-    kIspReady     = 9U,    // IspPipelineAO -> orchestrator
-    kVideoReady   = 10U,   // VideoStreamFSM -> orchestrator
-    kFrameIrscOut = 11U,   // IRSC producer -> gain chains
-    kLowGainDone  = 12U,
-    kHighGainDone = 13U,
-    kHlFused      = 14U,
-    kEnhanceDone  = 15U,
-    kTempChainDone = 16U,
-    kPicPacked    = 17U,
-    kTempPacked   = 18U,
-    kRecfgReq     = 19U,   // App -> RecfgOrchestrator (SR X1->X2 request)
-    kRecfgStage   = 20U,   // RecfgOrchestrator stage advance (self-driving)
-    kSoutIdle     = 21U,   // SOUT frame-boundary idle ack
-    kFirstFrame   = 22U,   // first frame ready after resume (commit boundary)
-    kRecfgDone    = 23U,   // RecfgOrchestrator -> orchestrator (result)
-    kFmtIdle      = 24U,   // Format888 idle ack (event-driven fix path)
-    kFrameEof     = 25U,   // WRAPE -> Windows host: frame end (good or ERR+EOF)
-    kIrscDmaDone  = 26U,   // CmdDmaWorker -> IrscDriver: register write done
-    kIspNodeDone  = 27U,   // IspIrqWorker -> enhance/TPD AO: node-done irq
-    kSoutDone     = 28U,   // SoutDmaWorker -> VideoPack AO: writeback-done irq
-    kMipiTxDone   = 29U,   // MipiIrqWorker -> MIPI sink AO: TX-done irq
-    kSessionState = 30U,   // session composite broadcast: phase gating
-    // Per-path duplicates of the fan-out signals (the double-instance fix):
-    // HlFuseAO emits ONE fused frame to BOTH downstream instances, so the
-    // single shared kEnhanceDone/kTempChainDone ids collide in the merged
-    // product HSMs — the pack pair-state table cannot tell a PIC input from a
-    // TEMP input with one id. The distinct ids are the same discipline the
-    // event tags ('HLP' vs 'HLT') already use; signal ids are part of the
-    // transition-table contract, not just a wire label.
-    kEnhanceDonePic  = 31U,   // EnhanceAO -> VideoPack (PIC input)
-    kEnhanceDoneTemp = 32U,   // TempChainAO -> VideoPack (TEMP input)
-    kSoutDonePic     = 33U,   // pack AO: PIC writeback completion (re-stamped)
-    kSoutDoneTemp    = 34U,   // pack AO: TEMP writeback completion (re-stamped)
-    // Error/interrupt signals from the RS500 manual's three chains. Normal
-    // runs observe ZERO of these (asserted); they exist so the receiving AO
-    // counts the error and degrades (drops the frame), never crashes and
-    // never auto-changes a Stream FSM (the "interrupt does not move the FSM"
-    // constraint of RS500_MIPI图像输出原理.md §9).
-    kIspFifoOvf    = 35U,   // IspIrqWorker -> node AO: ISP stream FIFO_OVERFLOW
-                            // interrupt (RS500视频流处理与输出架构.md §4.3;
-                            // DMA_WR_DONE is covered by kIspNodeDone, ERR is
-                            // covered by kFrameEof's err_eof flag)
-    kMipiStreamErr = 36U,   // MipiIrqWorker -> MIPI sink AO: CSI stream error
-                            // interrupt (RS500_MIPI图像输出原理.md §9); the AO
-                            // counts it, no FSM transition (RS500 rule)
-    kUsbErrInt     = 37U,   // UsbDmaWorker -> WinHostAO/driver: USB error
-                            // interrupt as its OWN signal path (T37 §2.2 fault
-                            // chain "error interrupt -> DRV"); the frame-EOF
-                            // err_eof flag stays a DATA attribute, this is the
-                            // driver-side interrupt line
-    kStreamDone    = 38U,   // passive-mode SOUT STREAM_DONE interrupt
-                            // (hal_stream_out.h; DMO quiesce step 2 of the
-                            // two-step fix, referenced by DmoQuiesce below)
-    kPassiveDataLoss = 39U, // passive-mode PASSIVE_DATA_LOSS interrupt
-                            // (hal_stream_out.h); the DMO quiesce fallback of
-                            // the second step — referenced by DmoQuiesce below
+  kBoot = 1U,           // orchestrator -> boot path (auto_preview_start)
+  kInitPreview = 2U,    // App -> StreamConfigService (RTE-style)
+  kStopPreview = 3U,    // App -> StreamConfigService (deinit reverse)
+  kPhaseEnter = 4U,     // orchestrator -> driver AOs (Phase enter marker)
+  kIrscCmd = 5U,        // App -> IrscDriver (init/start/ctrl/output_enable)
+  kIspCmd = 6U,         // App -> IspPipelineAO (init)
+  kVideoCmd = 7U,       // App -> VideoStreamFSM (init/start/stream_enable)
+  kIrscReady = 8U,      // IrscDriver -> orchestrator
+  kIspReady = 9U,       // IspPipelineAO -> orchestrator
+  kVideoReady = 10U,    // VideoStreamFSM -> orchestrator
+  kFrameIrscOut = 11U,  // IRSC producer -> gain chains
+  kLowGainDone = 12U,
+  kHighGainDone = 13U,
+  kHlFused = 14U,
+  kEnhanceDone = 15U,
+  kTempChainDone = 16U,
+  kPicPacked = 17U,
+  kTempPacked = 18U,
+  kRecfgReq = 19U,      // App -> RecfgOrchestrator (SR X1->X2 request)
+  kRecfgStage = 20U,    // RecfgOrchestrator stage advance (self-driving)
+  kSoutIdle = 21U,      // SOUT frame-boundary idle ack
+  kFirstFrame = 22U,    // first frame ready after resume (commit boundary)
+  kRecfgDone = 23U,     // RecfgOrchestrator -> orchestrator (result)
+  kFmtIdle = 24U,       // Format888 idle ack (event-driven fix path)
+  kFrameEof = 25U,      // WRAPE -> Windows host: frame end (good or ERR+EOF)
+  kIrscDmaDone = 26U,   // CmdDmaWorker -> IrscDriver: register write done
+  kIspNodeDone = 27U,   // IspIrqWorker -> enhance/TPD AO: node-done irq
+  kSoutDone = 28U,      // SoutDmaWorker -> VideoPack AO: writeback-done irq
+  kMipiTxDone = 29U,    // MipiIrqWorker -> MIPI sink AO: TX-done irq
+  kSessionState = 30U,  // session composite broadcast: phase gating
+  // Per-path duplicates of the fan-out signals (the double-instance fix):
+  // HlFuseAO emits ONE fused frame to BOTH downstream instances, so the
+  // single shared kEnhanceDone/kTempChainDone ids collide in the merged
+  // product HSMs — the pack pair-state table cannot tell a PIC input from a
+  // TEMP input with one id. The distinct ids are the same discipline the
+  // event tags ('HLP' vs 'HLT') already use; signal ids are part of the
+  // transition-table contract, not just a wire label.
+  kEnhanceDonePic = 31U,   // EnhanceAO -> VideoPack (PIC input)
+  kEnhanceDoneTemp = 32U,  // TempChainAO -> VideoPack (TEMP input)
+  kSoutDonePic = 33U,      // pack AO: PIC writeback completion (re-stamped)
+  kSoutDoneTemp = 34U,     // pack AO: TEMP writeback completion (re-stamped)
+  // Error/interrupt signals from the RS500 manual's three chains. Normal
+  // runs observe ZERO of these (asserted); they exist so the receiving AO
+  // counts the error and degrades (drops the frame), never crashes and
+  // never auto-changes a Stream FSM (the "interrupt does not move the FSM"
+  // constraint of RS500_MIPI图像输出原理.md §9).
+  kIspFifoOvf = 35U,       // IspIrqWorker -> node AO: ISP stream FIFO_OVERFLOW
+                           // interrupt (RS500视频流处理与输出架构.md §4.3;
+                           // DMA_WR_DONE is covered by kIspNodeDone, ERR is
+                           // covered by kFrameEof's err_eof flag)
+  kMipiStreamErr = 36U,    // MipiIrqWorker -> MIPI sink AO: CSI stream error
+                           // interrupt (RS500_MIPI图像输出原理.md §9); the AO
+                           // counts it, no FSM transition (RS500 rule)
+  kUsbErrInt = 37U,        // UsbDmaWorker -> WinHostAO/driver: USB error
+                           // interrupt as its OWN signal path (T37 §2.2 fault
+                           // chain "error interrupt -> DRV"); the frame-EOF
+                           // err_eof flag stays a DATA attribute, this is the
+                           // driver-side interrupt line
+  kStreamDone = 38U,       // passive-mode SOUT STREAM_DONE interrupt
+                           // (hal_stream_out.h; DMO quiesce step 2 of the
+                           // two-step fix, referenced by DmoQuiesce below)
+  kPassiveDataLoss = 39U,  // passive-mode PASSIVE_DATA_LOSS interrupt
+                           // (hal_stream_out.h); the DMO quiesce fallback of
+                           // the second step — referenced by DmoQuiesce below
 };
 
 struct IoMeta {
-    TargetId reply_to{};
-    uint32_t frame_id{0U};
-    uint16_t width{640U};
-    uint16_t height{512U};
-    uint16_t cmd_arg{0U};     // sub-cmd id (e.g. irsc_cmd sub-step)
-    uint16_t flags{0U};        // bit0 high_gain, bit1 temp path, bit2 3loop
-    uint32_t timestamp_ns{0U};
-    uint32_t payload_kind{0U}; // 0=DN, 1=PIC yuv, 2=TEMP y16, 3=meta
-    uint32_t buffer_idx{0U};
-    int32_t  result{0};
+  TargetId reply_to{};
+  uint32_t frame_id{0U};
+  uint16_t width{640U};
+  uint16_t height{512U};
+  uint16_t cmd_arg{0U};  // sub-cmd id (e.g. irsc_cmd sub-step)
+  uint16_t flags{0U};    // bit0 high_gain, bit1 temp path, bit2 3loop
+  uint32_t timestamp_ns{0U};
+  uint32_t payload_kind{0U};  // 0=DN, 1=PIC yuv, 2=TEMP y16, 3=meta
+  uint32_t buffer_idx{0U};
+  int32_t result{0};
 };
 
 // Payload surrogate for control-plane events. The DATA plane (actual pixel
@@ -372,18 +373,17 @@ struct IoMeta {
 // carries only the buffer descriptor (slot id + stage) so the DdrOwnerAO and
 // downstream nodes know WHICH DDR region a frame lives in.
 struct Payload {
-    std::array<uint8_t, 32> control{};   // e.g. route tag
-    uint16_t ddr_slot{0xFFU};            // which triple-buffer slot
-    uint16_t ddr_id{0xFFU};              // which DDR region (0=DN,1=LG,2=HG,
-                                         // 3=fused,4=PIC out,5=TEMP out)
+  std::array<uint8_t, 32> control{};  // e.g. route tag
+  uint16_t ddr_slot{0xFFU};           // which triple-buffer slot
+  uint16_t ddr_id{0xFFU};             // which DDR region (0=DN,1=LG,2=HG,
+                                      // 3=fused,4=PIC out,5=TEMP out)
 };
 
 constexpr size_t kPayloadAlign = 64U;
 using Layout = coact::EventBlockLayout<IoMeta, sizeof(Payload), kPayloadAlign>;
 
-using PoolT = coact::EventPool<static_cast<uint16_t>(sizeof(Layout)),
-                               128U, coact::HostSmpProfile, kPayloadAlign>;
-using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal>;
+using PoolT = coact::EventPool<static_cast<uint16_t>(sizeof(Layout)), 128U, coact::HostSmpProfile, kPayloadAlign>;
+using Rt = coact::Runtime<coact::DefaultConfig, DemoPal>;
 
 // ---------------------------------------------------------------------------
 // DDR image region. Mirrors isp_stream_dma (ISP domain) / stream_out_dma
@@ -393,8 +393,8 @@ using Rt    = coact::Runtime<coact::DefaultConfig, DemoPal>;
 // ---------------------------------------------------------------------------
 constexpr uint16_t kFramePixels = 8U * 8U;         // 64 pixels
 constexpr uint16_t kDdrFrameBytes = kFramePixels;  // Y16 proxy = 1 byte/px here
-constexpr uint16_t kTripleBufSize = 3U;   // RS500's real DMA ring depth
-constexpr uint16_t kDdrSlots = 8U;        // demo depth: > max in-flight span
+constexpr uint16_t kTripleBufSize = 3U;            // RS500's real DMA ring depth
+constexpr uint16_t kDdrSlots = 8U;                 // demo depth: > max in-flight span
 
 // Slot ownership state — the protocol-level mirror of RS500's DMA descriptor
 // ownership bit (own by DMA / own by CPU in the 3-frame circular descriptor
@@ -410,9 +410,9 @@ constexpr uint16_t kDdrSlots = 8U;        // demo depth: > max in-flight span
 //                    DMA does not wait for anyone).
 //   kFree          : slot unused or already consumed — writable.
 enum class SlotOwner : uint8_t {
-    kFree         = 0U,
-    kWriterOwned  = 1U,
-    kReaderClaimed= 2U,
+  kFree = 0U,
+  kWriterOwned = 1U,
+  kReaderClaimed = 2U,
 };
 
 // A fixed DDR region: N triple-buffered frames, byte-addressable via slot.
@@ -423,32 +423,30 @@ enum class SlotOwner : uint8_t {
 // the raw slot bytes, like the descriptor-table ownership bits live in
 // descriptor RAM, not in the frame payload).
 struct DdrRegion {
-    std::array<std::array<uint8_t, kDdrFrameBytes>, kDdrSlots> slots{};
-    std::array<uint32_t, kDdrSlots> slot_frame{kDdrSlots, 0xFFFFFFFFU};
-    // Value-initialized: every owner starts kFree (kFree == 0).
-    std::array<SlotOwner, kDdrSlots> owner{};
-    std::atomic<uint16_t> write_idx{0U};   // claimed-slot count (stats only)
+  std::array<std::array<uint8_t, kDdrFrameBytes>, kDdrSlots> slots{};
+  std::array<uint32_t, kDdrSlots> slot_frame{kDdrSlots, 0xFFFFFFFFU};
+  // Value-initialized: every owner starts kFree (kFree == 0).
+  std::array<SlotOwner, kDdrSlots> owner{};
+  std::atomic<uint16_t> write_idx{0U};  // claimed-slot count (stats only)
 
-    uint16_t claim() { return write_idx.fetch_add(1U, std::memory_order_acq_rel) % kTripleBufSize; }
-    uint16_t last() const
-    {
-        const uint16_t w = write_idx.load(std::memory_order_acquire);
-        return (w == 0U) ? static_cast<uint16_t>(kTripleBufSize - 1U)
-                         : static_cast<uint16_t>(w - 1U);
-    }
-    const uint8_t* read(uint16_t slot) const { return slots[slot].data(); }
-    uint8_t* write(uint16_t slot) { return slots[slot].data(); }
+  uint16_t claim() { return write_idx.fetch_add(1U, std::memory_order_acq_rel) % kTripleBufSize; }
+  uint16_t last() const {
+    const uint16_t w = write_idx.load(std::memory_order_acquire);
+    return (w == 0U) ? static_cast<uint16_t>(kTripleBufSize - 1U) : static_cast<uint16_t>(w - 1U);
+  }
+  const uint8_t* read(uint16_t slot) const { return slots[slot].data(); }
+  uint8_t* write(uint16_t slot) { return slots[slot].data(); }
 };
 
 enum DdrId : uint16_t {
-    kDdrDn      = 0U,   // IRSC DN raw (ISP input)
-    kDdrLowGain = 1U,   // low-gain chain output (pre-HL)
-    kDdrHighGain= 2U,   // high-gain chain output (pre-HL)
-    kDdrFused   = 3U,   // HL fused (post-HL, PIC path)
-    kDdrTemp    = 4U,   // TPD chain output (TEMP path)
-    kDdrPicOut  = 5U,   // PIC stream_out (post Video)
-    kDdrTempOut = 6U,   // TEMP stream_out (post Video)
-    kDdrCount   = 7U,
+  kDdrDn = 0U,        // IRSC DN raw (ISP input)
+  kDdrLowGain = 1U,   // low-gain chain output (pre-HL)
+  kDdrHighGain = 2U,  // high-gain chain output (pre-HL)
+  kDdrFused = 3U,     // HL fused (post-HL, PIC path)
+  kDdrTemp = 4U,      // TPD chain output (TEMP path)
+  kDdrPicOut = 5U,    // PIC stream_out (post Video)
+  kDdrTempOut = 6U,   // TEMP stream_out (post Video)
+  kDdrCount = 7U,
 };
 
 static_assert(kDdrCount <= 7U, "DdrId range fits Payload::ddr_id");
@@ -458,16 +456,14 @@ static_assert(kDdrCount <= 7U, "DdrId range fits Payload::ddr_id");
 // begins its lifetime directly in the slot's memory, exactly like the event
 // pool's ::new (block) Layout{}).
 struct FrameStamp {
-    uint32_t frame_id;
-    uint16_t region;
-    uint16_t seq;      // write sequence within the slot
+  uint32_t frame_id;
+  uint16_t region;
+  uint16_t seq;  // write sequence within the slot
 };
 
 constexpr uint16_t kStampBytes = sizeof(FrameStamp);
-static_assert(kDdrFrameBytes > kStampBytes,
-              "each DDR slot must fit a stamp header plus payload bytes");
-constexpr uint16_t kSlotPayloadBytes =
-    static_cast<uint16_t>(kDdrFrameBytes - kStampBytes);
+static_assert(kDdrFrameBytes > kStampBytes, "each DDR slot must fit a stamp header plus payload bytes");
+constexpr uint16_t kSlotPayloadBytes = static_cast<uint16_t>(kDdrFrameBytes - kStampBytes);
 
 // ---------------------------------------------------------------------------
 // Compile-time ABI / layout / move-behavior contracts ("编译期确定" principle).
@@ -478,31 +474,25 @@ constexpr uint16_t kSlotPayloadBytes =
 static_assert(std::is_standard_layout<FrameStamp>::value,
               "FrameStamp is written into raw DDR slot memory: it must be "
               "standard-layout so its address arithmetic is defined");
-static_assert(std::is_trivially_copyable<FrameStamp>::value,
-              "FrameStamp is memcpy-able DMA-descriptor-like data");
+static_assert(std::is_trivially_copyable<FrameStamp>::value, "FrameStamp is memcpy-able DMA-descriptor-like data");
 static_assert(std::is_nothrow_move_constructible<FrameStamp>::value,
               "FrameStamp moves must never throw (no-exceptions build)");
-static_assert(std::is_standard_layout<FrameGeometry>::value,
-              "FrameGeometry crosses the AO boundary in event payloads");
+static_assert(std::is_standard_layout<FrameGeometry>::value, "FrameGeometry crosses the AO boundary in event payloads");
 static_assert(std::is_trivially_copyable<FrameGeometry>::value,
               "FrameGeometry is snapshot/exchange'd in reconfig transactions");
-static_assert(std::is_nothrow_move_constructible<FrameGeometry>::value,
-              "FrameGeometry moves must never throw");
+static_assert(std::is_nothrow_move_constructible<FrameGeometry>::value, "FrameGeometry moves must never throw");
 static_assert(std::atomic<uint16_t>::is_always_lock_free,
               "DdrRegion::write_idx must be lock-free (dispatcher + producer "
               "threads touch it; a libatomic fallback would be a silent "
               "heap/lock dependency)");
-static_assert(std::atomic<bool>::is_always_lock_free,
-              "IrscWorker::running is cross-thread: lock-free required");
+static_assert(std::atomic<bool>::is_always_lock_free, "IrscWorker::running is cross-thread: lock-free required");
 static_assert(std::atomic<uint32_t>::is_always_lock_free,
               "DdrCtx stat counters are cross-thread (Dispatcher + ISP IRQ "
               "worker): lock-free required");
 
 // --- cross-boundary payload contracts (merged-AO era) ---------------------
-static_assert(std::is_standard_layout<IoMeta>::value,
-              "IoMeta is parked in ctx slots and moved out via exchange");
-static_assert(std::is_trivially_copyable<IoMeta>::value,
-              "IoMeta must be memcpy-able (DMA-descriptor-like)");
+static_assert(std::is_standard_layout<IoMeta>::value, "IoMeta is parked in ctx slots and moved out via exchange");
+static_assert(std::is_trivially_copyable<IoMeta>::value, "IoMeta must be memcpy-able (DMA-descriptor-like)");
 static_assert(std::is_trivially_copyable<uint16_t>::value,
               "WorkerBase job payload (uint16_t) is placement-new'd into the "
               "ring slot: trivially copyable required for the launder read");
@@ -546,108 +536,101 @@ static_assert(std::is_trivially_copyable<uint16_t>::value,
 // any deeper backlog into an honest overrun drop, exactly like a real DMA ring.
 // The ownership protocol on top of this proves the skip path never fires on
 // the demo's pacing: the final check asserts ownership_skips == 0.
-[[nodiscard]] inline uint16_t dn_slot_of(uint32_t frame_id)
-{
-    return static_cast<uint16_t>(frame_id % kDdrSlots);
+[[nodiscard]] inline uint16_t dn_slot_of(uint32_t frame_id) {
+  return static_cast<uint16_t>(frame_id % kDdrSlots);
 }
 
 struct DdrCtx {
-    DdrRegion regions[kDdrCount]{};
-    uint32_t write_ops{0U};
-    uint32_t read_ops{0U};
-    uint32_t overrun_drops{0U};
-    uint32_t ownership_skips{0U};   // writer-side honest drop (FIFO_OVERFLOW
-                                    // counterpart): reader-held slot skipped
-    uint16_t stamp_seq{0U};
+  DdrRegion regions[kDdrCount]{};
+  uint32_t write_ops{0U};
+  uint32_t read_ops{0U};
+  uint32_t overrun_drops{0U};
+  uint32_t ownership_skips{0U};  // writer-side honest drop (FIFO_OVERFLOW
+                                 // counterpart): reader-held slot skipped
+  uint16_t stamp_seq{0U};
 
-    // Write a frame into its deterministic slot (frame_id % kDdrSlots).
-    // The slot header is a FrameStamp constructed via PLACEMENT NEW directly
-    // in the slot's memory (DMA-descriptor write); the pixels land behind it.
-    // std::exchange hands the previous stamp out so the slot's ownership
-    // transfer is explicit.
-    //
-    // OWNERSHIP PROTOCOL (write side): before touching the slot the writer
-    // checks its owner — a kReaderClaimed slot is NOT the writer's to touch
-    // (the reader is inside its claim window). The writer then skips the
-    // rotation WITHOUT overwriting the bytes under the reader's feet and
-    // counts an ownership skip: the honest drop of the RS500 FIFO_OVERFLOW
-    // interrupt. The writer never blocks or waits — DMA hardware does not
-    // wait for the CPU, and neither does this path. The skipped frame's
-    // would-be readers get an honest overrun (slot_frame still names the
-    // older frame) instead of silently torn data.
-    [[nodiscard]] uint16_t write(DdrId id, uint32_t frame_id, const uint8_t* src)
-    {
-        DdrRegion& r = regions[id];
-        const uint16_t slot = dn_slot_of(frame_id);
-        if (SlotOwner::kReaderClaimed == r.owner[slot]) {
-            ++ownership_skips;   // reader holds the slot: skip, do not write
-            return slot;         // caller stamps buffer_idx; the frame-id
-                                 // guard downstream turns this into an
-                                 // honest overrun drop
-        }
-        uint8_t* const slot_mem = r.write(slot);
-        // Placement new: begin the FrameStamp lifetime in place.
-        FrameStamp* const stamp =
-            ::new (static_cast<void*>(slot_mem)) FrameStamp{
-                frame_id, static_cast<uint16_t>(id), ++stamp_seq};
-        static_cast<void>(std::exchange(r.slot_frame[slot], stamp->frame_id));
-        r.owner[slot] = SlotOwner::kWriterOwned;
-        std::memcpy(slot_mem + kStampBytes, src, kSlotPayloadBytes);
-        ++write_ops;
-        return slot;
+  // Write a frame into its deterministic slot (frame_id % kDdrSlots).
+  // The slot header is a FrameStamp constructed via PLACEMENT NEW directly
+  // in the slot's memory (DMA-descriptor write); the pixels land behind it.
+  // std::exchange hands the previous stamp out so the slot's ownership
+  // transfer is explicit.
+  //
+  // OWNERSHIP PROTOCOL (write side): before touching the slot the writer
+  // checks its owner — a kReaderClaimed slot is NOT the writer's to touch
+  // (the reader is inside its claim window). The writer then skips the
+  // rotation WITHOUT overwriting the bytes under the reader's feet and
+  // counts an ownership skip: the honest drop of the RS500 FIFO_OVERFLOW
+  // interrupt. The writer never blocks or waits — DMA hardware does not
+  // wait for the CPU, and neither does this path. The skipped frame's
+  // would-be readers get an honest overrun (slot_frame still names the
+  // older frame) instead of silently torn data.
+  [[nodiscard]] uint16_t write(DdrId id, uint32_t frame_id, const uint8_t* src) {
+    DdrRegion& r = regions[id];
+    const uint16_t slot = dn_slot_of(frame_id);
+    if (SlotOwner::kReaderClaimed == r.owner[slot]) {
+      ++ownership_skips;  // reader holds the slot: skip, do not write
+      return slot;        // caller stamps buffer_idx; the frame-id
+                          // guard downstream turns this into an
+                          // honest overrun drop
     }
+    uint8_t* const slot_mem = r.write(slot);
+    // Placement new: begin the FrameStamp lifetime in place.
+    FrameStamp* const stamp =
+        ::new (static_cast<void*>(slot_mem)) FrameStamp{frame_id, static_cast<uint16_t>(id), ++stamp_seq};
+    static_cast<void>(std::exchange(r.slot_frame[slot], stamp->frame_id));
+    r.owner[slot] = SlotOwner::kWriterOwned;
+    std::memcpy(slot_mem + kStampBytes, src, kSlotPayloadBytes);
+    ++write_ops;
+    return slot;
+  }
 
-    // Read a frame only if the slot still holds the expected frame_id (the
-    // stamp is the guard). Returns false on overrun (slot recycled by a newer
-    // frame) — the honest behavior of a DMA ring when the consumer lags.
-    //
-    // The stamp was placement-new'd into raw slot memory; std::launder
-    // re-establishes the pointer-to-object relationship so reading it is
-    // defined behavior (C++17 object model: [ptr.launder]).
-    //
-    // OWNERSHIP PROTOCOL (read side): after both frame-id guards pass, the
-    // reader CLAIMS the slot (kReaderClaimed) for exactly the payload memcpy
-    // and RELEASES it (kFree) right after — the narrowest possible window,
-    // the software mirror of the CPU taking ownership of a DMA descriptor to
-    // drain it. An overrun miss never claims (nothing to protect: the bytes
-    // are stale anyway). Under the single-threaded Dispatcher the window is
-    // uncontended, but the protocol makes the safety explicit rather than
-    // implied by timing: even a future multi-threaded reader could not have
-    // its slot overwritten mid-copy.
-    [[nodiscard]] bool read(DdrId id, uint16_t slot, uint32_t frame_id,
-                            uint8_t* dst)
-    {
-        DdrRegion& r = regions[id];
-        // Double guard: the stamp's frame_id AND the region's slot_frame map
-        // must both name the expected frame. Short-circuit order matters:
-        // the laundered stamp is only safe to READ once the slot has been
-        // written at least once (slot_frame is initialized to 0xFFFFFFFF, so
-        // reading it first makes an untouched-slot read safe on BOTH guards).
-        if (r.slot_frame[slot] != frame_id) {
-            ++overrun_drops;
-            return false;   // overrun: caller counts a dropped frame
-        }
-        const FrameStamp* const stamp = std::launder(
-            reinterpret_cast<const FrameStamp*>(r.read(slot)));
-        if (stamp->frame_id != frame_id) {
-            ++overrun_drops;
-            return false;   // stamp/owner-map disagreement: treat as overrun
-        }
-        r.owner[slot] = SlotOwner::kReaderClaimed;   // claim: narrow window
-        std::memcpy(dst, r.read(slot) + kStampBytes, kSlotPayloadBytes);
-        r.owner[slot] = SlotOwner::kFree;            // release: back to writer
-        ++read_ops;
-        return true;
+  // Read a frame only if the slot still holds the expected frame_id (the
+  // stamp is the guard). Returns false on overrun (slot recycled by a newer
+  // frame) — the honest behavior of a DMA ring when the consumer lags.
+  //
+  // The stamp was placement-new'd into raw slot memory; std::launder
+  // re-establishes the pointer-to-object relationship so reading it is
+  // defined behavior (C++17 object model: [ptr.launder]).
+  //
+  // OWNERSHIP PROTOCOL (read side): after both frame-id guards pass, the
+  // reader CLAIMS the slot (kReaderClaimed) for exactly the payload memcpy
+  // and RELEASES it (kFree) right after — the narrowest possible window,
+  // the software mirror of the CPU taking ownership of a DMA descriptor to
+  // drain it. An overrun miss never claims (nothing to protect: the bytes
+  // are stale anyway). Under the single-threaded Dispatcher the window is
+  // uncontended, but the protocol makes the safety explicit rather than
+  // implied by timing: even a future multi-threaded reader could not have
+  // its slot overwritten mid-copy.
+  [[nodiscard]] bool read(DdrId id, uint16_t slot, uint32_t frame_id, uint8_t* dst) {
+    DdrRegion& r = regions[id];
+    // Double guard: the stamp's frame_id AND the region's slot_frame map
+    // must both name the expected frame. Short-circuit order matters:
+    // the laundered stamp is only safe to READ once the slot has been
+    // written at least once (slot_frame is initialized to 0xFFFFFFFF, so
+    // reading it first makes an untouched-slot read safe on BOTH guards).
+    if (r.slot_frame[slot] != frame_id) {
+      ++overrun_drops;
+      return false;  // overrun: caller counts a dropped frame
     }
+    const FrameStamp* const stamp = std::launder(reinterpret_cast<const FrameStamp*>(r.read(slot)));
+    if (stamp->frame_id != frame_id) {
+      ++overrun_drops;
+      return false;  // stamp/owner-map disagreement: treat as overrun
+    }
+    r.owner[slot] = SlotOwner::kReaderClaimed;  // claim: narrow window
+    std::memcpy(dst, r.read(slot) + kStampBytes, kSlotPayloadBytes);
+    r.owner[slot] = SlotOwner::kFree;  // release: back to writer
+    ++read_ops;
+    return true;
+  }
 };
 
 // Synthetic DN frame: deterministic per-frame pattern so downstream can verify
 // the data really flowed through DDR unchanged (modulo node transforms).
-inline void fill_dn(uint8_t* dst, uint32_t frame_id)
-{
-    for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
-        dst[i] = static_cast<uint8_t>((frame_id * 7U + i) & 0xFFu);
-    }
+inline void fill_dn(uint8_t* dst, uint32_t frame_id) {
+  for (uint16_t i = 0; i < kSlotPayloadBytes; ++i) {
+    dst[i] = static_cast<uint8_t>((frame_id * 7U + i) & 0xFFu);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -657,25 +640,23 @@ inline void fill_dn(uint8_t* dst, uint32_t frame_id)
 // stamp out the static tables at compile time with a caller-chosen table name,
 // keeping the HSM tables declarative and impossible to misorder.
 // ---------------------------------------------------------------------------
-#define COACT_HSM_STATES(Table, Ctx, RootLabel, ActiveLabel)      \
-    inline const coact::StateDef<Ctx> Table[] = {                 \
-        { -1, nullptr, nullptr, RootLabel },                      \
-        { 0,  nullptr, nullptr, ActiveLabel },                    \
-    }
+#define COACT_HSM_STATES(Table, Ctx, RootLabel, ActiveLabel) \
+  inline const coact::StateDef<Ctx> Table[] = {              \
+      {-1, nullptr, nullptr, RootLabel},                     \
+      {0, nullptr, nullptr, ActiveLabel},                    \
+  }
 
-#define COACT_HSM_TRANS(Table, Ctx, Signal, Action)               \
-    inline const coact::TransitionDef<Ctx> Table[] = {            \
-        { 1, static_cast<uint16_t>(Signal), 1,                    \
-          coact::TransitionKind::Internal, nullptr, Action },     \
-    }
+#define COACT_HSM_TRANS(Table, Ctx, Signal, Action)                                            \
+  inline const coact::TransitionDef<Ctx> Table[] = {                                           \
+      {1, static_cast<uint16_t>(Signal), 1, coact::TransitionKind::Internal, nullptr, Action}, \
+  }
 
 // ---------------------------------------------------------------------------
 // Time helper: PAL-backed monotonic clock (no bare clock_gettime — the demo
 // must compile identically on POSIX host and RT-Thread target).
 // ---------------------------------------------------------------------------
-inline uint64_t monotonic_ns()
-{
-    return (nullptr != g_pal) ? g_pal->monotonic_ns() : 0U;
+inline uint64_t monotonic_ns() {
+  return (nullptr != g_pal) ? g_pal->monotonic_ns() : 0U;
 }
 
 // ---------------------------------------------------------------------------
@@ -687,79 +668,114 @@ inline uint64_t monotonic_ns()
 // Compiled AO id for the structured hsm trace (LogEvt::kEvtHsmTrace arg0).
 // Values are stable ids, not indices into a runtime table.
 enum class HsmAoId : uint32_t {
-    kVideoFsm = 0U,
-    kIrsc     = 1U,
-    kEnhance  = 2U,
-    kTpd      = 3U,
-    kPack     = 4U,
-    kMipi     = 5U,
-    kRecfg    = 6U,
+  kVideoFsm = 0U,
+  kIrsc = 1U,
+  kEnhance = 2U,
+  kTpd = 3U,
+  kPack = 4U,
+  kMipi = 5U,
+  kRecfg = 6U,
 };
 
 struct HsmTrace {
-    // Every transition also lands in the coact::diag channel (kEvtHsmTrace):
-    // a0=ao_id a1=src a2=sig a3=dst. src/dst are compact state codes so the
-    // record stays uint32-only (the log writer renders raw hex); the printf
-    // line above stays as the human-readable logic-analyzer view.
-    static void transition(const char* ao, const char* src, uint16_t sig,
-                           const char* dst)
-    {
-        std::printf("[hsm] %s %s --(%u)--> %s\n", ao, src,
-                    static_cast<unsigned>(sig), dst);
-        const uint32_t ao_id = ao_id_of(ao);
-        const uint32_t code = (state_code_of(src) << 8U) | state_code_of(dst);
-        g_log.record_from_task<LogLevel::kInfo, kEvtHsmTrace>(
-            static_cast<uint16_t>(ao_id), sig, code, 0U);
-    }
-    // Rejections are abnormal control flow: kWarn carries them on the
-    // critical lane. a3 bit0x100 flags "rejected" so the two records share
-    // one event id; a3 low byte = reason code (0=guard, 1=session, 2=illegal).
-    static void rejection(const char* ao, const char* src, uint16_t sig,
-                          const char* why)
-    {
-        std::printf("[hsm] %s %s --(%u)--> REJECTED (%s)\n", ao, src,
-                    static_cast<unsigned>(sig), why);
-        const uint32_t ao_id = ao_id_of(ao);
-        const uint32_t code = (state_code_of(src) << 8U) | state_code_of(why);
-        g_log.record_from_task<LogLevel::kWarn, kEvtHsmTrace>(
-            static_cast<uint16_t>(ao_id), sig, code, 0x100U);
-    }
+  // Every transition also lands in the coact::diag channel (kEvtHsmTrace):
+  // a0=ao_id a1=src a2=sig a3=dst. src/dst are compact state codes so the
+  // record stays uint32-only (the log writer renders raw hex); the printf
+  // line above stays as the human-readable logic-analyzer view.
+  static void transition(const char* ao, const char* src, uint16_t sig, const char* dst) {
+    std::printf("[hsm] %s %s --(%u)--> %s\n", ao, src, static_cast<unsigned>(sig), dst);
+    const uint32_t ao_id = ao_id_of(ao);
+    const uint32_t code = (state_code_of(src) << 8U) | state_code_of(dst);
+    g_log.record_from_task<LogLevel::kInfo, kEvtHsmTrace>(static_cast<uint16_t>(ao_id), sig, code, 0U);
+  }
+  // Rejections are abnormal control flow: kWarn carries them on the
+  // critical lane. a3 bit0x100 flags "rejected" so the two records share
+  // one event id; a3 low byte = reason code (0=guard, 1=session, 2=illegal).
+  static void rejection(const char* ao, const char* src, uint16_t sig, const char* why) {
+    std::printf("[hsm] %s %s --(%u)--> REJECTED (%s)\n", ao, src, static_cast<unsigned>(sig), why);
+    const uint32_t ao_id = ao_id_of(ao);
+    const uint32_t code = (state_code_of(src) << 8U) | state_code_of(why);
+    g_log.record_from_task<LogLevel::kWarn, kEvtHsmTrace>(static_cast<uint16_t>(ao_id), sig, code, 0x100U);
+  }
 
-private:
-    // ao name -> stable id (compile-time set; unknown -> 0xF).
-    static uint32_t ao_id_of(const char* ao) noexcept
-    {
-        if (0 == std::strcmp(ao, "video_fsm")) { return static_cast<uint32_t>(HsmAoId::kVideoFsm); }
-        if (0 == std::strcmp(ao, "irsc"))      { return static_cast<uint32_t>(HsmAoId::kIrsc); }
-        if (0 == std::strcmp(ao, "enhance"))   { return static_cast<uint32_t>(HsmAoId::kEnhance); }
-        if (0 == std::strcmp(ao, "tpd"))       { return static_cast<uint32_t>(HsmAoId::kTpd); }
-        if (0 == std::strcmp(ao, "pack"))      { return static_cast<uint32_t>(HsmAoId::kPack); }
-        if (0 == std::strcmp(ao, "mipi"))      { return static_cast<uint32_t>(HsmAoId::kMipi); }
-        if (0 == std::strcmp(ao, "recfg"))     { return static_cast<uint32_t>(HsmAoId::kRecfg); }
-        return 0xFU;
+ private:
+  // ao name -> stable id (compile-time set; unknown -> 0xF).
+  static uint32_t ao_id_of(const char* ao) noexcept {
+    if (0 == std::strcmp(ao, "video_fsm")) {
+      return static_cast<uint32_t>(HsmAoId::kVideoFsm);
     }
-    // State/reason name -> compact code (first char + length: collisions are
-    // acceptable — the record is a filterable hint, the printf is the truth).
-    static uint32_t state_code_of(const char* s) noexcept
-    {
-        return static_cast<uint32_t>(static_cast<uint8_t>(s[0]) & 0xFFU);
+    if (0 == std::strcmp(ao, "irsc")) {
+      return static_cast<uint32_t>(HsmAoId::kIrsc);
     }
+    if (0 == std::strcmp(ao, "enhance")) {
+      return static_cast<uint32_t>(HsmAoId::kEnhance);
+    }
+    if (0 == std::strcmp(ao, "tpd")) {
+      return static_cast<uint32_t>(HsmAoId::kTpd);
+    }
+    if (0 == std::strcmp(ao, "pack")) {
+      return static_cast<uint32_t>(HsmAoId::kPack);
+    }
+    if (0 == std::strcmp(ao, "mipi")) {
+      return static_cast<uint32_t>(HsmAoId::kMipi);
+    }
+    if (0 == std::strcmp(ao, "recfg")) {
+      return static_cast<uint32_t>(HsmAoId::kRecfg);
+    }
+    return 0xFU;
+  }
+  // State/reason name -> compact code (first char + length: collisions are
+  // acceptable — the record is a filterable hint, the printf is the truth).
+  static uint32_t state_code_of(const char* s) noexcept {
+    return static_cast<uint32_t>(static_cast<uint8_t>(s[0]) & 0xFFU);
+  }
 };
 
 // Compiled enum name tables: value -> label at compile time.
 inline constexpr const char* kSigNames[] = {
-    "?0", "kBoot", "kInitPreview", "kStopPreview", "kPhaseEnter", "kIrscCmd",
-    "kIspCmd", "kVideoCmd", "kIrscReady", "kIspReady", "kVideoReady",
-    "kFrameIrscOut", "kLowGainDone", "kHighGainDone", "kHlFused",
-    "kEnhanceDone", "kTempChainDone", "kPicPacked", "kTempPacked", "kRecfgReq",
-    "kRecfgStage", "kSoutIdle", "kFirstFrame", "kRecfgDone", "kFmtIdle",
-    "kFrameEof", "kIrscDmaDone", "kIspNodeDone", "kSoutDone", "kMipiTxDone",
-    "kSessionState", "?31", "?32", "?33", "?34", "kIspFifoOvf",
-    "kMipiStreamErr", "kUsbErrInt", "kStreamDone", "kPassiveDataLoss",
+    "?0",
+    "kBoot",
+    "kInitPreview",
+    "kStopPreview",
+    "kPhaseEnter",
+    "kIrscCmd",
+    "kIspCmd",
+    "kVideoCmd",
+    "kIrscReady",
+    "kIspReady",
+    "kVideoReady",
+    "kFrameIrscOut",
+    "kLowGainDone",
+    "kHighGainDone",
+    "kHlFused",
+    "kEnhanceDone",
+    "kTempChainDone",
+    "kPicPacked",
+    "kTempPacked",
+    "kRecfgReq",
+    "kRecfgStage",
+    "kSoutIdle",
+    "kFirstFrame",
+    "kRecfgDone",
+    "kFmtIdle",
+    "kFrameEof",
+    "kIrscDmaDone",
+    "kIspNodeDone",
+    "kSoutDone",
+    "kMipiTxDone",
+    "kSessionState",
+    "?31",
+    "?32",
+    "?33",
+    "?34",
+    "kIspFifoOvf",
+    "kMipiStreamErr",
+    "kUsbErrInt",
+    "kStreamDone",
+    "kPassiveDataLoss",
 };
-inline constexpr const char* sig_name(uint16_t s) noexcept
-{
-    return (s < std::size(kSigNames)) ? kSigNames[s] : "sig?";
+inline constexpr const char* sig_name(uint16_t s) noexcept {
+  return (s < std::size(kSigNames)) ? kSigNames[s] : "sig?";
 }
 
 // ---------------------------------------------------------------------------
@@ -767,11 +783,11 @@ inline constexpr const char* sig_name(uint16_t s) noexcept
 // ---------------------------------------------------------------------------
 template <uint8_t Prio>
 struct AoTrait {
-    static LogicalPrio logical_prio() { return static_cast<LogicalPrio>(Prio); }
-    static PriorityClass priority_class() { return PriorityClass::Normal; }
-    static bool direct_eligible() { return false; }
-    static bool isr_direct_safe() { return false; }
-    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+  static LogicalPrio logical_prio() { return static_cast<LogicalPrio>(Prio); }
+  static PriorityClass priority_class() { return PriorityClass::Normal; }
+  static bool direct_eligible() { return false; }
+  static bool isr_direct_safe() { return false; }
+  static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
 };
 
 // Forward-declared IrscTrait in IrscDriverAo. Provide full definition now.
@@ -783,40 +799,46 @@ struct IrscTrait : AoTrait<62> {};
 // Windows-host observer rides Low (pure telemetry). Logical priorities stay
 // unique per AO (bind-time check).
 struct HighAoTrait {
-    static LogicalPrio logical_prio() { return static_cast<LogicalPrio>(63); }
-    static PriorityClass priority_class() { return PriorityClass::High; }
-    static bool direct_eligible() { return false; }
-    static bool isr_direct_safe() { return false; }
-    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+  static LogicalPrio logical_prio() { return static_cast<LogicalPrio>(63); }
+  static PriorityClass priority_class() { return PriorityClass::High; }
+  static bool direct_eligible() { return false; }
+  static bool isr_direct_safe() { return false; }
+  static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
 };
 struct LowAoTrait {
-    static LogicalPrio logical_prio() { return static_cast<LogicalPrio>(37); }
-    static PriorityClass priority_class() { return PriorityClass::Low; }
-    static bool direct_eligible() { return false; }
-    static bool isr_direct_safe() { return false; }
-    static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
+  static LogicalPrio logical_prio() { return static_cast<LogicalPrio>(37); }
+  static PriorityClass priority_class() { return PriorityClass::Low; }
+  static bool direct_eligible() { return false; }
+  static bool isr_direct_safe() { return false; }
+  static constexpr uint64_t kRtcBudgetNs = 1000000ULL;
 };
 
 enum class SessionState : uint8_t {
-    kBoot     = 0U,
-    kInit     = 1U,
-    kRunning  = 2U,
-    kRecfgTxn = 3U,   // nested inside RUNNING: quiesce->apply->sync->resume
-    kDeinit   = 4U,
-    kStopped  = 5U,
+  kBoot = 0U,
+  kInit = 1U,
+  kRunning = 2U,
+  kRecfgTxn = 3U,  // nested inside RUNNING: quiesce->apply->sync->resume
+  kDeinit = 4U,
+  kStopped = 5U,
 };
 
-[[nodiscard]] inline const char* session_state_name(SessionState s) noexcept
-{
-    switch (s) {
-        case SessionState::kBoot:     return "BOOT";
-        case SessionState::kInit:     return "INIT";
-        case SessionState::kRunning:  return "RUNNING";
-        case SessionState::kRecfgTxn: return "RUNNING.RECFG_TXN";
-        case SessionState::kDeinit:   return "DEINIT";
-        case SessionState::kStopped:  return "STOPPED";
-        default:                      return "?";
-    }
+[[nodiscard]] inline const char* session_state_name(SessionState s) noexcept {
+  switch (s) {
+    case SessionState::kBoot:
+      return "BOOT";
+    case SessionState::kInit:
+      return "INIT";
+    case SessionState::kRunning:
+      return "RUNNING";
+    case SessionState::kRecfgTxn:
+      return "RUNNING.RECFG_TXN";
+    case SessionState::kDeinit:
+      return "DEINIT";
+    case SessionState::kStopped:
+      return "STOPPED";
+    default:
+      return "?";
+  }
 }
 
 // Atomic: the master advances it from the main thread while child-AO guards
@@ -829,7 +851,7 @@ static_assert(std::atomic<SessionState>::is_always_lock_free,
 // Late-bound plane pointers (assigned once in main before the runtime
 // starts; read-only afterwards — no shared MUTABLE state crosses AOs).
 inline PoolT* g_session_pool{nullptr};
-inline Rt*    g_session_rt{nullptr};
+inline Rt* g_session_rt{nullptr};
 
 // ---------------------------------------------------------------------------
 // SessionEventComposite: the COMPOSITE of all AOs that must observe session
@@ -838,39 +860,33 @@ inline Rt*    g_session_rt{nullptr};
 // to plain iteration (no recursion; the tree has exactly two levels).
 // ---------------------------------------------------------------------------
 struct SessionEventComposite {
-    static constexpr uint8_t kMaxTargets = 14U;
-    TargetId targets[kMaxTargets]{};
-    uint8_t  count{0U};
+  static constexpr uint8_t kMaxTargets = 14U;
+  TargetId targets[kMaxTargets]{};
+  uint8_t count{0U};
 
-    void add(TargetId t)
-    {
-        if (count < kMaxTargets) {
-            targets[count] = t;
-            ++count;
-        }
+  void add(TargetId t) {
+    if (count < kMaxTargets) {
+      targets[count] = t;
+      ++count;
     }
+  }
 
-    // Broadcast: iterate the fixed array, submit one kSessionState per leaf.
-    // Every observer is serialized through its own AO queue, so guards read
-    // the phase without any lock.
-    void publish() const
-    {
-        if ((nullptr == g_session_pool) || (nullptr == g_session_rt)) {
-            return;   // plane not armed yet (before main wires it)
-        }
-        for (uint8_t i = 0U; i < count; ++i) {
-            Layout* e = g_session_pool->alloc_typed<Layout, Payload,
-                                                    kPayloadAlign>(
-                static_cast<uint16_t>(Sig::kSessionState));
-            if (nullptr != e) {
-                e->meta.cmd_arg = static_cast<uint16_t>(
-                    g_session.load(std::memory_order_relaxed));
-                g_session_rt->coordinator().submit_from_task(targets[i],
-                                                             &e->event,
-                                                             {false, false});
-            }
-        }
+  // Broadcast: iterate the fixed array, submit one kSessionState per leaf.
+  // Every observer is serialized through its own AO queue, so guards read
+  // the phase without any lock.
+  void publish() const {
+    if ((nullptr == g_session_pool) || (nullptr == g_session_rt)) {
+      return;  // plane not armed yet (before main wires it)
     }
+    for (uint8_t i = 0U; i < count; ++i) {
+      Layout* e =
+          g_session_pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kSessionState));
+      if (nullptr != e) {
+        e->meta.cmd_arg = static_cast<uint16_t>(g_session.load(std::memory_order_relaxed));
+        g_session_rt->coordinator().submit_from_task(targets[i], &e->event, {false, false});
+      }
+    }
+  }
 };
 
 inline SessionEventComposite g_session_events;
@@ -878,20 +894,19 @@ inline SessionEventComposite g_session_events;
 // Master-flow advance: print the (leveled) trace and fan out the gating
 // event. Session states change ONLY through this single entry point. The
 // exchange carries the previous phase out (printed), the new phase in.
-inline void session_advance(SessionState s, const char* why)
-{
-    const SessionState prev = g_session.exchange(s);
-    if (s == prev) { return; }
-    std::printf("[session] %s --(%s)--> %s\n",
-                session_state_name(prev), why, session_state_name(s));
-    // Structured session trace: a0=prev a1=next (SessionState raw values).
-    g_log.record_from_task<LogLevel::kInfo, kEvtSession>(
-        0U, static_cast<uint32_t>(prev), static_cast<uint32_t>(s));
-    // NOTE: child guards read the ATOMIC g_session directly, so no fan-out
-    // event is needed for gating. The composite below remains the documented
-    // composite-pattern mechanism (for AOs that need event-plane notice);
-    // publishing per transition queued ~20 no-op events that only lengthened
-    // the stop drain, so the broadcast is disabled in the pure-guard design.
+inline void session_advance(SessionState s, const char* why) {
+  const SessionState prev = g_session.exchange(s);
+  if (s == prev) {
+    return;
+  }
+  std::printf("[session] %s --(%s)--> %s\n", session_state_name(prev), why, session_state_name(s));
+  // Structured session trace: a0=prev a1=next (SessionState raw values).
+  g_log.record_from_task<LogLevel::kInfo, kEvtSession>(0U, static_cast<uint32_t>(prev), static_cast<uint32_t>(s));
+  // NOTE: child guards read the ATOMIC g_session directly, so no fan-out
+  // event is needed for gating. The composite below remains the documented
+  // composite-pattern mechanism (for AOs that need event-plane notice);
+  // publishing per transition queued ~20 no-op events that only lengthened
+  // the stop drain, so the broadcast is disabled in the pure-guard design.
 }
 
 // ---------------------------------------------------------------------------
@@ -917,31 +932,27 @@ inline void session_advance(SessionState s, const char* why)
 inline constexpr bool kDmoQuiesceVerified = false;
 
 struct DmoStreamDoneQuiesce {
-    // Passive quiesce: stop upstream + wait STREAM_DONE; PASSIVE_DATA_LOSS is
-    // the interrupt-loss fallback. Returns the observed interrupt signal id.
-    [[nodiscard]] static uint16_t wait(bool stream_done_arrived) noexcept
-    {
-        return stream_done_arrived
-                   ? static_cast<uint16_t>(Sig::kStreamDone)
-                   : static_cast<uint16_t>(Sig::kPassiveDataLoss);
-    }
+  // Passive quiesce: stop upstream + wait STREAM_DONE; PASSIVE_DATA_LOSS is
+  // the interrupt-loss fallback. Returns the observed interrupt signal id.
+  [[nodiscard]] static uint16_t wait(bool stream_done_arrived) noexcept {
+    return stream_done_arrived ? static_cast<uint16_t>(Sig::kStreamDone) : static_cast<uint16_t>(Sig::kPassiveDataLoss);
+  }
 };
 
 template <bool PassiveQuiesceVerified>
 struct DmoQuiescePolicy {
-    [[nodiscard]] static bool allow_partial_recfg() noexcept
-    {
-        if constexpr (PassiveQuiesceVerified) {
-            // Step 2 (hardware-validated): DMO may use the passive quiesce —
-            // upstream stop + STREAM_DONE (kStreamDone), PASSIVE_DATA_LOSS
-            // (kPassiveDataLoss) as the interrupt-loss fallback.
-            (void)DmoStreamDoneQuiesce::wait(true);
-            return true;
-        } else {
-            // Step 1 (today): passive quiesce unverified -> full rebuild.
-            return false;
-        }
+  [[nodiscard]] static bool allow_partial_recfg() noexcept {
+    if constexpr (PassiveQuiesceVerified) {
+      // Step 2 (hardware-validated): DMO may use the passive quiesce —
+      // upstream stop + STREAM_DONE (kStreamDone), PASSIVE_DATA_LOSS
+      // (kPassiveDataLoss) as the interrupt-loss fallback.
+      (void)DmoStreamDoneQuiesce::wait(true);
+      return true;
+    } else {
+      // Step 1 (today): passive quiesce unverified -> full rebuild.
+      return false;
     }
+  }
 };
 
 using DmoQuiesce = DmoQuiescePolicy<kDmoQuiesceVerified>;

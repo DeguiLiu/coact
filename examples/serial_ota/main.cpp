@@ -27,6 +27,9 @@
 #include "parser.hpp"
 #include "protocol.hpp"
 
+#include "coact/pal_posix.hpp"
+#include "coact/pool.hpp"
+#include "coact/runtime.hpp"
 #include "osp/bus.hpp"
 #include "osp/log.hpp"
 #include "osp/shell.hpp"
@@ -34,10 +37,6 @@
 #include "osp/timer.hpp"
 #include "osp/vocabulary.hpp"
 #include "osp/worker_pool.hpp"
-
-#include "coact/pal_posix.hpp"
-#include "coact/pool.hpp"
-#include "coact/runtime.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -115,7 +114,6 @@ static osp::FixedString<32> g_last_device_state{"Idle"};
 static coact::Runtime<coact::DefaultConfig, coact::pal::Posix>* g_rt = nullptr;
 static coact::EventPool<sizeof(ota_bridge::FrameEvent), 32U>* g_frame_pool = nullptr;
 static std::atomic<bool> g_ota_done{false};
-
 
 // Simulated UART FIFO channels (SpscRingbuffer)
 static osp::SpscRingbuffer<uint8_t, kUartFifoSize> g_host_to_dev_fifo;
@@ -231,8 +229,7 @@ static void ProgressReportCallback(void* /*ctx*/) {
     return;
   }
   if (g_pool != nullptr) {
-    g_pool->Submit(OtaProgressMsg{0U, kFirmwareSize, osp::NodeStatus::kRunning},
-                   osp::MessagePriority::kLow);
+    g_pool->Submit(OtaProgressMsg{0U, kFirmwareSize, osp::NodeStatus::kRunning}, osp::MessagePriority::kLow);
   }
 }
 
@@ -508,8 +505,7 @@ int main(int argc, char* argv[]) {
 
   coact::EventPool<sizeof(ota_bridge::FrameEvent), 32U> frame_pool;
   alignas(16) unsigned char frame_storage[sizeof(ota_bridge::FrameEvent) * 32U + 16U];
-  frame_pool.init(frame_storage, sizeof(frame_storage),
-                  coact::make_spin_critical_section(frame_pool_cs));
+  frame_pool.init(frame_storage, sizeof(frame_storage), coact::make_spin_critical_section(frame_pool_cs));
   g_frame_pool = &frame_pool;
   OSP_SCOPE_EXIT(g_frame_pool = nullptr);
 
@@ -518,8 +514,7 @@ int main(int argc, char* argv[]) {
   OSP_SCOPE_EXIT(g_rt = nullptr);
 
   ota_bridge::BridgeAo bridge(
-      ota_bridge::kStates,
-      static_cast<uint16_t>(sizeof(ota_bridge::kStates) / sizeof(ota_bridge::kStates[0])),
+      ota_bridge::kStates, static_cast<uint16_t>(sizeof(ota_bridge::kStates) / sizeof(ota_bridge::kStates[0])),
       ota_bridge::kTransitions,
       static_cast<uint16_t>(sizeof(ota_bridge::kTransitions) / sizeof(ota_bridge::kTransitions[0])),
       static_cast<int8_t>(0), /*initial_state=*/static_cast<uint8_t>(1U));

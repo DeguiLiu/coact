@@ -42,16 +42,18 @@
  */
 #pragma once
 
-#include <array>
-#include <atomic>
-#include <cstdint>
-#include <cstdio>
+#include "common.hpp"
+#include "heartbeat.hpp"
+
 #include "coact/ao.hpp"
 #include "coact/hsm.hpp"
 #include "coact/runtime.hpp"
 
-#include "common.hpp"
-#include "heartbeat.hpp"
+#include <cstdint>
+#include <cstdio>
+
+#include <array>
+#include <atomic>
 
 namespace isp_demo {
 
@@ -64,7 +66,7 @@ namespace isp_demo {
 constexpr uint32_t kNsPerUs = 1000U;
 constexpr uint32_t kUsPerMs = 1000U;
 
-constexpr uint32_t kBeatWaitMs = 20U;   // bounded cond_wait per beat iteration
+constexpr uint32_t kBeatWaitMs = 20U;  // bounded cond_wait per beat iteration
 
 // The timeout must sit far above the wait bound (so a beat/check race can never
 // read as a stall) and far below anything a human would call hung.
@@ -83,103 +85,98 @@ constexpr uint32_t kIrscBeatPeriodsPerTimeout = 3U;
 // pthread; RT-Thread: the PAL's fixed static thread table — zero heap).
 // ---------------------------------------------------------------------------
 struct IrscWorker {
-    DemoPal::ThreadHandle thread_{};
-    PoolT*          pool{nullptr};
-    Rt*             rt{nullptr};
-    TargetId        low_target{};
-    TargetId        high_target{};
-    std::atomic<bool> running{false};
-    uint32_t        period_us{33333U};
-    hb::Beat*       beat_{nullptr};
+  DemoPal::ThreadHandle thread_{};
+  PoolT* pool{nullptr};
+  Rt* rt{nullptr};
+  TargetId low_target{};
+  TargetId high_target{};
+  std::atomic<bool> running{false};
+  uint32_t period_us{33333U};
+  hb::Beat* beat_{nullptr};
 
-    void start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps)
-    {
-        pool = p;
-        rt = r;
-        low_target = low;
-        high_target = high;
-        period_us = (fps == 0U) ? 33333U : (1000000U / fps);
-        running.store(true);
-        // Register before thread_create so the slot exists the moment the
-        // thread can first beat. The timeout is derived from THIS instance's
-        // frame period rather than a shared constant: at 3 fps a period is
-        // already 333 ms. period_us is microseconds, so the product is too.
-        if (nullptr != hb::g_slots) {
-            beat_ = hb::g_slots->Register(
-                {"irsc", kIrscBeatPeriodsPerTimeout * period_us});
-        }
-        std::printf("[worker] irsc started (frames=%u, period=%u us)\n",
-                    kFrameCount, period_us);
-        g_pal->thread_create(thread_, &IrscWorker::tramp, this);
+  void start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps) {
+    pool = p;
+    rt = r;
+    low_target = low;
+    high_target = high;
+    period_us = (fps == 0U) ? 33333U : (1000000U / fps);
+    running.store(true);
+    // Register before thread_create so the slot exists the moment the
+    // thread can first beat. The timeout is derived from THIS instance's
+    // frame period rather than a shared constant: at 3 fps a period is
+    // already 333 ms. period_us is microseconds, so the product is too.
+    if (nullptr != hb::g_slots) {
+      beat_ = hb::g_slots->Register({"irsc", kIrscBeatPeriodsPerTimeout * period_us});
     }
-    void stop()
-    {
-        running.store(false);
-        g_pal->thread_join(thread_);
-        if ((nullptr != hb::g_slots) && (nullptr != beat_)) {
-            hb::g_slots->Unregister(beat_);
-            beat_ = nullptr;
-        }
+    std::printf("[worker] irsc started (frames=%u, period=%u us)\n", kFrameCount, period_us);
+    g_pal->thread_create(thread_, &IrscWorker::tramp, this);
+  }
+  void stop() {
+    running.store(false);
+    g_pal->thread_join(thread_);
+    if ((nullptr != hb::g_slots) && (nullptr != beat_)) {
+      hb::g_slots->Unregister(beat_);
+      beat_ = nullptr;
     }
-private:
-    static void tramp(void* arg) { static_cast<IrscWorker*>(arg)->run(); }
-    void run()
-    {
-        // BeatLoop owns the beat: the advice fires before the frame-period
-        // sleep, so the single blocking call delays at most one cycle instead
-        // of suppressing the report for its whole duration.
-        uint32_t f = 0U;
-        hb::BeatLoop(
-            beat_,
-            [&] { return (f < kFrameCount) && running.load(); },
-            [&] {
-                // Relative pacing: sleep one full frame period per iteration. A
-                // sensor produces frames on its own clock regardless of how far
-                // behind the pipeline is — and keeps the in-flight span shallow
-                // so the DMA ring never legitimately overruns.
-                /* 阻塞模拟（保留真睡）：IRSC 传感器产帧节拍 + 增益模式判定的
-                   寄存器耗时，合并为一次睡眠。发生在 IrscWorker 自己的线程，
-                   不阻塞 AO 事件循环；且 30fps 节拍是封帧时序断言（frame pacing）
-                   的真实时间依赖，虚拟时钟无法推进真实线程，故必须真睡 */
-                g_pal->sleep_us(period_us + (kLat.irsc_setup_us / 2U));
-                const uint64_t emit_ns = monotonic_ns();
+  }
 
-                for (uint8_t ch = 0; ch < 2U; ++ch) {
-                    Layout* e = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-                        static_cast<uint16_t>(Sig::kFrameIrscOut));
-                    if (nullptr == e) { break; }
-                    e->meta.frame_id = f;
-                    e->meta.timestamp_ns = static_cast<uint32_t>(emit_ns & 0xFFFFFFFFu);
-                    e->meta.payload_kind = 0U;
-                    Payload* p = reinterpret_cast<Payload*>(&e->payload[0]);
-                    p->control[0] = 'D'; p->control[1] = 'N';
-                    p->control[2] = static_cast<uint8_t>((f >> 8U) & 0xFFu);
-                    p->control[3] = static_cast<uint8_t>(f & 0xFFu);
-                    p->ddr_id = DdrId::kDdrDn;  // writer fills actual pixels
-                    const TargetId dst = (ch == 0U) ? low_target : high_target;
-                    rt->coordinator().submit_from_task(dst, &e->event, {false, false});
-                }
-                ++f;                            // the for-increment, moved here
-            });
-        std::printf("[irsc] emitted %u DN frames @ %u us\n", kFrameCount, period_us);
-        g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(0U, kFrameCount, period_us);
-    }
+ private:
+  static void tramp(void* arg) { static_cast<IrscWorker*>(arg)->run(); }
+  void run() {
+    // BeatLoop owns the beat: the advice fires before the frame-period
+    // sleep, so the single blocking call delays at most one cycle instead
+    // of suppressing the report for its whole duration.
+    uint32_t f = 0U;
+    hb::BeatLoop(
+        beat_, [&] { return (f < kFrameCount) && running.load(); },
+        [&] {
+          // Relative pacing: sleep one full frame period per iteration. A
+          // sensor produces frames on its own clock regardless of how far
+          // behind the pipeline is — and keeps the in-flight span shallow
+          // so the DMA ring never legitimately overruns.
+          /* 阻塞模拟（保留真睡）：IRSC 传感器产帧节拍 + 增益模式判定的
+             寄存器耗时，合并为一次睡眠。发生在 IrscWorker 自己的线程，
+             不阻塞 AO 事件循环；且 30fps 节拍是封帧时序断言（frame pacing）
+             的真实时间依赖，虚拟时钟无法推进真实线程，故必须真睡 */
+          g_pal->sleep_us(period_us + (kLat.irsc_setup_us / 2U));
+          const uint64_t emit_ns = monotonic_ns();
+
+          for (uint8_t ch = 0; ch < 2U; ++ch) {
+            Layout* e = pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kFrameIrscOut));
+            if (nullptr == e) {
+              break;
+            }
+            e->meta.frame_id = f;
+            e->meta.timestamp_ns = static_cast<uint32_t>(emit_ns & 0xFFFFFFFFu);
+            e->meta.payload_kind = 0U;
+            Payload* p = reinterpret_cast<Payload*>(&e->payload[0]);
+            p->control[0] = 'D';
+            p->control[1] = 'N';
+            p->control[2] = static_cast<uint8_t>((f >> 8U) & 0xFFu);
+            p->control[3] = static_cast<uint8_t>(f & 0xFFu);
+            p->ddr_id = DdrId::kDdrDn;  // writer fills actual pixels
+            const TargetId dst = (ch == 0U) ? low_target : high_target;
+            rt->coordinator().submit_from_task(dst, &e->event, {false, false});
+          }
+          ++f;  // the for-increment, moved here
+        });
+    std::printf("[irsc] emitted %u DN frames @ %u us\n", kFrameCount, period_us);
+    g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(0U, kFrameCount, period_us);
+  }
 };
 
-constexpr uint16_t kX1Width  = 640U;
+constexpr uint16_t kX1Width = 640U;
 constexpr uint16_t kX1Height = 512U;
-constexpr uint16_t kOutWidth  = 1280U;   // the fixed external UVC profile
+constexpr uint16_t kOutWidth = 1280U;  // the fixed external UVC profile
 constexpr uint16_t kOutHeight = 1024U;
-constexpr uint32_t kX1FrameBytes =
-    static_cast<uint32_t>(kX1Width) * kX1Height * 2U;    // 655360 (T37 evidence)
-constexpr uint32_t kOutFrameBytes =
-    static_cast<uint32_t>(kOutWidth) * kOutHeight * 2U;  // 2621440
-constexpr uint32_t kStreamVldNum = 1280U * 1024U;        // 1310720
-constexpr uint16_t kZoomStepIdentity = 256U;             // 1:1 pass-through
-constexpr uint16_t kZoomStep2x = 128U;                   // 2x upscale
-constexpr uint32_t kBulkXsfBytes = 16384U;               // bulk transaction
-                                                         // granularity (NOT
-                                                         // the frame length)
+constexpr uint32_t kX1FrameBytes = static_cast<uint32_t>(kX1Width) * kX1Height * 2U;     // 655360 (T37 evidence)
+constexpr uint32_t kOutFrameBytes = static_cast<uint32_t>(kOutWidth) * kOutHeight * 2U;  // 2621440
+constexpr uint32_t kStreamVldNum = 1280U * 1024U;                                        // 1310720
+constexpr uint16_t kZoomStepIdentity = 256U;                                             // 1:1 pass-through
+constexpr uint16_t kZoomStep2x = 128U;                                                   // 2x upscale
+constexpr uint32_t kBulkXsfBytes = 16384U;                                               // bulk transaction
+                                                                                         // granularity (NOT
+                                                                                         // the frame length)
 static_assert(kX1FrameBytes == 655360U, "T37: premature-EOF boundary is 640x512x2B");
 static_assert(kOutFrameBytes == 2621440U, "T37: full X2 frame is 1280x1024x2B");
 static_assert(kStreamVldNum == 1310720U, "T37: per-source valid-pixel count");
@@ -202,141 +199,124 @@ constexpr uint32_t kT37Phase4Rounds = 10U;
 // Hand-off primitives are DemoPal MutexOps/CondOps/ThreadOps (dual platform).
 // ---------------------------------------------------------------------------
 struct UsbDmaWorker {
-    struct Job {
-        bool     valid{false};
-        uint32_t frame_id{0U};
-        uint32_t payload_bytes{0U};
-        bool     err_eof{false};
-    };
+  struct Job {
+    bool valid{false};
+    uint32_t frame_id{0U};
+    uint32_t payload_bytes{0U};
+    bool err_eof{false};
+  };
 
-    DemoPal::MutexHandle mtx{};
-    DemoPal::CondHandle  cond{};
-    Job             job{};
-    bool            running{false};
-    hb::Beat*       beat_{nullptr};
+  DemoPal::MutexHandle mtx{};
+  DemoPal::CondHandle cond{};
+  Job job{};
+  bool running{false};
+  hb::Beat* beat_{nullptr};
 
-    PoolT*   pool{nullptr};
-    Rt*      rt{nullptr};
-    TargetId host_target{};
+  PoolT* pool{nullptr};
+  Rt* rt{nullptr};
+  TargetId host_target{};
 
-    uint32_t transactions_done{0U};
-    uint32_t completion_rejects{0U};
-    uint32_t error_interrupts{0U};   // driver-side USB error interrupt count
+  uint32_t transactions_done{0U};
+  uint32_t completion_rejects{0U};
+  uint32_t error_interrupts{0U};  // driver-side USB error interrupt count
 
-    void start(PoolT* p, Rt* r, TargetId host)
-    {
-        pool = p;
-        rt = r;
-        host_target = host;
-        g_pal->mutex_init(mtx);
-        g_pal->cond_init(cond);
-        running = true;
-        if (nullptr != hb::g_slots) {
-            beat_ = hb::g_slots->Register({"usb_dma", kWorkerBeatTimeoutUs});
-        }
-        std::printf("[worker] usb_dma started (slot=1)\n");
-        g_pal->thread_create(thread_, &UsbDmaWorker::tramp, this);
+  void start(PoolT* p, Rt* r, TargetId host) {
+    pool = p;
+    rt = r;
+    host_target = host;
+    g_pal->mutex_init(mtx);
+    g_pal->cond_init(cond);
+    running = true;
+    if (nullptr != hb::g_slots) {
+      beat_ = hb::g_slots->Register({"usb_dma", kWorkerBeatTimeoutUs});
     }
-    void stop()
-    {
-        g_pal->mutex_lock(mtx);
-        running = false;
-        g_pal->cond_signal(cond);
+    std::printf("[worker] usb_dma started (slot=1)\n");
+    g_pal->thread_create(thread_, &UsbDmaWorker::tramp, this);
+  }
+  void stop() {
+    g_pal->mutex_lock(mtx);
+    running = false;
+    g_pal->cond_signal(cond);
+    g_pal->mutex_unlock(mtx);
+    g_pal->thread_join(thread_);
+    if ((nullptr != hb::g_slots) && (nullptr != beat_)) {
+      hb::g_slots->Unregister(beat_);
+      beat_ = nullptr;
+    }
+  }
+  // WRAPE AO calls this (Dispatcher thread); never blocks long.
+  bool submit(Job j) {
+    g_pal->mutex_lock(mtx);
+    if (job.valid) {
+      g_pal->mutex_unlock(mtx);
+      return false;  // engine busy
+    }
+    job = j;
+    job.valid = true;
+    g_pal->cond_signal(cond);
+    g_pal->mutex_unlock(mtx);
+    return true;
+  }
+
+  // USB error interrupt as its OWN signal path (T37 §2.2 fault chain
+  // "error interrupt -> DRV"): distinct from kFrameEof's err_eof DATA
+  // attribute — this is the driver-side interrupt line. The error path
+  // posts kUsbErrInt (counted by the host AO), and the data EOF still
+  // follows with its err_eof flag set. Normal runs never fire it.
+  void inject_error_interrupt(uint32_t frame_id) {
+    ++error_interrupts;
+    Layout* err = pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kUsbErrInt));
+    if (nullptr != err) {
+      err->meta.frame_id = frame_id;
+      rt->coordinator().submit_from_task(host_target, &err->event, {false, false});
+    }
+  }
+
+ private:
+  DemoPal::ThreadHandle thread_{};
+  static void tramp(void* arg) { static_cast<UsbDmaWorker*>(arg)->run(); }
+  void run() {
+    for (;;) {
+      g_pal->mutex_lock(mtx);
+      // Bounded wait: the beat sits at the top of each wait iteration
+      // (before the block), so an idle worker still reports liveness and a
+      // stuck one reports nothing at all.
+      hb::BeatLoop(
+          beat_, [this] { return running && !job.valid; }, [this] { g_pal->cond_wait(cond, mtx, kBeatWaitMs); });
+      if (!running && !job.valid) {
         g_pal->mutex_unlock(mtx);
-        g_pal->thread_join(thread_);
-        if ((nullptr != hb::g_slots) && (nullptr != beat_)) {
-            hb::g_slots->Unregister(beat_);
-            beat_ = nullptr;
-        }
-    }
-    // WRAPE AO calls this (Dispatcher thread); never blocks long.
-    bool submit(Job j)
-    {
-        g_pal->mutex_lock(mtx);
-        if (job.valid) {
-            g_pal->mutex_unlock(mtx);
-            return false;   // engine busy
-        }
-        job = j;
-        job.valid = true;
-        g_pal->cond_signal(cond);
-        g_pal->mutex_unlock(mtx);
-        return true;
-    }
+        break;
+      }
+      // Fetch-old-reset-slot in one step (the standard exchange idiom).
+      Job j = std::exchange(job, Job{});
+      g_pal->mutex_unlock(mtx);
 
-    // USB error interrupt as its OWN signal path (T37 §2.2 fault chain
-    // "error interrupt -> DRV"): distinct from kFrameEof's err_eof DATA
-    // attribute — this is the driver-side interrupt line. The error path
-    // posts kUsbErrInt (counted by the host AO), and the data EOF still
-    // follows with its err_eof flag set. Normal runs never fire it.
-    void inject_error_interrupt(uint32_t frame_id)
-    {
-        ++error_interrupts;
-        Layout* err = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-            static_cast<uint16_t>(Sig::kUsbErrInt));
-        if (nullptr != err) {
-            err->meta.frame_id = frame_id;
-            rt->coordinator().submit_from_task(host_target, &err->event,
-                                               {false, false});
-        }
-    }
+      // Move the payload in bulk transactions (transaction granularity,
+      // NOT the frame length — the doc's 禁止误解).
+      const uint32_t txns = (j.payload_bytes + kBulkXsfBytes - 1U) / kBulkXsfBytes;
+      for (uint32_t t = 0; t < txns; ++t) {
+        /* 阻塞模拟（保留真睡）：USB Bulk DMA 引擎每事务的搬移耗时，
+           发生在 UsbDmaWorker 自己的线程，不阻塞 AO 事件循环；每事务
+           50us x 160 事务的封帧时序驱动 t37_drain 的真实等待窗口
+           （WinHost 收帧计数是真异步的），虚拟时钟推不动真实线程 */
+        g_pal->sleep_us(50U);  // per-transaction engine time
+      }
+      transactions_done += txns;
 
-private:
-    DemoPal::ThreadHandle thread_{};
-    static void tramp(void* arg)
-    {
-        static_cast<UsbDmaWorker*>(arg)->run();
+      // Completion "interrupt": post the frame EOF into coact.
+      Layout* fe = pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kFrameEof));
+      if (nullptr != fe) {
+        fe->meta.frame_id = j.frame_id;
+        fe->meta.result = static_cast<int32_t>(j.payload_bytes);
+        fe->meta.flags = j.err_eof ? 1U : 0U;
+        rt->coordinator().submit_from_task(host_target, &fe->event, {false, false});
+      } else {
+        ++completion_rejects;
+      }
     }
-    void run()
-    {
-        for (;;) {
-            g_pal->mutex_lock(mtx);
-            // Bounded wait: the beat sits at the top of each wait iteration
-            // (before the block), so an idle worker still reports liveness and a
-            // stuck one reports nothing at all.
-            hb::BeatLoop(
-                beat_,
-                [this] { return running && !job.valid; },
-                [this] { g_pal->cond_wait(cond, mtx, kBeatWaitMs); });
-            if (!running && !job.valid) {
-                g_pal->mutex_unlock(mtx);
-                break;
-            }
-            // Fetch-old-reset-slot in one step (the standard exchange idiom).
-            Job j = std::exchange(job, Job{});
-            g_pal->mutex_unlock(mtx);
-
-            // Move the payload in bulk transactions (transaction granularity,
-            // NOT the frame length — the doc's 禁止误解).
-            const uint32_t txns =
-                (j.payload_bytes + kBulkXsfBytes - 1U) / kBulkXsfBytes;
-            for (uint32_t t = 0; t < txns; ++t) {
-            /* 阻塞模拟（保留真睡）：USB Bulk DMA 引擎每事务的搬移耗时，
-               发生在 UsbDmaWorker 自己的线程，不阻塞 AO 事件循环；每事务
-               50us x 160 事务的封帧时序驱动 t37_drain 的真实等待窗口
-               （WinHost 收帧计数是真异步的），虚拟时钟推不动真实线程 */
-                g_pal->sleep_us(50U);   // per-transaction engine time
-            }
-            transactions_done += txns;
-
-            // Completion "interrupt": post the frame EOF into coact.
-            Layout* fe = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-                static_cast<uint16_t>(Sig::kFrameEof));
-            if (nullptr != fe) {
-                fe->meta.frame_id = j.frame_id;
-                fe->meta.result = static_cast<int32_t>(j.payload_bytes);
-                fe->meta.flags = j.err_eof ? 1U : 0U;
-                rt->coordinator().submit_from_task(host_target, &fe->event,
-                                                   {false, false});
-            } else {
-                ++completion_rejects;
-            }
-        }
-        std::printf("[worker] usb_dma exited (transactions=%u)\n",
-                    transactions_done);
-    }
+    std::printf("[worker] usb_dma exited (transactions=%u)\n", transactions_done);
+  }
 };
-
 
 // ===========================================================================
 // WorkerBase<Derived, Job, Depth, PalT>: the CRTP skeleton shared by the
@@ -372,165 +352,144 @@ private:
 // ===========================================================================
 template <typename Derived, typename Job, uint8_t kDepthV, typename PalT>
 class WorkerBase {
-public:
-    static constexpr uint8_t kDepth = kDepthV;
-    static_assert(kDepthV >= 1U, "worker ring needs at least one slot");
+ public:
+  static constexpr uint8_t kDepth = kDepthV;
+  static_assert(kDepthV >= 1U, "worker ring needs at least one slot");
 
-    // CRTP downcast: the base reaches the derived worker's execute() hook
-    // through this accessor — compile-time dispatch, no vtable.
-    [[nodiscard]] Derived& derived() noexcept { return *static_cast<Derived*>(this); }
-    [[nodiscard]] const Derived& derived() const noexcept
-    { return *static_cast<const Derived*>(this); }
+  // CRTP downcast: the base reaches the derived worker's execute() hook
+  // through this accessor — compile-time dispatch, no vtable.
+  [[nodiscard]] Derived& derived() noexcept { return *static_cast<Derived*>(this); }
+  [[nodiscard]] const Derived& derived() const noexcept { return *static_cast<const Derived*>(this); }
 
-    void start(PoolT* p, Rt* r)
-    {
-        pool = p;
-        rt = r;
-        pal->mutex_init(mtx);
-        pal->cond_init(cond);
-        pal->cond_init(idle_cv);
-        running = true;
-        // Register before thread_create: the slot must exist before the thread
-        // can first beat, otherwise the first scan sees an unregistered worker.
-        if (nullptr != hb::g_slots) {
-            beat_ = hb::g_slots->Register(
-                {derived().name(), kWorkerBeatTimeoutUs});
-        }
-        std::printf("[worker] %s started (depth=%u)\n",
-                    derived().name(), static_cast<unsigned>(kDepth));
-        pal->thread_create(thread_, &WorkerBase::tramp, this);
+  void start(PoolT* p, Rt* r) {
+    pool = p;
+    rt = r;
+    pal->mutex_init(mtx);
+    pal->cond_init(cond);
+    pal->cond_init(idle_cv);
+    running = true;
+    // Register before thread_create: the slot must exist before the thread
+    // can first beat, otherwise the first scan sees an unregistered worker.
+    if (nullptr != hb::g_slots) {
+      beat_ = hb::g_slots->Register({derived().name(), kWorkerBeatTimeoutUs});
     }
+    std::printf("[worker] %s started (depth=%u)\n", derived().name(), static_cast<unsigned>(kDepth));
+    pal->thread_create(thread_, &WorkerBase::tramp, this);
+  }
 
-    // Drain-on-stop: request halt, wake, wait for queue-empty + idle, join.
-    // In-flight jobs are NOT discarded (unlike UsbDmaWorker): the completion
-    // events of everything accepted before stop() are guaranteed delivered.
-    void stop()
+  // Drain-on-stop: request halt, wake, wait for queue-empty + idle, join.
+  // In-flight jobs are NOT discarded (unlike UsbDmaWorker): the completion
+  // events of everything accepted before stop() are guaranteed delivered.
+  void stop() {
+    uint8_t queued = 0U;
     {
-        uint8_t queued = 0U;
-        {
-            pal->mutex_lock(mtx);
-            queued = count;
-            pal->mutex_unlock(mtx);
-        }
-        // Print AFTER unlocking: std::printf may block on the console; never
-        // hold the hand-off mutex across it (3.3 "critical section only
-        // stores").
-        std::printf("[worker] %s draining (queued=%u)\n",
-                    derived().name(), static_cast<unsigned>(queued));
-        pal->mutex_lock(mtx);
-        running = false;
-        pal->cond_broadcast(cond);
-        pal->cond_wait(idle_cv, mtx, 0U);     // until head == tail && !busy
+      pal->mutex_lock(mtx);
+      queued = count;
+      pal->mutex_unlock(mtx);
+    }
+    // Print AFTER unlocking: std::printf may block on the console; never
+    // hold the hand-off mutex across it (3.3 "critical section only
+    // stores").
+    std::printf("[worker] %s draining (queued=%u)\n", derived().name(), static_cast<unsigned>(queued));
+    pal->mutex_lock(mtx);
+    running = false;
+    pal->cond_broadcast(cond);
+    pal->cond_wait(idle_cv, mtx, 0U);  // until head == tail && !busy
+    pal->mutex_unlock(mtx);
+    pal->thread_join(thread_);
+    if ((nullptr != hb::g_slots) && (nullptr != beat_)) {
+      hb::g_slots->Unregister(beat_);
+      beat_ = nullptr;
+    }
+    std::printf("[worker] %s exited (executed=%u, rejected=%u)\n", derived().name(),
+                static_cast<unsigned>(executed.load(std::memory_order_relaxed)),
+                static_cast<unsigned>(rejected.load(std::memory_order_relaxed)));
+    pal->cond_deinit(idle_cv);
+    pal->cond_deinit(cond);
+    pal->mutex_deinit(mtx);
+  }
+
+  // Producer side (Dispatcher thread). Returns false when the queue is
+  // full — the honest hardware condition of a DMA request slot being busy
+  // (single-slot channels: one in flight, the next submit is rejected).
+  bool submit(const Job& j) {
+    pal->mutex_lock(mtx);
+    bool ok = false;
+    if (count < kDepth) {  // free capacity
+      // Placement-new: begin the Job's lifetime in place in the slot
+      // (multi-field descriptor construction — the same in-place
+      // discipline as the pool payload and the DDR FrameStamp).
+      ::new (static_cast<void*>(&slots[head])) Job(j);
+      head = static_cast<uint8_t>((head + 1U) % kDepth);
+      ++count;
+      ok = true;
+    } else {
+      // Busy channel: count the drop. (Rejected submissions never
+      // touched this counter before — the caller-side WARN and the
+      // exit log both depend on it.)
+      ++rejected;
+    }
+    pal->cond_signal(cond);
+    pal->mutex_unlock(mtx);
+    return ok;
+  }
+
+  [[nodiscard]] uint32_t executed_count() const noexcept { return executed.load(std::memory_order_relaxed); }
+  [[nodiscard]] uint32_t rejected_count() const noexcept { return rejected.load(std::memory_order_relaxed); }
+
+ protected:
+  PoolT* pool{nullptr};
+  Rt* rt{nullptr};
+  std::atomic<uint32_t> executed{0U};
+  std::atomic<uint32_t> rejected{0U};
+
+ private:
+  static void tramp(void* arg) { static_cast<WorkerBase*>(arg)->run(); }
+  void run() {
+    Job j{};
+    bool busy = false;
+    for (;;) {
+      pal->mutex_lock(mtx);
+      // Bounded wait: the beat is at the top of each wait iteration, i.e.
+      // before the block. The outer for(;;) is left alone — it iterates
+      // once per job, not once per idle period, so it is not a beat site.
+      hb::BeatLoop(
+          beat_, [this] { return running.load() && 0U == count; }, [this] { pal->cond_wait(cond, mtx, kBeatWaitMs); });
+      if (0U != count) {
+        // Pop via launder: the slot was placement-new'd; launder
+        // re-establishes the pointer-to-object relationship before
+        // the copy (C++17 [ptr.launder], same as DdrCtx::read).
+        const Job& front = *std::launder(reinterpret_cast<const Job*>(&slots[tail]));
+        j = front;  // copy out
+        tail = static_cast<uint8_t>((tail + 1U) % kDepth);
+        --count;
+        busy = true;
+      } else {
+        busy = false;
+      }
+      if (!busy && !running.load()) {
+        pal->cond_signal(idle_cv);
         pal->mutex_unlock(mtx);
-        pal->thread_join(thread_);
-        if ((nullptr != hb::g_slots) && (nullptr != beat_)) {
-            hb::g_slots->Unregister(beat_);
-            beat_ = nullptr;
-        }
-        std::printf("[worker] %s exited (executed=%u, rejected=%u)\n",
-                    derived().name(),
-                    static_cast<unsigned>(executed.load(std::memory_order_relaxed)),
-                    static_cast<unsigned>(rejected.load(std::memory_order_relaxed)));
-        pal->cond_deinit(idle_cv);
-        pal->cond_deinit(cond);
-        pal->mutex_deinit(mtx);
-    }
+        return;  // drained and halted
+      }
+      pal->mutex_unlock(mtx);
 
-    // Producer side (Dispatcher thread). Returns false when the queue is
-    // full — the honest hardware condition of a DMA request slot being busy
-    // (single-slot channels: one in flight, the next submit is rejected).
-    bool submit(const Job& j)
-    {
-        pal->mutex_lock(mtx);
-        bool ok = false;
-        if (count < kDepth) {             // free capacity
-            // Placement-new: begin the Job's lifetime in place in the slot
-            // (multi-field descriptor construction — the same in-place
-            // discipline as the pool payload and the DDR FrameStamp).
-            ::new (static_cast<void*>(&slots[head])) Job(j);
-            head = static_cast<uint8_t>((head + 1U) % kDepth);
-            ++count;
-            ok = true;
-        } else {
-            // Busy channel: count the drop. (Rejected submissions never
-            // touched this counter before — the caller-side WARN and the
-            // exit log both depend on it.)
-            ++rejected;
-        }
-        pal->cond_signal(cond);
-        pal->mutex_unlock(mtx);
-        return ok;
+      derived().execute(j);  // CRTP hook
+      executed.fetch_add(1U, std::memory_order_relaxed);
     }
+  }
 
-    [[nodiscard]] uint32_t executed_count() const noexcept
-    {
-        return executed.load(std::memory_order_relaxed);
-    }
-    [[nodiscard]] uint32_t rejected_count() const noexcept
-    {
-        return rejected.load(std::memory_order_relaxed);
-    }
-
-protected:
-    PoolT* pool{nullptr};
-    Rt*    rt{nullptr};
-    std::atomic<uint32_t> executed{0U};
-    std::atomic<uint32_t> rejected{0U};
-
-private:
-    static void tramp(void* arg)
-    {
-        static_cast<WorkerBase*>(arg)->run();
-    }
-    void run()
-    {
-        Job j{};
-        bool busy = false;
-        for (;;) {
-            pal->mutex_lock(mtx);
-            // Bounded wait: the beat is at the top of each wait iteration, i.e.
-            // before the block. The outer for(;;) is left alone — it iterates
-            // once per job, not once per idle period, so it is not a beat site.
-            hb::BeatLoop(
-                beat_,
-                [this] { return running.load() && 0U == count; },
-                [this] { pal->cond_wait(cond, mtx, kBeatWaitMs); });
-            if (0U != count) {
-                // Pop via launder: the slot was placement-new'd; launder
-                // re-establishes the pointer-to-object relationship before
-                // the copy (C++17 [ptr.launder], same as DdrCtx::read).
-                const Job& front = *std::launder(
-                    reinterpret_cast<const Job*>(&slots[tail]));
-                j = front;                                   // copy out
-                tail = static_cast<uint8_t>((tail + 1U) % kDepth);
-                --count;
-                busy = true;
-            } else {
-                busy = false;
-            }
-            if (!busy && !running.load()) {
-                pal->cond_signal(idle_cv);
-                pal->mutex_unlock(mtx);
-                return;                     // drained and halted
-            }
-            pal->mutex_unlock(mtx);
-
-            derived().execute(j);                              // CRTP hook
-            executed.fetch_add(1U, std::memory_order_relaxed);
-        }
-    }
-
-    PalT* pal{g_pal};                        // the demo's single PAL instance
-    typename PalT::ThreadHandle thread_{};
-    typename PalT::MutexHandle  mtx{};
-    typename PalT::CondHandle   cond{};
-    typename PalT::CondHandle   idle_cv{};
-    hb::Beat*       beat_{nullptr};
-    Job slots[kDepth]{};
-    uint8_t head{0U};
-    uint8_t tail{0U};
-    uint8_t count{0U};     // live jobs (kDepth == capacity, not capacity-1)
-    std::atomic<bool> running{false};
+  PalT* pal{g_pal};  // the demo's single PAL instance
+  typename PalT::ThreadHandle thread_{};
+  typename PalT::MutexHandle mtx{};
+  typename PalT::CondHandle cond{};
+  typename PalT::CondHandle idle_cv{};
+  hb::Beat* beat_{nullptr};
+  Job slots[kDepth]{};
+  uint8_t head{0U};
+  uint8_t tail{0U};
+  uint8_t count{0U};  // live jobs (kDepth == capacity, not capacity-1)
+  std::atomic<bool> running{false};
 };
 
 // Demo shorthand: every concrete worker binds the demo's PAL alias.
@@ -553,35 +512,30 @@ using DemoWorkerBase = WorkerBase<Derived, Job, kDepthV, DemoPal>;
 // step would break the boot contract, so this channel carries a small
 // request queue instead (bounded, compile-time, still no blocking).
 struct CmdDmaWorker : DemoWorkerBase<CmdDmaWorker, uint16_t, 4U> {
-    TargetId reply_to{};
-    uint32_t completion_rejects{0U};
-    static constexpr const char* name() noexcept { return "cmd_dma"; }
+  TargetId reply_to{};
+  uint32_t completion_rejects{0U};
+  static constexpr const char* name() noexcept { return "cmd_dma"; }
 
-    void start(PoolT* p, Rt* r, TargetId driver)
-    {
-        reply_to = driver;
-        WorkerBase::start(p, r);
-    }
+  void start(PoolT* p, Rt* r, TargetId driver) {
+    reply_to = driver;
+    WorkerBase::start(p, r);
+  }
 
-    void execute(const uint16_t& cmd_arg)
-    {
-        /* 阻塞模拟（保留真睡）：vdcmd 异步寄存器写通道的总线耗时，
-           发生在 CmdDmaWorker 自己的线程，不阻塞 AO 事件循环；
-           4 次完成事件的到达时序被 dma_done_count 断言真实观察 */
-        g_pal->sleep_us(kIrscCmdLatencyUs);   // register-write bus time
-        Layout* done = pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-            static_cast<uint16_t>(Sig::kIrscDmaDone));
-        if (nullptr != done) {
-            done->meta.cmd_arg = cmd_arg;
-            done->meta.payload_kind = 3U;
-            rt->coordinator().submit_from_task(reply_to, &done->event,
-                                               {false, false});
-        } else {
-            ++completion_rejects;
-        }
+  void execute(const uint16_t& cmd_arg) {
+    /* 阻塞模拟（保留真睡）：vdcmd 异步寄存器写通道的总线耗时，
+       发生在 CmdDmaWorker 自己的线程，不阻塞 AO 事件循环；
+       4 次完成事件的到达时序被 dma_done_count 断言真实观察 */
+    g_pal->sleep_us(kIrscCmdLatencyUs);  // register-write bus time
+    Layout* done = pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kIrscDmaDone));
+    if (nullptr != done) {
+      done->meta.cmd_arg = cmd_arg;
+      done->meta.payload_kind = 3U;
+      rt->coordinator().submit_from_task(reply_to, &done->event, {false, false});
+    } else {
+      ++completion_rejects;
     }
+  }
 };
-
 
 // ---------------------------------------------------------------------------
 // IrscDriver AO: models sensor_input_lsv_source + drv_irsc.
@@ -599,41 +553,43 @@ enum IrscStep : uint8_t { kIrscInit = 0U, kIrscStart = 1U, kIrscCtrl = 2U, kIrsc
 // dispatches into the driver.
 // ---------------------------------------------------------------------------
 struct IrscCmd {
-    IrscStep    step{kIrscInit};
-    const char* tag{""};
+  IrscStep step{kIrscInit};
+  const char* tag{""};
 
-    // Stamp the command identity into the event block (command -> event meta).
-    void stamp(Layout& e) const
-    {
-        e.meta.cmd_arg = static_cast<uint16_t>(step);
-        e.meta.payload_kind = 3U;
-        Payload* p = reinterpret_cast<Payload*>(&e.payload[0]);
-        p->control[0] = static_cast<uint8_t>(tag[0]);
-        p->control[1] = static_cast<uint8_t>(tag[1]);
-        p->control[2] = static_cast<uint8_t>(tag[2]);
-        p->control[3] = static_cast<uint8_t>(tag[3]);
-        p->control[4] = static_cast<uint8_t>(step);
-    }
+  // Stamp the command identity into the event block (command -> event meta).
+  void stamp(Layout& e) const {
+    e.meta.cmd_arg = static_cast<uint16_t>(step);
+    e.meta.payload_kind = 3U;
+    Payload* p = reinterpret_cast<Payload*>(&e.payload[0]);
+    p->control[0] = static_cast<uint8_t>(tag[0]);
+    p->control[1] = static_cast<uint8_t>(tag[1]);
+    p->control[2] = static_cast<uint8_t>(tag[2]);
+    p->control[3] = static_cast<uint8_t>(tag[3]);
+    p->control[4] = static_cast<uint8_t>(step);
+  }
 };
 
 // The RS500 boot sequence as a compile-time command table: order IS the
 // contract (init -> start -> ctrl -> output_enable).
-inline const char* irsc_step_name(IrscStep s)
-{
-    switch (s) {
-        case kIrscInit: return "init";
-        case kIrscStart: return "start";
-        case kIrscCtrl: return "ctrl";
-        case kIrscOutputEnable: return "output_enable";
-    }
-    return "?";
+inline const char* irsc_step_name(IrscStep s) {
+  switch (s) {
+    case kIrscInit:
+      return "init";
+    case kIrscStart:
+      return "start";
+    case kIrscCtrl:
+      return "ctrl";
+    case kIrscOutputEnable:
+      return "output_enable";
+  }
+  return "?";
 }
 
 inline constexpr IrscCmd kIrscCmdSequence[] = {
-    { kIrscInit,         "IRSCI" },
-    { kIrscStart,        "IRSCS" },
-    { kIrscCtrl,         "IRSCC" },
-    { kIrscOutputEnable, "IRSCE" },
+    {kIrscInit, "IRSCI"},
+    {kIrscStart, "IRSCS"},
+    {kIrscCtrl, "IRSCC"},
+    {kIrscOutputEnable, "IRSCE"},
 };
 
 // ---------------------------------------------------------------------------
@@ -645,96 +601,95 @@ inline constexpr IrscCmd kIrscCmdSequence[] = {
 enum IrscDoneAction : uint8_t { kAck = 0U, kAckAndReady = 1U };
 
 struct IrscDoneStep {
-    IrscStep       step;
-    IrscDoneAction action;
+  IrscStep step;
+  IrscDoneAction action;
 };
 
 inline constexpr IrscDoneStep kIrscDoneTable[] = {
-    { kIrscInit,         kAck },
-    { kIrscStart,        kAck },
-    { kIrscCtrl,         kAck },
-    { kIrscOutputEnable, kAckAndReady },
+    {kIrscInit, kAck},
+    {kIrscStart, kAck},
+    {kIrscCtrl, kAck},
+    {kIrscOutputEnable, kAckAndReady},
 };
 
-constexpr IrscDoneAction irsc_done_action_of(IrscStep s) noexcept
-{
-    for (const IrscDoneStep& row : kIrscDoneTable) {
-        if (row.step == s) { return row.action; }
+constexpr IrscDoneAction irsc_done_action_of(IrscStep s) noexcept {
+  for (const IrscDoneStep& row : kIrscDoneTable) {
+    if (row.step == s) {
+      return row.action;
     }
-    return kAck;
+  }
+  return kAck;
 }
 
 struct IrscCtx {
-    PoolT*    pool{nullptr};
-    Rt*       rt{nullptr};
-    TargetId  producer_target{};   // where to spin up the IRSC pthread
-    TargetId  orchestrator{};      // who gets the kIrscReady ack
-    CmdDmaWorker* cmd_channel{nullptr};   // async vdcmd rt_device_control
-    bool      ready{false};
-    uint32_t  step_count{0U};
-    uint32_t  channel_subs{0U};    // jobs accepted by the channel
-    uint32_t  channel_rejects{0U}; // jobs the channel dropped (queue full)
-    uint32_t  dma_done_count{0U};  // completion callbacks observed
+  PoolT* pool{nullptr};
+  Rt* rt{nullptr};
+  TargetId producer_target{};          // where to spin up the IRSC pthread
+  TargetId orchestrator{};             // who gets the kIrscReady ack
+  CmdDmaWorker* cmd_channel{nullptr};  // async vdcmd rt_device_control
+  bool ready{false};
+  uint32_t step_count{0U};
+  uint32_t channel_subs{0U};     // jobs accepted by the channel
+  uint32_t channel_rejects{0U};  // jobs the channel dropped (queue full)
+  uint32_t dma_done_count{0U};   // completion callbacks observed
 };
 
 // kIrscCmd: NOT executed inline. The driver hands the sub-command to the
 // async channel (vdcmd rt_device_control) and returns immediately — the
 // register-write latency lives on the worker thread, exactly like the real
 // driver never busy-waits the bus in its dispatcher context.
-inline void onIrscCmd(IrscCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    const IrscStep step = static_cast<IrscStep>(e.meta.cmd_arg);
-    const uint16_t arg = static_cast<uint16_t>(step);
+inline void onIrscCmd(IrscCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  const IrscStep step = static_cast<IrscStep>(e.meta.cmd_arg);
+  const uint16_t arg = static_cast<uint16_t>(step);
 
-    if (ctx.cmd_channel->submit(arg)) {
-        ++ctx.channel_subs;
-    } else {
-        // Busy vdcmd channel — drop prelude (asserted to stay 0 in a healthy
-        // run, so any occurrence is an anomaly worth a visible WARN).
-        ++ctx.channel_rejects;
-        std::printf("[warn] cmd_dma submit rejected (busy), step=%u\n",
-                    static_cast<unsigned>(arg));
-    }
+  if (ctx.cmd_channel->submit(arg)) {
+    ++ctx.channel_subs;
+  } else {
+    // Busy vdcmd channel — drop prelude (asserted to stay 0 in a healthy
+    // run, so any occurrence is an anomaly worth a visible WARN).
+    ++ctx.channel_rejects;
+    std::printf("[warn] cmd_dma submit rejected (busy), step=%u\n", static_cast<unsigned>(arg));
+  }
 }
 
 // kIrscDmaDone: the channel's completion callback. The COMPILE-TIME command
 // table decides the posture (command pattern: the table, not an if-chain, is
 // the driver's semantics). Ack is assembled here and only here.
-inline void onIrscDmaDone(IrscCtx& ctx, const Event& evt)
-{
-    const Layout& e = *reinterpret_cast<const Layout*>(&evt);
-    const IrscStep step = static_cast<IrscStep>(e.meta.cmd_arg);
+inline void onIrscDmaDone(IrscCtx& ctx, const Event& evt) {
+  const Layout& e = *reinterpret_cast<const Layout*>(&evt);
+  const IrscStep step = static_cast<IrscStep>(e.meta.cmd_arg);
 
-    Layout* ack = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(
-        static_cast<uint16_t>(Sig::kIrscReady));
-    if (nullptr == ack) { return; }
-    ack->meta.cmd_arg = static_cast<uint16_t>(step);
-    ack->meta.result = 0;
-    ack->meta.payload_kind = 3U;
-    ack->meta.reply_to = ctx.orchestrator;
-    Payload* p = reinterpret_cast<Payload*>(&ack->payload[0]);
-    p->control[0] = static_cast<uint8_t>('I');
-    p->control[1] = static_cast<uint8_t>('R');
-    p->control[2] = static_cast<uint8_t>('S');
-    p->control[3] = static_cast<uint8_t>('C');
-    p->control[4] = static_cast<uint8_t>(step);
-    ctx.rt->coordinator().submit_from_task(ctx.orchestrator, &ack->event, {true, false});
-    ++ctx.step_count;
-    ++ctx.dma_done_count;
+  Layout* ack = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kIrscReady));
+  if (nullptr == ack) {
+    return;
+  }
+  ack->meta.cmd_arg = static_cast<uint16_t>(step);
+  ack->meta.result = 0;
+  ack->meta.payload_kind = 3U;
+  ack->meta.reply_to = ctx.orchestrator;
+  Payload* p = reinterpret_cast<Payload*>(&ack->payload[0]);
+  p->control[0] = static_cast<uint8_t>('I');
+  p->control[1] = static_cast<uint8_t>('R');
+  p->control[2] = static_cast<uint8_t>('S');
+  p->control[3] = static_cast<uint8_t>('C');
+  p->control[4] = static_cast<uint8_t>(step);
+  ctx.rt->coordinator().submit_from_task(ctx.orchestrator, &ack->event, {true, false});
+  ++ctx.step_count;
+  ++ctx.dma_done_count;
 
-    // Command-pattern posture: the table row decides readiness.
-    if (kAckAndReady == irsc_done_action_of(step)) { ctx.ready = true; }
+  // Command-pattern posture: the table row decides readiness.
+  if (kAckAndReady == irsc_done_action_of(step)) {
+    ctx.ready = true;
+  }
 }
 
 // Reject arc: a command while DEINIT/STOPPED must not reach the hardware —
 // the session guard on the transition table already blocks it, this action
 // is the observable trace for the covered case.
-inline void onIrscCmdRejected(IrscCtx& ctx, const Event&)
-{
-    ++ctx.channel_rejects;
-    HsmTrace::rejection("irsc", "ACTIVE", static_cast<uint16_t>(Sig::kIrscCmd),
-                        "session not INIT/RUNNING");
+inline void onIrscCmdRejected(IrscCtx& ctx, const Event&) {
+  ++ctx.channel_rejects;
+  HsmTrace::rejection("irsc", "ACTIVE", static_cast<uint16_t>(Sig::kIrscCmd), "session not INIT/RUNNING");
 }
 
 // IrscDriver HSM: two real states. ACTIVE accepts commands while the session
@@ -744,26 +699,24 @@ inline void onIrscCmdRejected(IrscCtx& ctx, const Event&)
 enum : int8_t { kIrscRoot = 0, kIrscActive = 1 };
 
 inline const StateDef<IrscCtx> kIrscStates[] = {
-    { -1, nullptr, nullptr, "Root" },
-    { kIrscRoot, nullptr, nullptr, "Active" },
+    {-1, nullptr, nullptr, "Root"},
+    {kIrscRoot, nullptr, nullptr, "Active"},
 };
 
-[[nodiscard]] inline bool irsc_session_open(const IrscCtx&, const Event&) noexcept
-{
-    const SessionState s = g_session.load(std::memory_order_relaxed);
-    return (SessionState::kInit == s) || (SessionState::kRunning == s);
+[[nodiscard]] inline bool irsc_session_open(const IrscCtx&, const Event&) noexcept {
+  const SessionState s = g_session.load(std::memory_order_relaxed);
+  return (SessionState::kInit == s) || (SessionState::kRunning == s);
 }
 
 inline const TransitionDef<IrscCtx> kIrscTransitions[] = {
     // Guarded accept (Internal): command forwarded to the channel.
-    { kIrscActive, static_cast<uint16_t>(Sig::kIrscCmd), kIrscActive,
-      TransitionKind::Internal, irsc_session_open, onIrscCmd },
+    {kIrscActive, static_cast<uint16_t>(Sig::kIrscCmd), kIrscActive, TransitionKind::Internal, irsc_session_open,
+     onIrscCmd},
     // Guard-reject fallback (Self): trace the refusal.
-    { kIrscActive, static_cast<uint16_t>(Sig::kIrscCmd), kIrscActive,
-      TransitionKind::Self, nullptr, onIrscCmdRejected },
+    {kIrscActive, static_cast<uint16_t>(Sig::kIrscCmd), kIrscActive, TransitionKind::Self, nullptr, onIrscCmdRejected},
     // Completion callback from the channel.
-    { kIrscActive, static_cast<uint16_t>(Sig::kIrscDmaDone), kIrscActive,
-      TransitionKind::Internal, nullptr, onIrscDmaDone },
+    {kIrscActive, static_cast<uint16_t>(Sig::kIrscDmaDone), kIrscActive, TransitionKind::Internal, nullptr,
+     onIrscDmaDone},
 };
 
 using IrscDriverAo = coact::Ao<IrscCtx, Hsm<IrscCtx>, IrscTrait>;

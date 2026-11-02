@@ -3,6 +3,4 @@
 // or multi-core RT-Thread configuration.
 #include "coact/pal_rtthread.hpp"
 
-void instantiate_rtthread_pal_gate()
-{
-}
+void instantiate_rtthread_pal_gate() {}
