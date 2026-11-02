@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <thread>
 #include <type_traits>
 #include <unistd.h>
 
@@ -673,6 +674,39 @@ COACT_TEST(freertos_worker_pool_runs_and_reuses_slots)
     pal.thread_join(c);
     CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed), 3);
     CHECK_EQ(g_worker_prio.load(std::memory_order_relaxed), 2);
+}
+
+COACT_TEST(freertos_worker_create_join_is_race_free)
+{
+    stub_freertos_reset_faults();
+    static ResStandard res;
+    res.worker_priority = 2U;
+    coact::pal::FreeRtos pal(res);
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(pal.initialize()));
+    g_worker_runs.store(0, std::memory_order_relaxed);
+    std::atomic<int> completed{0};
+
+    auto producer = [&pal, &completed]() {
+        for (int i = 0; i < 2000; ++i) {
+            coact::pal::FreeRtos::ThreadHandle t;
+            while (!pal.thread_create(t, &worker_count, nullptr)) {
+                std::this_thread::yield();
+            }
+            pal.thread_join(t);
+            completed.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    std::thread a(producer);
+    std::thread b(producer);
+    a.join();
+    b.join();
+
+    /* Every create() must pair with exactly one run(): the join path must not
+       free the slot before the work fields are cleared. */
+    CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed),
+             completed.load(std::memory_order_relaxed));
+    CHECK_EQ(completed.load(std::memory_order_relaxed), 4000);
 }
 
 /* ---- SoftIrq ------------------------------------------------------------ */

@@ -714,9 +714,14 @@ void FreeRtos::thread_join(ThreadHandle& t) noexcept
     }
     WorkerSlot& slot = res_->worker_slots[t.slot_idx];
     (void)xSemaphoreTake(slot.join, portMAX_DELAY);
-    slot.busy = false;
+    /* Clear the work and publish the slot as free under one critical section,
+       in that order. Clearing busy first let another task claim the slot and
+       publish new entry/context, which this join then erased. */
+    const CriticalToken token = irq_save();
     slot.entry = nullptr;
     slot.context = nullptr;
+    slot.busy = false;
+    irq_restore(token);
     t.valid = false;
 }
 
