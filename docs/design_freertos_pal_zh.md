@@ -553,6 +553,20 @@ int main()
 
 不允许的处置：断言后继续执行、栈溢出后返回、Breaker 置 `Safe` 就宣称硬件已安全、用软件预算终止不返回的处理函数。
 
+### 13.2 AUTOSAR 风格钩子
+
+coact 核心不提供 `ErrorHook` / `ProtectionHook` / `PanicHook`。需要单一入口的产品在 BSP
+适配层实现 `PalHooks`，示例见 `examples/pal_hooks_demo.cpp`：
+
+| 钩子 | 触发点 | 适配方式 |
+|---|---|---|
+| `on_error` | coact API 返回失败 | BSP 包装返回值检查；返回值仍是唯一权威，钩子只做诊断 |
+| `on_protection` | `MemManage_Handler` / `HardFault_Handler` | BSP 保存 CFSR/MMFAR 后调用钩子，再执行复位 |
+| `on_panic` | 框架不变量破坏 | 通过 `coact::set_fatal_handler()` 安装；钩子返回后 `fatal_assert()` 仍会 `abort()` |
+
+把三个钩子放在 BSP 而不是 `include/coact`，可以避免热路径多出分支，也不会让中间件
+假装拥有 OS 的保护域语义。
+
 ## 14. 参考
 
 - coact PAL 契约：`include/coact/pal.hpp`

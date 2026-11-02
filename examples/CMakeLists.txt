@@ -23,6 +23,14 @@ target_link_libraries(flash_proxy_demo PRIVATE coact_core Threads::Threads)
 # Self-verifying: asserts its invariants and exits non-zero on failure.
 add_test(NAME flash_proxy_demo COMMAND flash_proxy_demo)
 
+# pal_hooks_demo: BSP-level PalHooks adapter. Shows where on_error,
+# on_protection and on_panic live when the product wants an AUTOSAR-style
+# single entry point without putting hooks into coact core. Self-verifying.
+add_executable(pal_hooks_demo
+    pal_hooks_demo.cpp)
+target_link_libraries(pal_hooks_demo PRIVATE coact_core)
+add_test(NAME pal_hooks_demo COMMAND pal_hooks_demo)
+
 # msh_monitor_demo: MSH-style three-layer monitoring queries over a running
 # AO system (design_architecture_zh.md 5.9). A compact self-built runtime:
 # 7 AOs (incl. a reconfig-transaction HSM) + 2 non-AO workers + a mini
@@ -78,4 +86,3 @@ if(COACT_BUILD_SERIAL_OTA)
         add_test(NAME serial_ota_demo COMMAND serial_ota_demo)
     endif()
 endif()
-
