@@ -690,8 +690,8 @@ void FreeRtos::cond_deinit(CondHandle& c) noexcept
 bool FreeRtos::thread_create(ThreadHandle& t, ThreadEntry entry,
                              void* context) noexcept
 {
-    t.valid = false;
-    if ((nullptr == entry) || (nullptr == res_->worker_slots)) {
+    /* A live handle owns its slot until join; rejection must preserve it. */
+    if (t.valid || (nullptr == entry) || (nullptr == res_->worker_slots)) {
         return false;
     }
     /* Claim the slot and publish its work under one critical section: two
@@ -727,7 +727,7 @@ bool FreeRtos::thread_create(ThreadHandle& t, ThreadEntry entry,
 
 void FreeRtos::thread_join(ThreadHandle& t) noexcept
 {
-    if (!t.valid || (nullptr == res_->worker_slots)
+    if (!t.valid || (t.pal != this) || (nullptr == res_->worker_slots)
         || (t.slot_idx >= res_->worker_slot_count)) {
         return;
     }

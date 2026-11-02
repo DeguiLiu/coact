@@ -676,6 +676,39 @@ COACT_TEST(freertos_worker_pool_runs_and_reuses_slots)
     CHECK_EQ(g_worker_prio.load(std::memory_order_relaxed), 2);
 }
 
+COACT_TEST(freertos_worker_handles_preserve_ownership)
+{
+    static ResStandard res;
+    static ResStandard other_res;
+    coact::pal::FreeRtos pal(res);
+    coact::pal::FreeRtos other(other_res);
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(pal.initialize()));
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(other.initialize()));
+    g_worker_runs.store(0, std::memory_order_relaxed);
+
+    coact::pal::FreeRtos::ThreadHandle handle;
+    REQUIRE(pal.thread_create(handle, &worker_count, nullptr));
+    const uint16_t original_slot = handle.slot_idx;
+    CHECK(!pal.thread_create(handle, &worker_count, nullptr));
+    REQUIRE(handle.valid);
+    CHECK(handle.pal == &pal);
+    CHECK_EQ(handle.slot_idx, original_slot);
+    CHECK(!other.thread_create(handle, &worker_count, nullptr));
+    other.thread_join(handle);
+    REQUIRE(handle.valid);
+    CHECK(res.worker_slots[original_slot].busy);
+
+    pal.thread_join(handle);
+    CHECK(!handle.valid);
+    CHECK(!res.worker_slots[original_slot].busy);
+    CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed), 1);
+    REQUIRE(other.thread_create(handle, &worker_count, nullptr));
+    other.thread_join(handle);
+    CHECK_EQ(g_worker_runs.load(std::memory_order_relaxed), 2);
+}
+
 COACT_TEST(freertos_worker_create_join_is_race_free)
 {
     stub_freertos_reset_faults();
