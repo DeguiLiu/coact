@@ -145,6 +145,7 @@ struct NandWorker {
     pthread_cond_t  cond{};
     Job             job{};
     bool            running{false};
+    bool            active{false};  // hardware transaction owns dma_buf
     uint32_t        seq_counter{0U};
 
     // coact plumbing for the completion submit (set during start).
@@ -163,10 +164,12 @@ struct NandWorker {
         pthread_create(&thread_, nullptr, &NandWorker::run_tramp, this);
     }
 
+    // Commands carry distinct transactions: reject overload rather than
+    // coalescing requests or overwriting the active DMA transaction.
     bool submit(Job j)
     {
         pthread_mutex_lock(&mtx);
-        if (job.valid) {
+        if (!running || active || job.valid || (j.len > kFlashDmaMax)) {
             pthread_mutex_unlock(&mtx);
             return false;   // single-flight
         }
@@ -208,6 +211,7 @@ private:
             }
             Job j = job;
             job.valid = false;
+            active = true;
             pthread_mutex_unlock(&mtx);
 
             // --- model physical NAND latency + DMA transfer ---
@@ -227,6 +231,12 @@ private:
                 std::printf("[nand] DMA-in  addr=0x%x len=%u seq=%u\n",
                             j.addr, j.len, j.seq);
             }
+
+            // DMA has finished touching the buffer. Publish idle before the
+            // completion event lets the owner submit another transaction.
+            pthread_mutex_lock(&mtx);
+            active = false;
+            pthread_mutex_unlock(&mtx);
 
             // --- simulated interrupt callback: submit kHwDone off-dispatcher.
             const uint64_t t_irq = now_ns();
@@ -544,6 +554,9 @@ int main()
     rt.initialize();
     rt.start();
     worker.start(&pool, &rt, TargetId(1U));
+    NandWorker::Job oversized{};
+    oversized.len = kFlashDmaMax + 1U;
+    const bool rejected_oversized = !worker.submit(oversized);
 
     std::printf("=== flash_proxy_demo: owner AO + DMA worker + IRQ timing ===\n");
 
@@ -558,6 +571,18 @@ int main()
 
     usleep(5000);
     submit_trigger(TargetId(2U), Sig::kTriggerWrite);   // writer issues a write
+    bool saw_active = false;
+    for (int w = 0; w < 1000 && !saw_active; ++w) {
+        pthread_mutex_lock(&worker.mtx);
+        saw_active = worker.active;
+        pthread_mutex_unlock(&worker.mtx);
+        if (!saw_active) {
+            usleep(1000);
+        }
+    }
+    NandWorker::Job duplicate{};
+    duplicate.len = 1U;
+    const bool rejected_active = saw_active && !worker.submit(duplicate);
     usleep(60000);
     submit_trigger(TargetId(3U), Sig::kTriggerRead);    // reader issues a query
     usleep(20000);
@@ -581,6 +606,7 @@ int main()
     }
 
     worker.stop();
+    const bool rejected_stopped = !worker.submit(duplicate);
     rt.stop();
 
     std::printf("\n=== final state ===\n");
@@ -594,5 +620,14 @@ int main()
                 static_cast<unsigned>(pool.used()),
                 static_cast<unsigned>(pool.high_watermark()));
 
-    return 0;
+    const bool ok = rejected_active && rejected_stopped && rejected_oversized
+        && (writer.context().writes_done == 2U)
+        && (reader.context().reads_done == 2U)
+        && (pool.used() == 0U);
+    std::printf("worker boundaries: active_rejected=%u stopped_rejected=%u"
+                " oversized_rejected=%u\n",
+                static_cast<unsigned>(rejected_active),
+                static_cast<unsigned>(rejected_stopped),
+                static_cast<unsigned>(rejected_oversized));
+    return ok ? 0 : 1;
 }
