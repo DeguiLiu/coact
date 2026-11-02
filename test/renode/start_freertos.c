@@ -9,7 +9,25 @@ extern int main(void);
 extern void vPortSVCHandler(void);
 extern void xPortPendSVHandler(void);
 extern void xPortSysTickHandler(void);
-extern void TIM2_IRQHandler(void);
+
+/* Weak defaults: the PAL fixture overrides TIM2, the fault fixture overrides
+   HardFault. An unhandled one parks the CPU, which the harness treats as a
+   failure. */
+__attribute__((weak)) void TIM2_IRQHandler(void)
+{
+    for (;;) {
+    }
+}
+__attribute__((weak)) void HardFault_Handler(void)
+{
+    for (;;) {
+    }
+}
+__attribute__((weak)) void MemManage_Handler(void)
+{
+    for (;;) {
+    }
+}
 
 extern uint32_t _sidata, _sdata, _edata, _sbss, _ebss, _estack;
 
@@ -26,8 +44,8 @@ void (*const g_vectors[16 + 82])(void) = {
     [0] = (void (*)(void))&_estack,
     [1] = Reset_Handler,
     [2] = Default_Handler,   /* NMI */
-    [3] = Default_Handler,   /* HardFault */
-    [4] = Default_Handler,   /* MemManage */
+    [3] = HardFault_Handler,
+    [4] = MemManage_Handler,
     [5] = Default_Handler,   /* BusFault */
     [6] = Default_Handler,   /* UsageFault */
     [11] = vPortSVCHandler,

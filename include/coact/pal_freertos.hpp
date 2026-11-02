@@ -347,6 +347,13 @@ public:
         bool valid = false;
     };
 
+    // Optional independent watchdog hook. The BSP owns the watchdog; the PAL
+    // only gives the progress path one place to kick it. No hook means no-op.
+    struct WatchdogOps {
+        void (*kick)(void* ctx) = nullptr;
+        void* ctx = nullptr;
+    };
+
     // SPSC mailbox: raise() publishes into the ring and gives one counting-
     // semaphore token; take() consumes one token and one payload. A counting
     // semaphore (not binary) keeps token count equal to payload count, so a
@@ -414,6 +421,10 @@ public:
     InitError start_dispatcher(ThreadEntry entry, void* context) noexcept;
     void join_dispatcher() noexcept;
     void watchdog_progress(uint32_t marker) noexcept;
+    void set_watchdog_ops(WatchdogOps ops) noexcept
+    {
+        watchdog_ = ops;
+    }
     void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;
     uint32_t dispatcher_stack_bytes() const noexcept;
     /* Native handle of this instance's dispatcher task, or nullptr before
@@ -503,6 +514,7 @@ private:
     mutable bool counter_seen_ = false;
     std::atomic_flag init_guard_ = ATOMIC_FLAG_INIT;
     TaskHandle_t dispatcher_handle_ = nullptr;
+    WatchdogOps watchdog_{};
 };
 
 }  // namespace pal

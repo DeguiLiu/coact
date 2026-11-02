@@ -17,9 +17,19 @@ namespace {
 /* Host-test convenience only. Production boards pass explicit resources, so
    this 20 KiB image is not linked into firmware builds that never use the
    default constructor. */
-FreeRtosResources<16384U, 8U, 8U, 2048U>& default_resources() noexcept
+inline constexpr uint32_t kDefaultDispatcherStackBytes = 16384U;
+inline constexpr uint16_t kDefaultContextSlots = 8U;
+inline constexpr uint16_t kDefaultWorkerSlots = 8U;
+inline constexpr uint32_t kDefaultWorkerStackBytes = 2048U;
+inline constexpr uint32_t kDefaultStackRequestBytes = 4096U;
+inline constexpr UBaseType_t kMaxCountingSemaphore = 0xFFFFU;
+
+FreeRtosResources<kDefaultDispatcherStackBytes, kDefaultContextSlots,
+                  kDefaultWorkerSlots, kDefaultWorkerStackBytes>&
+default_resources() noexcept
 {
-    static FreeRtosResources<16384U, 8U, 8U, 2048U> res;
+    static FreeRtosResources<kDefaultDispatcherStackBytes, kDefaultContextSlots,
+                             kDefaultWorkerSlots, kDefaultWorkerStackBytes> res;
     return res;
 }
 
@@ -31,7 +41,7 @@ FreeRtos::FreeRtos() noexcept
       user_ctx_(nullptr),
       state_(Lifecycle::kUninitialized),
       last_error_(InitError::kOk),
-      dispatcher_stack_bytes_(4096U),
+      dispatcher_stack_bytes_(kDefaultStackRequestBytes),
       clock_ops_(tick_clock_ops()),
       ns_per_counter_(detail::exact_ns_per_counter(
           static_cast<uint32_t>(configTICK_RATE_HZ)))
@@ -146,8 +156,11 @@ InitError FreeRtos::initialize() noexcept
         return InitError::kAlreadyInitialized;
     }
     struct ClearGuard {
-        std::atomic_flag& flag;
-        ~ClearGuard() { flag.clear(std::memory_order_release); }
+        std::atomic_flag* flag;
+        explicit ClearGuard(std::atomic_flag& f) noexcept : flag(&f) {}
+        ClearGuard(const ClearGuard&) = delete;
+        ClearGuard& operator=(const ClearGuard&) = delete;
+        ~ClearGuard() { flag->clear(std::memory_order_release); }
     } clear_guard{init_guard_};
 
     uint32_t stack = dispatcher_stack_bytes_;
@@ -494,7 +507,11 @@ void FreeRtos::join_dispatcher() noexcept
 
 void FreeRtos::watchdog_progress(uint32_t /*marker*/) noexcept
 {
-    /* Watchdog ownership stays at the BSP layer. */
+    /* Watchdog ownership stays at the BSP layer; this is only the progress
+       hook. With no hook installed the call is a no-op. */
+    if (nullptr != watchdog_.kick) {
+        watchdog_.kick(watchdog_.ctx);
+    }
 }
 
 void FreeRtos::set_dispatcher_stack_bytes(uint32_t bytes) noexcept
@@ -533,8 +550,9 @@ bool FreeRtos::sem_init(SemHandle& sem, uint32_t initial) noexcept
        semaphore would cap the count at one, so three releases followed by
        three takes would lose two tokens. */
     const UBaseType_t count = static_cast<UBaseType_t>(
-        (initial > 0xFFFFU) ? 0xFFFFU : initial);
-    sem.handle = xSemaphoreCreateCountingStatic(0xFFFFU, count, &sem.storage);
+        (initial > kMaxCountingSemaphore) ? kMaxCountingSemaphore : initial);
+    sem.handle =
+        xSemaphoreCreateCountingStatic(kMaxCountingSemaphore, count, &sem.storage);
     sem.pal = this;
     return nullptr != sem.handle;
 }
@@ -616,7 +634,8 @@ void FreeRtos::mutex_deinit(MutexHandle& m) noexcept
  * ------------------------------------------------------------------------- */
 bool FreeRtos::cond_init(CondHandle& c) noexcept
 {
-    c.handle = xSemaphoreCreateCountingStatic(0xFFFFU, 0U, &c.storage);
+    c.handle =
+        xSemaphoreCreateCountingStatic(kMaxCountingSemaphore, 0U, &c.storage);
     c.waiters.store(0U, std::memory_order_relaxed);
     c.pal = this;
     return nullptr != c.handle;
@@ -683,7 +702,7 @@ bool FreeRtos::thread_create(ThreadHandle& t, ThreadEntry entry,
     const CriticalToken token = irq_save();
     for (uint16_t i = 0U; i < res_->worker_slot_count; ++i) {
         WorkerSlot& slot = res_->worker_slots[i];
-        if (slot.busy) {
+        if (slot.busy || (nullptr == slot.start) || (nullptr == slot.join)) {
             continue;
         }
         slot.entry = entry;

@@ -1,0 +1,15 @@
+# FreeRTOS fault/watchdog fixture. The reset macro is required: an IWDG (or
+# SCB) reset must reload the image while .noinit survives across boots.
+using sysbus
+mach create "coact-freertos-wdg"
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+sysbus.usart2 CreateFileBackend @FREERTOS_WDG_UART@ true
+
+macro reset
+"""
+    sysbus LoadELF @FREERTOS_WDG_ELF@
+"""
+runMacro $reset
+
+emulation RunFor "00:00:01"
+quit

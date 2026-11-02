@@ -8,12 +8,14 @@
 | 基线管线（不要求准入 API） | `test/renode/run.sh --baseline-only` | `RESULT PASS 15/15` |
 | 看门狗终止跑飞 | `test/renode/wdg.sh` | `RESULT WDG PASS 7/7`，实测 31899 us 复位 |
 | MPU 能力矩阵 | `test/renode/mpu.sh` | `RESULT MPU PASS 13/13`，能力 11/11，设计要求项 8/8 |
-| FreeRTOS PAL（真实内核） | `test/renode/freertos.sh` | `RESULT PASS 27/27` |
+| FreeRTOS PAL（真实内核） | `test/renode/freertos.sh` | `RESULT PASS 32/32` |
+| FreeRTOS 故障路径 | `test/renode/freertos_wdg.sh` | `RESULT PASS 8/8`，关中断后 29.862 ms 复位 |
 | 变异测试 | `test/renode/mutate.sh` | `ALL MUTATIONS CAUGHT`（13/13） |
 
 镜像尺寸（`arm-none-eabi-size`）：主夹具 `text=36644 bss=716`；仅基线
 `text=8276 bss=84`；看门狗 `text=5860 bss=104`；MPU `text=4744 bss=4116`。
-FreeRTOS 夹具 `text=21464 bss=55848`（含 4 个常驻 worker 栈与事件池）。
+FreeRTOS 夹具 `text=23100 bss=64076`（含并发 create/join 用例的 2 个 worker 池）；
+FreeRTOS 故障夹具 `text=15548 bss=44820`。
 准入策略关闭时协调器为 32 字节，开启后 120 字节（差值为 88 字节的策略
 对象），ISR 版本同为 120 字节（`Cfg::kMaxAo=2`）。策略对象由 12 字节的
 临界区钩子三元组、4 字节对齐填充和 3 个 24 字节的 `ArrivalGate` 组成。
@@ -42,6 +44,7 @@ test/renode/run.sh --baseline-only # 仅基线管线
 test/renode/wdg.sh                 # 看门狗
 test/renode/mpu.sh                 # MPU 能力矩阵
 test/renode/freertos.sh            # FreeRTOS PAL（真实内核）
+test/renode/freertos_wdg.sh        # FreeRTOS 看门狗/故障路径
 test/renode/mutate.sh              # 变异测试（内部多次调用 run.sh）
 ```
 
@@ -196,7 +199,7 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 `pal.initialize()`、`register_current_task()` 和 `Runtime::start()`。
 静态构造由 `start_freertos.c` 遍历 `.init_array` 完成。
 
-27 条断言覆盖：
+32 条断言覆盖：
 
 | 组 | 内容 |
 |---|---|
@@ -206,11 +209,21 @@ S8 使用该模型上唯一可用的异步中断源：`stm32f4.repl` 的 timer2 
 | `FR.isr_*` | TIM2（IRQ 28，优先级 6）真实中断里调用 `softirq_raise()` 与 `sem_release_from_isr()`，任务侧收到 payload=7 和信号量 |
 | `FR.thread_*` | 常驻 worker 创建、执行、join、复槽 |
 | `FR.runtime_*` | Runtime + Staging + EventPool 端到端：8 个事件全部派发，停止后池占用归零 |
+| `FR.race_*` | 两个 FreeRTOS 任务在真实抢占下各做 100 次 `create → join`，执行次数、成功次数、两个任务各自完成数一致 |
 | `FR.dispatcher_stack_watermark` | `configCHECK_FOR_STACK_OVERFLOW=2`；dispatcher 剩余栈 976/1024 字（要求 >= 25%），溢出钩子会打印 FAIL 并停住 |
 
-实测：`RESULT PASS 27/27`，`text=21464 bss=55848`，反汇编中
+实测：`RESULT PASS 32/32`，`text=23100 bss=64076`，反汇编中
 `__atomic_compare_exchange_8` 调用点为 0。`bss` 偏大来自 4 个 1 KiB worker 栈、
 EventPool 与 Runtime 的固定数组，不是堆。
+
+`freertos_wdg.sh` 是独立的四阶段故障夹具，`.noinit` 跨复位记账：
+
+1. 任务通过 `watchdog_progress()` 连续踢 IWDG 40 ms（窗口 32 ms），随后
+   `cpsid i` 关中断并死循环；IWDG 复位，实测 29.862 ms。
+2. 复位后报告延迟，再用 MPU 无访问区触发 MemManage（`CFSR=0x82`，
+   `MMFAR=0x20020000`），处理程序打印现场并复位。
+3. 复位后报告故障恢复，再触发 `configASSERT`，断言钩子走同一复位路径。
+4. 复位后报告断言恢复并输出 `RESULT PASS 8/8`。
 
 ## 8. 本夹具不证明什么
 
@@ -237,6 +250,8 @@ EventPool 与 Runtime 的固定数组，不是堆。
   TIM2 中断进入 PAL 的 ISR 分支，以及固定静态资源下的端到端管线。它不证明
   CM4F/FPU 端口、厂商 BSP、tickless/低功耗配置、栈水位、长时间稳定性，也不
   证明目标板的 `configMAX_SYSCALL_INTERRUPT_PRIORITY` 与中断优先级规划。
+- 故障夹具证明的是该模型上的 IWDG 复位、MemManage 现场与复位、断言复位路径；
+  不证明产品板的看门狗时钟、复位后输出安全、故障注入覆盖率或认证结论。
 
 ## 9. 文件
 
@@ -251,9 +266,11 @@ EventPool 与 Runtime 的固定数组，不是堆。
 | `wdg_main.cpp` | 看门狗夹具：跑飞 → IWDG 复位 → 量测延迟 → 健康对照组 |
 | `mpu_main.cpp` | MPU 能力矩阵（10 个探针，每个带对照） |
 | `freertos_main.cpp` | FreeRTOS PAL 夹具：真实内核、SysTick、TIM2 ISR、Sem/Mutex/Worker/Runtime |
+| `freertos_wdg_main.cpp` | FreeRTOS 故障夹具：IWDG、MemManage、configASSERT、跨复位记账 |
 | `start_freertos.c` | FreeRTOS 向量表（SVC/PendSV/SysTick/TIM2）与 `.init_array` 初始化 |
 | `freertos/` | FreeRTOS Kernel V11.1.0 裁剪副本（MIT，见其 README） |
 | `coact_admission.resc` / `coact_wdg.resc` / `coact_mpu.resc` | 三个夹具的 Renode 脚本 |
 | `coact_freertos.resc` | FreeRTOS 夹具模板，`freertos.sh` 替换路径占位符 |
+| `coact_freertos_wdg.resc` | 故障夹具模板，带重启宏，`freertos_wdg.sh` 替换路径 |
 | `mpu_caps.expected` | 冻结的能力集，`mpu.sh` 第二道门的比对基线 |
-| `run.sh` / `wdg.sh` / `mpu.sh` / `freertos.sh` / `mutate.sh` | 构建、运行、判定 |
+| `run.sh` / `wdg.sh` / `mpu.sh` / `freertos.sh` / `freertos_wdg.sh` / `mutate.sh` | 构建、运行、判定 |

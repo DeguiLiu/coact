@@ -171,10 +171,20 @@ struct Cfg {
 
 using Pal = coact::pal::FreeRtos;
 using Res = coact::pal::FreeRtosResources<4096U, 8U, 4U, 1024U>;
+using RaceRes = coact::pal::FreeRtosResources<2048U, 2U, 2U, 512U>;
 using Rt = coact::Runtime<Cfg, Pal, Pal::Profile>;
 
 Res g_res;
 Pal g_pal(g_res);
+
+RaceRes g_race_res;
+Pal g_race_pal(g_race_res);
+constexpr uint32_t kRaceIterations = 100U;
+std::atomic<uint32_t> g_race_runs{0};
+std::atomic<uint32_t> g_race_success{0};
+std::atomic<uint32_t> g_race_done{0};
+std::atomic<uint32_t> g_race_t0{0};
+std::atomic<uint32_t> g_race_t1{0};
 
 // ISR -> PAL hand-off.
 Pal::SoftIrqHandle g_isr_mail;
@@ -194,6 +204,35 @@ std::atomic<int> g_worker_runs{0};
 void worker_entry(void*) noexcept
 {
     g_worker_runs.fetch_add(1, std::memory_order_relaxed);
+}
+
+struct RaceArg {
+    std::atomic<uint32_t>* result;
+};
+
+void race_worker(void*) noexcept
+{
+    g_race_runs.fetch_add(1, std::memory_order_relaxed);
+}
+
+void race_producer(void* p) noexcept
+{
+    auto* arg = static_cast<RaceArg*>(p);
+    uint32_t completed = 0U;
+    for (uint32_t i = 0U; i < kRaceIterations; ++i) {
+        Pal::ThreadHandle t;
+        while (!g_race_pal.thread_create(t, &race_worker, nullptr)) {
+            taskYIELD();
+        }
+        g_race_pal.thread_join(t);
+        ++completed;
+        g_race_success.fetch_add(1U, std::memory_order_relaxed);
+    }
+    arg->result->store(completed, std::memory_order_relaxed);
+    g_race_done.fetch_add(1, std::memory_order_relaxed);
+    for (;;) {
+        vTaskSuspend(nullptr);
+    }
 }
 
 coact::Event make_event(uint16_t signal) noexcept
@@ -335,6 +374,46 @@ void bootstrap(void*)
     rt->stop();
     record_u64("FR.runtime_pool_used", g_pool.used(), 0U);
 
+    /* Two producer tasks race on the same resident-worker pool. This is the
+       target-side counterpart of the host stress test: with real preemption,
+       a join that frees the slot before clearing entry/context loses work. */
+    g_race_runs.store(0U, std::memory_order_relaxed);
+    g_race_success.store(0U, std::memory_order_relaxed);
+    g_race_done.store(0U, std::memory_order_relaxed);
+    g_race_t0.store(0U, std::memory_order_relaxed);
+    g_race_t1.store(0U, std::memory_order_relaxed);
+    static RaceArg arg0{&g_race_t0};
+    static RaceArg arg1{&g_race_t1};
+    static StaticTask_t race_tcb0;
+    static StaticTask_t race_tcb1;
+    static StackType_t race_stack0[512];
+    static StackType_t race_stack1[512];
+    g_race_pal.set_dispatcher_stack_bytes(2048U);
+    const bool race_init =
+        (g_race_pal.initialize() == coact::pal::InitError::kOk);
+    TaskHandle_t race0 = xTaskCreateStatic(
+        &race_producer, "race0", 512U, &arg0, 4U, race_stack0, &race_tcb0);
+    TaskHandle_t race1 = xTaskCreateStatic(
+        &race_producer, "race1", 512U, &arg1, 4U, race_stack1, &race_tcb1);
+    record(race_init && (race0 != nullptr) && (race1 != nullptr),
+           "FR.race_init");
+    uint32_t race_spins = 0U;
+    while ((g_race_done.load(std::memory_order_acquire) < 2U)
+           && (race_spins < 1000U)) {
+        vTaskDelay(1U);
+        ++race_spins;
+    }
+    record(g_race_done.load(std::memory_order_relaxed) == 2U, "FR.race_done");
+    record(g_race_runs.load(std::memory_order_relaxed)
+               == g_race_success.load(std::memory_order_relaxed),
+           "FR.race_all_ran");
+    record(g_race_success.load(std::memory_order_relaxed)
+               == 2U * kRaceIterations,
+           "FR.race_total");
+    record((g_race_t0.load(std::memory_order_relaxed) == kRaceIterations)
+               && (g_race_t1.load(std::memory_order_relaxed) == kRaceIterations),
+           "FR.race_both");
+
     print_sizes();
     harness::puts("RESULT ");
     harness::puts((0U == g_fail) ? "PASS " : "FAIL ");
@@ -362,9 +441,10 @@ extern "C" void vApplicationGetIdleTaskMemory(StaticTask_t** tcb,
 
 extern "C" void vApplicationStackOverflowHook(TaskHandle_t, char*)
 {
-    /* configCHECK_FOR_STACK_OVERFLOW == 2: reaching this hook is a fixture
-       failure, not something to recover from. */
+    /* configCHECK_FOR_STACK_OVERFLOW == 2: reaching this hook is a
+       system-level fault. The safe action is a reset, not a return. */
     harness::puts("FAIL FR.stack_overflow\n");
+    *reinterpret_cast<volatile uint32_t*>(0xE000ED0CU) = 0x05FA0004U;
     for (;;) {
     }
 }
@@ -372,6 +452,15 @@ extern "C" void vApplicationStackOverflowHook(TaskHandle_t, char*)
 extern "C" void abort(void) noexcept
 {
     harness::puts("FAIL FR.abort\n");
+    *reinterpret_cast<volatile uint32_t*>(0xE000ED0CU) = 0x05FA0004U;
+    for (;;) {
+    }
+}
+
+extern "C" void freertos_assert_failed(void)
+{
+    harness::puts("FAIL FR.assert\n");
+    *reinterpret_cast<volatile uint32_t*>(0xE000ED0CU) = 0x05FA0004U;
     for (;;) {
     }
 }

@@ -41,11 +41,16 @@
 #define INCLUDE_uxTaskPriorityGet 1
 #define INCLUDE_uxTaskGetStackHighWaterMark 1
 
-/* A failed assertion means the fixture must stop loudly, not continue with a
-   broken kernel. The harness treats "no RESULT line" as a failure. */
-#define configASSERT(x)             \
-    do {                            \
-        if ((x) == 0) {             \
-            for (;;) { }            \
-        }                           \
+/* A failed assertion is a system-level fault: the board hook prints a marker
+   and resets. The kernel never continues with broken state. */
+#ifdef __cplusplus
+extern "C"
+#endif
+void freertos_assert_failed(void);
+
+#define configASSERT(x)                     \
+    do {                                    \
+        if ((x) == 0) {                     \
+            freertos_assert_failed();       \
+        }                                   \
     } while (0)

@@ -515,13 +515,16 @@ int main()
 | `include/coact/pal_freertos.hpp` | `FreeRtosResources`、`ContextSlot`、`WorkerSlot`、`FreeRtos` 类与编译期配置门禁 |
 | `src/core/pal_freertos.cpp` | 上下文分支临界区、ClockOps、dispatcher/worker 生命周期、Sem/Mutex/Cond/Thread/SoftIrq |
 | `test/freertos_stub.h` | pthread 支撑的 FreeRTOS API 子集，含故障注入与 ISR 模拟 |
-| `src/core/test_freertos_pal.cpp` | 21 组 host 契约测试（资源布局、初始化失败、启动/join、调度器未运行、双实例身份、ContextSlot 冻结/满表、优先级映射、ISR、嵌套临界区、时钟扩展、Sem/Mutex/Cond/signal+broadcast/timeout、sleep、worker 复用、SoftIrq、Runtime 端到端） |
+| `src/core/test_freertos_pal.cpp` | 22 组 host 契约测试（资源布局、初始化失败、启动/join、调度器未运行、双实例身份、ContextSlot 冻结/满表、优先级映射、ISR、嵌套临界区、时钟扩展、Sem/Mutex/Cond/signal+broadcast/timeout、sleep、worker 复用与并发 create/join、SoftIrq、Runtime 端到端） |
+| `test/renode/freertos_wdg_main.cpp` | 故障夹具：IWDG 终止关中断死循环、MemManage 现场记录与复位、configASSERT 复位，跨 4 次启动用 `.noinit` 记账 |
 
 实测结果（2026-11-02，本机）：
 
 - `ctest --test-dir build-v2`：58/58 通过。
-- `test_freertos_pal`：21 组、89 个断言全部通过。
-- Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 27/27 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker 与 Runtime 端到端。`configCHECK_FOR_STACK_OVERFLOW=2`，dispatcher 栈水位 976/1024 字余量（断言要求 >= 25%）。镜像 `text=21464 bss=55848`，`__atomic_compare_exchange_8` 调用点为 0。
+- `test_freertos_pal`：22 组、93 个断言全部通过。
+- Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 32/32 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker、双任务并发 create/join 与 Runtime 端到端。`configCHECK_FOR_STACK_OVERFLOW=2`，dispatcher 栈水位 977/1024 字余量（断言要求 >= 25%）。
+- Renode 故障夹具：`test/renode/freertos_wdg.sh` 8/8 通过。IWDG 在中断关闭、调度器停转的条件下于 **29.862 ms** 复位（窗口 32 ms）；MemManage 记录 `CFSR=0x82`、`MMFAR=0x20020000` 后复位；`configASSERT` 走同一复位路径。
+- `__atomic_compare_exchange_8` 调用点为 0；生产 PAL 的 AUTOSAR/CERT 检查 0 告警，MISRA C++ 范围与偏差见 `docs/misra-cpp-scope.md`。
 - 编译门禁：`configNUMBER_OF_CORES==1`、`configSUPPORT_STATIC_ALLOCATION==1`、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`、`INCLUDE_vTaskDelay==1`、`INCLUDE_xTaskGetSchedulerState==1`、32 位 tick、`configMAX_PRIORITIES>=3` 均为 `#error` 级检查；Cortex-M0/M0+ 与 SMP 直接拒绝。
 
 边界：
@@ -529,6 +532,23 @@ int main()
 - host stub 不按优先级调度，不产生真实 tick 中断，ISR 是同步调用的；它只能证明 PAL 的协议与控件选择，不能替代 P3 板上验证。
 - Renode 夹具使用 CM3 端口 + 真实内核，已覆盖真实链接、SysTick 与 TIM2 中断；仍不覆盖 CM4F/FPU 端口、厂商 BSP、`xPortIsInsideInterrupt` 在目标端口的可见性、tickless/低功耗、栈水位与 24h 长稳。
 - timer、diag、coro 按第 11 节不纳入本次实现。
+
+### 13.1 安全契约与故障处置矩阵
+
+安全状态由板级定义：PAL 不掌握输出，也不把 Breaker 的 `Safe` 当成硬件安全状态。默认安全动作是**系统级复位循环**，由 BSP 在复位前把执行器置安全；对“必须继续运行”的故障只允许软件降级。
+
+故障反应时限由板级需求给出。夹具取 IWDG 32 ms 窗口，实测 29.862 ms；这是该模型上的证据，不是产品时限承诺。
+
+| 故障 | 检测 | 动作 | 证据 |
+|---|---|---|---|
+| 准入拒绝、队列满、Breaker L1/L2 | 软件计数/状态机 | 拒绝或降级，继续运行 | admission 夹具 S1–S14 |
+| 处理函数不返回、关中断死循环 | 独立 IWDG | 复位 | `freertos_wdg.sh`：关中断后 29.862 ms 复位 |
+| `configASSERT` 失败 | FreeRTOS 断言钩子 | 记录后复位 | `freertos_wdg.sh` 第 3 次启动 |
+| 栈溢出 | `configCHECK_FOR_STACK_OVERFLOW=2` | 钩子记录后复位 | 主夹具编译并链接钩子；dispatcher 水位 977/1024 字 |
+| MPU/内存属性违规 | MemManage | 记录 CFSR/MMFAR 后复位 | `CFSR=0x82`、`MMFAR=0x20020000` |
+| 硬故障 | HardFault | 记录 CFSR/MMFAR 后复位 | 钩子已链接；MemManage 用例覆盖同一复位路径 |
+
+不允许的处置：断言后继续执行、栈溢出后返回、Breaker 置 `Safe` 就宣称硬件已安全、用软件预算终止不返回的处理函数。
 
 ## 14. 参考
 
