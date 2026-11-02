@@ -68,14 +68,16 @@ public:
     {
     }
 
-    // Real thread identity (R1): true only when the current thread is the coact
-    // Dispatcher thread. Delegates to the PAL's thread-local check
-    // (Posix::in_dispatcher_thread / RtThread::in_dispatcher_thread), which no
-    // other thread can forge. Static so cmdfw's single-writer gate can bind it
-    // as a callback without a Dispatcher instance.
-    static bool in_dispatcher_thread() noexcept
+    // Real thread identity (R1): true only when the current thread is this
+    // Dispatcher's thread. Delegates to the PAL instance
+    // (Posix/RtThread/Windows: thread-local; FreeRtos: dispatcher handle), which
+    // no other thread can forge. FreeRtos keeps the identity per instance, so
+    // this cannot be static: callers that need a callback bind
+    // [&d] { return d.in_dispatcher_thread(); } or use the PAL instance they
+    // already hold.
+    bool in_dispatcher_thread() const noexcept
     {
-        return PalT::in_dispatcher_thread();
+        return pal_.in_dispatcher_thread();
     }
 
     // Main loop. Called from the PAL dispatcher thread via ThreadEntry.

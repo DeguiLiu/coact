@@ -251,6 +251,45 @@ COACT_TEST(freertos_two_instances_track_their_own_dispatcher)
     CHECK_EQ(result_b.load(std::memory_order_relaxed), 1);  /* stale A is not B */
 }
 
+/* The Dispatcher wrapper must compile and forward to the PAL instance.
+   FreeRtos keeps the dispatcher identity per instance, so a static wrapper
+   cannot name the right PAL; this test binds the instance method. */
+COACT_TEST(freertos_dispatcher_identity_is_instance_scoped)
+{
+    stub_freertos_reset_faults();
+    static ResStandard res;
+    coact::pal::FreeRtos pal(res);
+    using Stage = coact::Staging<coact::DefaultConfig,
+                                 coact::pal::FreeRtos::QueueBackend>;
+    using Bank = coact::BreakerBank<coact::DefaultConfig>;
+    using Disp = coact::Dispatcher<Stage, coact::pal::FreeRtos,
+                                   coact::RttSingleCoreProfile, Bank>;
+
+    Stage staging(coact::make_critical_section(pal));
+    coact::AoRegistry<coact::DefaultConfig> registry;
+    coact::Monitor<coact::DefaultConfig> monitor;
+    coact::DefaultConfig cfg{};
+    Bank breakers(cfg);
+    Disp dispatcher(staging, registry, monitor, breakers, pal);
+
+    std::atomic<int> seen{-1};
+    struct Probe {
+        Disp* self;
+        std::atomic<int>* out;
+    } probe{&dispatcher, &seen};
+    const auto entry = [](void* p) noexcept {
+        auto* ctx = static_cast<Probe*>(p);
+        ctx->out->store(ctx->self->in_dispatcher_thread() ? 1 : 0,
+                        std::memory_order_relaxed);
+    };
+
+    CHECK(!dispatcher.in_dispatcher_thread());
+    REQUIRE_EQ(static_cast<int>(coact::pal::InitError::kOk),
+               static_cast<int>(pal.start_dispatcher(entry, &probe)));
+    pal.join_dispatcher();
+    CHECK_EQ(seen.load(std::memory_order_relaxed), 1);
+}
+
 /* ---- Context table ------------------------------------------------------ */
 namespace {
 coact::pal::FreeRtos* g_ctx_pal = nullptr;

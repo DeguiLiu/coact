@@ -517,15 +517,15 @@ static const coact::TransitionDef<ProbeCtx> kProbeTrans[] = {
 
 COACT_TEST(dispatcher_thread_identity_is_real_and_non_forgeable)
 {
+    Fixture fx;
     // Non-Dispatcher thread (test main): the identity MUST be false. A test
     // could construct any RAII scope, but no scope can flip coact's thread-local
     // Dispatcher marker - this is the forged-guard RED case.
     REQUIRE(!coact::pal::Posix::in_dispatcher_thread());
-    REQUIRE(!DispatcherT::in_dispatcher_thread());
+    REQUIRE(!fx.dispatcher.in_dispatcher_thread());
 
     // On the real Dispatcher thread the identity MUST be true (production
     // cmdfw actions run here and legitimately open the slot gate).
-    Fixture fx;
     std::atomic<bool> seen{false};
     std::atomic<bool> dispatcher_seen{false};
     coact::Ao<ProbeCtx, coact::Hsm<ProbeCtx>, Traits> ao(
