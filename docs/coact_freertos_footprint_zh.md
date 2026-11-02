@@ -2,8 +2,26 @@
 
 结论：coact 不会引入堆、异常、RTTI 或隐藏的运行时，但它不是零成本。以本仓库的
 默认配置运行一个 AO，Flash 增加约 8.8 KiB，静态 RAM 增加约 9.3 KiB；把
-`Config` 容量调小并启用 LTO 后分别降到约 7.9 KiB 和 6.3 KiB。成本有界、可配置，是否可接受
-取决于目标 MCU 的 Flash/RAM 预算，不能用“不会增大固件”来表述。
+`Config` 容量调小并启用 LTO 后分别降到约 7.9 KiB 和 6.3 KiB。成本有界、可配置，
+是否可接受取决于目标 MCU 的 Flash/RAM 预算，不能用“不会增大固件”来表述。
+
+## 0. 当前状态与 C 对比
+
+截至 2026-11-03，Cortex-M4 + FreeRTOS、`-Os`、零堆条件下的结果：
+
+| 版本 | Flash 增量 | RAM 增量 | 备注 |
+|---|---:|---:|---|
+| 裸 FreeRTOS 基线 | 0 | 0 | text 6624 B，bss 3128 B |
+| coact 默认 | +8.8 KiB | +9.3 KiB | Staging 4.4 KiB，Dispatcher 栈 4 KiB |
+| coact 小配置 + LTO | +7.9 KiB | +6.3 KiB | 当前最优可运行组合 |
+
+C 语言没有做等价镜像，按同样功能估算为 +5–7 KiB Flash、+6–10 KiB RAM。coact
+的最优组合已经落在该区间上沿：Flash 多约 1 KiB，RAM 基本持平。若只做单队列加
+`switch` 状态机的极简 C 版本，可以降到 +2–3.5 KiB / +4–5 KiB，但 AO 注册表、
+熔断器、监控和准入需要另写，功能并不对等。
+
+对外表述建议用“成本有界、可配置、无堆”，不要用“和 C 一样大”或“不会增大
+固件”。C 的数字是估算，coact 的数字来自 `test/renode/footprint.sh` 的实测。
 
 ## 1. 测量方法
 
@@ -85,8 +103,8 @@ test/renode/footprint.sh
 
 ## 7. 如果改用 C 实现（预估，非实测）
 
-结论：等价功能的 C 实现大约增加 5–7 KiB Flash，RAM 与 coact 基本同量级
-（6–10 KiB）。语言不是主要成本来源；要显著缩小体积，应当削减功能或容量。
+等价功能的 C 实现大约增加 5–7 KiB Flash，RAM 与 coact 基本同量级（6–10 KiB）。
+语言不是主要成本来源；要显著缩小体积，应当削减功能或容量。
 
 | 档位 | 内容 | 预估 Flash 增量 | 预估 RAM 增量 |
 |---|---|---:|---:|
@@ -110,7 +128,7 @@ test/renode/footprint.sh
 
 ## 8. 优化当前 C++17 实现
 
-结论：已经落地的三项优化（LTO、Config 裁剪、32 位 Staging 时间戳）把增量从
+已经落地的三项优化（LTO、Config 裁剪、32 位 Staging 时间戳）把增量从
 +8.8 KiB Flash / +9.3 KiB RAM 降到 **+7.9 KiB Flash / +6.3 KiB RAM**。其余
 代码级优化仍是估算，没有计入这个结果。
 
