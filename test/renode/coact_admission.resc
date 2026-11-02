@@ -1,0 +1,9 @@
+# coact admission harness: run from the repository root (run.sh does this).
+# Target output goes to test/renode/build/uart.log through the USART2 file
+# backend; Renode's own log goes to stdout.
+mach create "coact-admission"
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+sysbus.usart2 CreateFileBackend @test/renode/build/uart.log true
+sysbus LoadELF @test/renode/build/coact_renode.elf
+emulation RunFor "00:00:01"
+quit

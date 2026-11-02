@@ -1,0 +1,22 @@
+# Watchdog fixture: run from the repository root (wdg.sh does this).
+#
+# The reset macro is required, not cosmetic: Renode logs "No action for reset"
+# and keeps the CPU parked unless a reset action reloads the image. With it, an
+# IWDG expiry restarts Reset_Handler while .noinit survives, which is what lets
+# boot 2 report the latency measured in boot 1.
+#
+# Virtual time is bounded at 300 ms: ~32 ms runaway + reset + ~100 ms healthy
+# control loop, with margin. Nothing here depends on wall-clock time.
+using sysbus
+mach create "coact-wdg"
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+sysbus.usart2 CreateFileBackend @test/renode/build/wdg.log true
+
+macro reset
+"""
+    sysbus LoadELF @test/renode/build/coact_wdg.elf
+"""
+runMacro $reset
+
+emulation RunFor "00:00:00.300"
+quit

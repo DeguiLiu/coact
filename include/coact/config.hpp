@@ -100,6 +100,21 @@ struct SubmitResult {
 };
 
 // ---------------------------------------------------------------------------
+// Admission reasons. kArrivalTooSoon and kBacklogFull travel back through
+// SubmitResult::reason; kStagingFull only appears inside the monitor snapshot
+// ring, because a partition overflow has historically reported reason 0 and
+// that contract stays untouched. Appended to the disposition vocabulary so
+// existing PolicyReason and rejection codes keep their values.
+// The rule tables themselves live in coact/admission.hpp: they are static
+// configuration expressed as types, not a runtime table.
+// ---------------------------------------------------------------------------
+enum AdmissionReason : uint16_t {
+    kArrivalTooSoon = 4U,
+    kBacklogFull    = 5U,
+    kStagingFull    = 6U
+};
+
+// ---------------------------------------------------------------------------
 // QueueResult (design 5.4): fused push result carrying the size after the
 // operation, so watermark / min-free / full-reject accounting does not enter
 // the queue a second time. Shared by the lock-free SpscRing and the single-core

@@ -87,9 +87,31 @@ public:
         return count_.load(std::memory_order_acquire);
     }
 
+    // Atomically reserve one pending slot, refusing at `limit` (0 = no
+    // configured cap) and at the uint16_t ceiling. The cap check and the add
+    // are one CAS: a load()-then-increment() pair would let two producers both
+    // observe room and overshoot the limit.
+    bool try_increment(uint16_t limit) noexcept
+    {
+        uint16_t observed = count_.load(std::memory_order_relaxed);
+        for (;;) {
+            if ((0xffffU == observed) || ((0U != limit) && (observed >= limit))) {
+                return false;
+            }
+            const uint16_t next = static_cast<uint16_t>(observed + 1U);
+            uint16_t expected = observed;
+            if (count_.compare_exchange_weak(expected, next,
+                                             std::memory_order_release,
+                                             std::memory_order_relaxed)) {
+                return true;
+            }
+            observed = expected;
+        }
+    }
+
     void increment() noexcept
     {
-        count_.fetch_add(static_cast<uint16_t>(1U), std::memory_order_release);
+        (void)try_increment(0U);
     }
 
     void decrement() noexcept

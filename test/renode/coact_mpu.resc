@@ -1,0 +1,7 @@
+# Cortex-M4 MPU experiment: run from the repository root.
+mach create "coact-mpu"
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+sysbus.usart2 CreateFileBackend @test/renode/build/mpu.log true
+sysbus LoadELF @test/renode/build/coact_mpu.elf
+emulation RunFor "00:00:00.200"
+quit

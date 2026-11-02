@@ -6,9 +6,11 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "coact/assert.hpp"
 #include "coact/config.hpp"
+#include "coact/expected.hpp"
 
 namespace coact {
 
@@ -645,6 +647,8 @@ enum class RejectReason : uint8_t {
     kC5LeaseBusy,
     kC6Pending,
     kC7Context,
+    kC8ArrivalInterval,
+    kC9BacklogCap,
     kRejectCount
 };
 
@@ -683,6 +687,154 @@ struct GlobalCounters {
 };
 
 // ---------------------------------------------------------------------------
+// Admission snapshot record (design 4.1/4.2). Namespace scope so the ring and
+// Monitor share one spelling; Monitor keeps nested aliases for call sites that
+// already write Monitor<Config>::AdmissionSnapshot.
+// ---------------------------------------------------------------------------
+struct AdmissionSnapshot {
+    uint8_t target;
+    uint8_t disposition;  // static_cast<uint8_t>(SubmitDisposition)
+    uint16_t reason;      // AdmissionReason
+    uint64_t seq;         // 1-based, never wraps in a product lifetime
+    uint64_t now_ns;      // 0 when no clock sample was taken
+    uint64_t budget_ns;   // target rtc budget at rejection, 0 when unknown
+};
+
+// Why a snapshot lookup failed. "Nothing recorded yet", "never existed",
+// "already rolled out of the ring", "rewritten during the read" and "this
+// build has no ring" are five different facts for a diagnostics reader; a bool
+// return flattens them into one silent false and makes every caller re-derive
+// the distinction.
+enum class SnapshotError : uint8_t {
+    kEmpty,       // no rejection has been recorded yet
+    kOutOfRange,  // seq 0, or beyond the monotonic count
+    kEvicted,     // recorded, but overwritten inside the fixed ring
+    kTorn,        // the slot was rewritten during the read
+    kDisabled     // Config asked for no snapshot storage
+};
+
+// Fixed-depth ring of rejection records. A writer fills the fields first and
+// publishes the slot's seq last; a reader checks that seq before and after the
+// fields, so it either returns one whole record or reports kTorn. It cannot
+// hand back a record whose fields came from two different rejections, which is
+// what a plain field-by-field relaxed read would allow on a reused slot.
+template <uint8_t Slots>
+class AdmissionSnapshotRing {
+public:
+    static constexpr uint8_t kSlots = Slots;
+
+    void record(TargetId target, SubmitDisposition disposition, uint16_t reason,
+                uint64_t now_ns, uint64_t budget_ns) noexcept
+    {
+        const uint64_t seq =
+            count_.fetch_add(1U, std::memory_order_relaxed) + 1U;
+        Slot& s = slots_[static_cast<size_t>(seq - 1U) % kSlots];
+        s.target.store(target.raw(), std::memory_order_relaxed);
+        s.disposition.store(static_cast<uint8_t>(disposition),
+                            std::memory_order_relaxed);
+        s.reason.store(reason, std::memory_order_relaxed);
+        s.now_ns.store(now_ns, std::memory_order_relaxed);
+        s.budget_ns.store(budget_ns, std::memory_order_relaxed);
+        /* Published last, with release: a reader that sees this seq sees the
+           five fields written above it. */
+        s.seq.store(seq, std::memory_order_release);
+    }
+
+    uint64_t count() const noexcept
+    {
+        return count_.load(std::memory_order_relaxed);
+    }
+
+    Expected<AdmissionSnapshot, SnapshotError>
+    lookup(uint64_t seq) const noexcept
+    {
+        using Result = Expected<AdmissionSnapshot, SnapshotError>;
+        const uint64_t total = count();
+        if (0U == total) {
+            return Result::error(SnapshotError::kEmpty);
+        }
+        if ((0U == seq) || (seq > total)) {
+            return Result::error(SnapshotError::kOutOfRange);
+        }
+        /* A sequence that already fell out of the ring must not read whatever
+           record now occupies its slot. */
+        if ((total - seq) >= static_cast<uint64_t>(kSlots)) {
+            return Result::error(SnapshotError::kEvicted);
+        }
+        const Slot& s = slots_[static_cast<size_t>(seq - 1U) % kSlots];
+        if (s.seq.load(std::memory_order_acquire) != seq) {
+            return Result::error(SnapshotError::kTorn);
+        }
+        AdmissionSnapshot out{};
+        out.target = s.target.load(std::memory_order_relaxed);
+        out.disposition = s.disposition.load(std::memory_order_relaxed);
+        out.reason = s.reason.load(std::memory_order_relaxed);
+        out.seq = seq;
+        out.now_ns = s.now_ns.load(std::memory_order_relaxed);
+        out.budget_ns = s.budget_ns.load(std::memory_order_relaxed);
+        /* The slot may have been reused while the fields were read; its seq
+           then no longer matches the requested one and the record above is a
+           mix of two rejections. */
+        if (s.seq.load(std::memory_order_acquire) != seq) {
+            return Result::error(SnapshotError::kTorn);
+        }
+        return Result::success(out);
+    }
+
+private:
+    struct Slot {
+        std::atomic<uint8_t> target{0U};
+        std::atomic<uint8_t> disposition{0U};
+        std::atomic<uint16_t> reason{0U};
+        std::atomic<uint64_t> seq{0U};
+        std::atomic<uint64_t> now_ns{0U};
+        std::atomic<uint64_t> budget_ns{0U};
+    };
+
+    std::array<Slot, static_cast<size_t>(Slots)> slots_{};
+    std::atomic<uint64_t> count_{0U};
+};
+
+// Depth 0, the default: no storage, no records, no lookups. A Monitor that was
+// never asked for snapshots pays one empty member instead of the ring, and the
+// submit path call compiles into nothing.
+template <>
+class AdmissionSnapshotRing<0U> {
+public:
+    static constexpr uint8_t kSlots = 0U;
+
+    void record(TargetId, SubmitDisposition, uint16_t, uint64_t,
+                uint64_t) const noexcept {}
+    uint64_t count() const noexcept { return 0U; }
+    Expected<AdmissionSnapshot, SnapshotError> lookup(uint64_t) const noexcept
+    {
+        return Expected<AdmissionSnapshot, SnapshotError>::error(
+            SnapshotError::kDisabled);
+    }
+};
+
+static_assert(std::is_empty<AdmissionSnapshotRing<0U>>::value,
+              "coact: a disabled snapshot ring must not occupy storage");
+
+namespace detail {
+
+// Config opt-in for the ring depth: kAdmissionSnapshotSlots when a board
+// declares it, 0 otherwise, so no existing Config has to be edited to keep its
+// footprint. Detection, not a required field (design 7).
+template <typename C, typename = void>
+struct admission_snapshot_slots {
+    static constexpr uint8_t value = 0U;
+};
+
+template <typename C>
+struct admission_snapshot_slots<
+    C, std::void_t<decltype(C::kAdmissionSnapshotSlots)>> {
+    static constexpr uint8_t value = C::kAdmissionSnapshotSlots;
+};
+
+}  // namespace detail
+
+// ---------------------------------------------------------------------------
 // Monitor: fixed counters only. The hot path writes counters, never formats
 // strings and never blocks. SMP may keep per-CPU instances and fold them at a
 // higher layer; this module provides the per-instance accounting.
@@ -712,6 +864,30 @@ public:
     // -- M4 dispositions --
     void record_disposition(SubmitDisposition disposition) noexcept;
 
+    // -- Admission snapshots (design 4.1/4.2/7) --
+    // Fixed ring of the most recent admission rejections. The depth is opt-in
+    // through Config::kAdmissionSnapshotSlots; the default is zero slots,
+    // which costs one empty member and no per-record storage. Configuring
+    // slots while the admission policy stays off allocates a ring nothing
+    // writes to, so opt in only together with the policy. Reads are
+    // seq-validated: a reader gets one whole record or SnapshotError::kTorn,
+    // never a mix.
+    static constexpr uint8_t kAdmissionSnapshotSlots =
+        detail::admission_snapshot_slots<Config>::value;
+
+    using AdmissionSnapshot = coact::AdmissionSnapshot;
+    using SnapshotError = coact::SnapshotError;
+    using SnapshotRing = AdmissionSnapshotRing<kAdmissionSnapshotSlots>;
+
+    void record_admission_snapshot(TargetId target, SubmitDisposition disposition,
+                                   uint16_t reason, uint64_t now_ns,
+                                   uint64_t budget_ns) noexcept;
+    // Total records ever written. Monotonic, so a reader can compare it
+    // against a previously seen seq to tell eviction from "never happened".
+    [[nodiscard]] uint64_t admission_snapshot_count() const noexcept;
+    [[nodiscard]] Expected<AdmissionSnapshot, SnapshotError>
+    admission_snapshot(uint64_t seq) const noexcept;
+
     // -- Watchdog / platform --
     void heartbeat() noexcept;
     void record_platform_fault() noexcept;
@@ -727,6 +903,7 @@ private:
 
     AoCounters ao_[static_cast<size_t>(kMaxAo) + 1U];  // 1-based TargetId
     GlobalCounters global_;
+    SnapshotRing snapshots_;
 };
 
 template <typename Config>
@@ -871,6 +1048,26 @@ inline void Monitor<Config>::record_disposition(SubmitDisposition disposition) n
 template <typename Config>
 inline void Monitor<Config>::heartbeat() noexcept {
     global_.watchdog_heartbeats.fetch_add(1U, std::memory_order_relaxed);
+}
+
+template <typename Config>
+inline void Monitor<Config>::record_admission_snapshot(
+    TargetId target, SubmitDisposition disposition, uint16_t reason,
+    uint64_t now_ns, uint64_t budget_ns) noexcept
+{
+    snapshots_.record(target, disposition, reason, now_ns, budget_ns);
+}
+
+template <typename Config>
+inline uint64_t Monitor<Config>::admission_snapshot_count() const noexcept {
+    return snapshots_.count();
+}
+
+template <typename Config>
+inline auto Monitor<Config>::admission_snapshot(uint64_t seq) const noexcept
+    -> Expected<AdmissionSnapshot, SnapshotError>
+{
+    return snapshots_.lookup(seq);
 }
 
 template <typename Config>

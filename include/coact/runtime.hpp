@@ -68,6 +68,11 @@ inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry,
 //             Single-core RT-Thread boards pass pal::RtThread::Profile
 //             (RttSingleCoreProfile), which the Dispatcher forwards to select
 //             ImmediateReclaimer.
+//   AdmissionT - admission policy of the Coordinator (design 4.1/4.2/7).
+//             Default NoAdmission compiles the arrival interval and the
+//             backlog cap out of the submit path. A board that wants them
+//             passes StaticAdmission<RuleSet, Config, Sync> here; Runtime
+//             forwards the type to the Coordinator and nothing else changes.
 //
 // Three-phase initialization:
 //   Phase 1 (bind)      - register AOs, configure policy ops.
@@ -78,18 +83,21 @@ inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry,
 //   stop()              - request stop, join Dispatcher thread.
 // ---------------------------------------------------------------------------
 template <typename Config, typename PalT,
-          typename Profile = coact::HostSmpProfile>
+          typename Profile = coact::HostSmpProfile,
+          typename AdmissionT = NoAdmission>
 class Runtime
 {
 public:
     using ConfigType = Config;
+    using AdmissionType = AdmissionT;
     using StagingType = Staging<Config,
         PalT::template QueueBackend>;
     using BreakerBankType   = BreakerBank<Config>;
     using DispatcherType    = Dispatcher<StagingType, PalT, Profile,
                                          BreakerBankType>;
     using CoordinatorType   = DispatchCoordinator<StagingType, PalT,
-                                                  BreakerBankType>;
+                                                  BreakerBankType,
+                                                  AdmissionT>;
 
     explicit Runtime(PalT& pal) noexcept
         : pal_(pal),
@@ -174,6 +182,12 @@ public:
     Monitor<Config>& monitor()     noexcept { return monitor_; }
     BreakerBankType& breakers()    noexcept { return breakers_; }
     BreakerBankType& breaker()     noexcept { return breakers_; }
+
+    // Read-only view of the admission policy, e.g. per-target gate state.
+    const AdmissionT& admission_policy() const noexcept
+    {
+        return coordinator_.admission_policy();
+    }
 
 private:
     PalT&           pal_;

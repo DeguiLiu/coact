@@ -8,6 +8,7 @@
 
 #include <cstdint>
 
+#include "coact/admission.hpp"
 #include "coact/ao.hpp"
 #include "coact/config.hpp"
 #include "coact/event.hpp"
@@ -22,6 +23,11 @@ namespace coact {
 // DispatchCoordinator: the single entry point for all event submissions.
 // Enforces the M4 -> M1 -> (direct | merge | staging) pipeline.
 //
+// AdmissionT selects the admission policy: NoAdmission (the default) compiles
+// the arrival interval and the backlog cap out of the submit path entirely;
+// StaticAdmission<RuleSet, Config, Sync> enables both from a compile-time
+// rule set; Sync is the required critical-section backend (design 4.1).
+//
 // Event reference-count contract (reference-counting semantics):
 //   submit_from_task / try_submit_from_isr own the reference passed in.
 //   - Staged:       allocation reference transfers to staging; Dispatcher
@@ -31,7 +37,8 @@ namespace coact {
 //   The caller MUST NOT access the event after submit returns.
 // ---------------------------------------------------------------------------
 template <typename StagingT, typename PalT,
-          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>>
+          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>,
+          typename AdmissionT = NoAdmission>
 class DispatchCoordinator
 {
 public:
@@ -48,9 +55,16 @@ public:
           breaker_(breaker),
           pal_(pal),
           policy_ops_(policy_ops),
-          policy_ctx_(policy_ctx)
+          policy_ctx_(policy_ctx),
+          admission_(pal)
     {
     }
+
+    /* Copying would give two coordinators separate admission gates over the
+       same staging queue, so the interval rule could be bypassed by
+       alternating submit calls between the copies. */
+    DispatchCoordinator(const DispatchCoordinator&) = delete;
+    DispatchCoordinator& operator=(const DispatchCoordinator&) = delete;
 
     // Submit an event from a task context. Owns the reference on entry.
     // admission selects the capacity lane; the default keeps every existing
@@ -70,6 +84,15 @@ public:
                                          StagingAdmission::Ordinary) noexcept
     {
         return submit_internal(target, e, qos, admission, /*from_isr=*/true);
+    }
+
+    // Diagnostic read access to the admission policy, e.g. the per-target
+    // ArrivalGate state. Read-only: limits are compile-time constants and the
+    // gates are mutated solely by the submit path. Named apart from the
+    // StagingAdmission parameter `admission` used on the submit entry points.
+    const AdmissionT& admission_policy() const noexcept
+    {
+        return admission_;
     }
 
 private:
@@ -115,6 +138,13 @@ private:
            sample; High/Normal staged events carry an unused zero timestamp. */
         uint64_t now_ns = 0U;
         bool now_init = false;
+
+        /* Arrival-window reservation (design 4.1). The policy type carries
+           the state, so a coordinator built without admission has neither
+           the field nor any of the rollback branches below. Every failure
+           path leaves scope with the reservation still active and hands the
+           window back; only the two successful outcomes commit it. */
+        typename AdmissionT::Reservation arrival{};
 
         /* --- C1: target must be bound ------------------------------------ */
         AoBase* ao = registry_.lookup(target);
@@ -176,6 +206,32 @@ private:
                registry in coordinator); fall through to staging. */
         }
 
+        /* --- arrival interval gate (design 4.1) -------------------------- */
+        /* Runs after overload/policy rejection so a rejected submission never
+           consumes the window, and immediately before direct dispatch so the
+           recorded timestamp is the arrival of an admitted submission. Task
+           and ISR producers share one CAS; nothing is held across the HSM. */
+        if constexpr (AdmissionT::kEnabled) {
+            if (0U != admission_.limits_for(target).min_arrival.value) {
+                if (!now_init) {
+                    now_ns = pal_.monotonic_ns();
+                    now_init = true;
+                }
+                if (!admission_.reserve(target, now_ns, arrival)) {
+                    event_gc(e);
+                    monitor_.record_rejection(target,
+                                              RejectReason::kC8ArrivalInterval);
+                    monitor_.record_disposition(
+                        SubmitDisposition::DroppedRateLimit);
+                    monitor_.record_admission_snapshot(
+                        target, SubmitDisposition::DroppedRateLimit,
+                        kArrivalTooSoon, now_ns, ao->rtc_budget_ns());
+                    return {SubmitDisposition::DroppedRateLimit,
+                            kArrivalTooSoon};
+                }
+            }
+        }
+
         /* --- M1 direct dispatch (Task path only) ------------------------ */
         /* The allocation reference transfers directly to the successful
            dispatch or, after a lost race, to the staging path below. */
@@ -210,6 +266,10 @@ private:
                     /* direct completed: consume the allocation reference */
                     event_gc(e);
                     monitor_.record_disposition(SubmitDisposition::Direct);
+                    if constexpr (AdmissionT::kEnabled) {
+                        /* Admitted and executed: the arrival counts. */
+                        arrival.commit();
+                    }
                     return {SubmitDisposition::Direct, 0U};
                 }
                 /* Lost the direct race: transfer the allocation reference to
@@ -223,12 +283,36 @@ private:
         }
 
         /* --- staging (queued) ------------------------------------------- */
-        if (!now_init && PriorityClass::Low == priority_class) {
+        if (!now_init && (PriorityClass::Low == priority_class)) {
             now_ns = pal_.monotonic_ns();
             now_init = true;
         }
         PendingCounter& pending = ao->pending();
-        pending.increment();
+        if constexpr (AdmissionT::kEnabled) {
+            /* A capped submission needs a timestamp for its snapshot even
+               when it is neither Low nor policy-evaluated. */
+            if (!now_init && (0U != admission_.backlog_cap(target))) {
+                now_ns = pal_.monotonic_ns();
+                now_init = true;
+            }
+            /* Reserve the pending slot atomically against the cap before the
+               slot becomes visible. Returning with `arrival` uncommitted
+               hands the window back, so a cap rejection consumes neither
+               capacity nor interval. qos.critical does not exempt a target
+               from its own backlog cap. */
+            if (!pending.try_increment(admission_.backlog_cap(target))) {
+                event_gc(e);
+                monitor_.record_rejection(target, RejectReason::kC9BacklogCap);
+                monitor_.record_disposition(SubmitDisposition::RejectedFull);
+                monitor_.record_admission_snapshot(
+                    target, SubmitDisposition::RejectedFull, kBacklogFull,
+                    now_ns, ao->rtc_budget_ns());
+                return {SubmitDisposition::RejectedFull, kBacklogFull};
+            }
+        }
+        else {
+            pending.increment();
+        }
         if (!staging_.enqueue(target, e, priority_class, now_ns,
                               qos.critical, admission)) {
             pending.decrement();
@@ -237,7 +321,20 @@ private:
             monitor_.record_overflow();
             target_breaker.on_overflow();
             monitor_.record_disposition(SubmitDisposition::RejectedFull);
+            if constexpr (AdmissionT::kEnabled) {
+                /* A full lane is a rejection too (design 6.2), so the ring
+                   keeps target, path, time and budget for it. The returned
+                   reason stays 0: that is the historical contract of this
+                   path and no caller may see it change. */
+                monitor_.record_admission_snapshot(
+                    target, SubmitDisposition::RejectedFull, kStagingFull,
+                    now_ns, ao->rtc_budget_ns());
+            }
             return {SubmitDisposition::RejectedFull, 0U};
+        }
+        if constexpr (AdmissionT::kEnabled) {
+            /* Queued: the arrival counts. */
+            arrival.commit();
         }
 
         /* Coalesce wakeups behind one latch. Queue publication happens before
@@ -263,6 +360,11 @@ private:
     PalT&              pal_;
     const PolicyOps*   policy_ops_;
     void*              policy_ctx_;
+    /* NoAdmission is empty; StaticAdmission owns one ArrivalGate per target
+       plus the critical section those gates run under, bound from the PAL
+       above. Either way the storage is fixed and shared by the task and ISR
+       entry points, never allocated. */
+    AdmissionT admission_;
 };
 
 }  // namespace coact

@@ -15,17 +15,57 @@ coact_add_test(test_coordinator
 target_link_libraries(test_coordinator PRIVATE Threads::Threads)
 target_include_directories(test_coordinator PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
+# P1 admission: per-target arrival interval, backlog cap and the fixed
+# admission snapshot ring (mock clock, no POSIX PAL / threads). The rule set
+# is a compile-time template parameter, so these stay host-portable.
+coact_add_test(test_admission
+    test_admission.cpp)
+target_include_directories(test_admission PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# Negative compile contracts for the admission rule set: an invalid table must
+# be rejected where the board declares it, not ignored at boot. EXCLUDE_FROM_ALL
+# keeps them out of the default build; each ctest builds its target on demand
+# and passes only when the output carries the specific static_assert message.
+# A plain WILL_FAIL test would also pass on an unrelated compile error, e.g. a
+# missing include or a changed constructor.
+set(neg_expect_TARGET_ZERO
+    "admission rule names a target outside 1\\.\\.kMaxAo")
+set(neg_expect_TARGET_OVER_MAX_AO
+    "admission rule names a target outside 1\\.\\.kMaxAo")
+set(neg_expect_DUPLICATE_TARGET
+    "duplicate TargetId in the admission rule set")
+set(neg_expect_INTERVAL_UNBOUNDED
+    "min_arrival above kMaxMinArrivalNs")
+set(neg_expect_TOO_MANY_RULES
+    "more admission rules than Config::kMaxAo")
+foreach(neg_case
+        TARGET_ZERO TARGET_OVER_MAX_AO DUPLICATE_TARGET
+        INTERVAL_UNBOUNDED TOO_MANY_RULES)
+    string(TOLOWER "${neg_case}" neg_name)
+    add_library(test_admission_${neg_name}_neg EXCLUDE_FROM_ALL STATIC
+                admission_invalid_rules_neg.cpp)
+    target_compile_definitions(test_admission_${neg_name}_neg PRIVATE
+                               COACT_TEST_ADM_${neg_case}=1)
+    target_link_libraries(test_admission_${neg_name}_neg PRIVATE coact_core)
+    add_test(NAME test_admission_${neg_name}_neg
+             COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR}
+                     --target test_admission_${neg_name}_neg)
+    set_tests_properties(test_admission_${neg_name}_neg PROPERTIES
+        PASS_REGULAR_EXPRESSION "${neg_expect_${neg_case}}")
+endforeach()
+
 # ---- POSIX / RT-Thread host suites ----------------------------------------
 # Everything below links pal_posix.cpp / pal_rtthread.cpp (pthread, signalfd,
 # ucontext) or the COACT_RTT_STUB pthread shim, or forks a child to observe
 # COACT_ASSERT. None of it compiles under MSVC; the Windows CI scope skips the
 # whole block by name instead of pretending these suites passed.
 if(COACT_PORTABLE_ONLY)
-    foreach(skipped
+foreach(skipped
             test_core test_integration test_pal_sync test_rtt_pal test_stress
             test_config test_timer test_bitfield test_static_lifetime
             test_static_pal test_softirq test_rtt_smp_gate
             test_rtt_multicore_gate bench_hotpath
+            test_admission_adv
             test_coro_registry test_coro_combinators test_coro_posix
             test_coro_awaitable test_coro_scheduler test_coro_integration
             test_coro_rg_gate)
@@ -69,6 +109,17 @@ coact_add_test(test_stress
     pal_posix.cpp)
 target_link_libraries(test_stress PRIVATE Threads::Threads)
 target_include_directories(test_stress PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# P1 admission adversarial suite: the concurrency acceptance bound, ISR/task
+# interleave, rollback-on-every-failure-path, hostile rule sets, the fixed
+# snapshot ring, zero-allocation submit path and the measured footprint of the
+# disabled policy. Host-only because it drives real std::thread producers and
+# counts global operator new; the rule sets themselves stay compile-time.
+coact_add_test(test_admission_adv
+    test_admission_adv.cpp
+    pal_posix.cpp)
+target_link_libraries(test_admission_adv PRIVATE Threads::Threads)
+target_include_directories(test_admission_adv PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # Config pass-through test: one board-level Config threads through registry,
 # monitor, breaker, staging and dispatcher (compile-time + runtime).
