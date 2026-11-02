@@ -10,12 +10,16 @@
 | MPU 能力矩阵 | `test/renode/mpu.sh` | `RESULT MPU PASS 13/13`，能力 11/11，设计要求项 8/8 |
 | FreeRTOS PAL（真实内核） | `test/renode/freertos.sh` | `RESULT PASS 32/32` |
 | FreeRTOS 故障路径 | `test/renode/freertos_wdg.sh` | `RESULT PASS 8/8`，关中断后 29.862 ms 复位 |
+| FreeRTOS 尺寸对比 | `test/renode/footprint.sh` | baseline 9760 B；coact 默认 29204 B；小配置 24728 B |
 | 变异测试 | `test/renode/mutate.sh` | `ALL MUTATIONS CAUGHT`（13/13） |
 
 镜像尺寸（`arm-none-eabi-size`）：主夹具 `text=36644 bss=716`；仅基线
 `text=8276 bss=84`；看门狗 `text=5860 bss=104`；MPU `text=4744 bss=4116`。
 FreeRTOS 夹具 `text=23100 bss=64076`（含并发 create/join 用例的 2 个 worker 池）；
 FreeRTOS 故障夹具 `text=15548 bss=44820`。
+尺寸对比的完整拆解见 `docs/coact_freertos_footprint_zh.md`：同一内核与启动代码下，
+默认配置比裸 FreeRTOS 基线多 9064 B Flash、10376 B 静态 RAM；小配置多 8300 B /
+6664 B。两者都不使用堆。
 准入策略关闭时协调器为 32 字节，开启后 120 字节（差值为 88 字节的策略
 对象），ISR 版本同为 120 字节（`Cfg::kMaxAo=2`）。策略对象由 12 字节的
 临界区钩子三元组、4 字节对齐填充和 3 个 24 字节的 `ArrivalGate` 组成。
