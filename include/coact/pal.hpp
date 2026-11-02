@@ -241,6 +241,19 @@ using ThreadEntry = void (*)(void* context);
 // legacy contract is unchanged — these Ops use the explicit constant).
 constexpr uint32_t kWaitForever = 0xFFFFFFFFU;
 
+// Explicit init/start status for PALs with caller-provided static resources
+// (RtThread, FreeRtos). kOk is zero so runtime.hpp's `status == 0` check is
+// PAL-independent. POSIX keeps void returns.
+enum class InitError : uint8_t {
+    kOk = 0,
+    kSemInitFailed,        // wake/join semaphore creation failed
+    kThreadInitFailed,     // TCB/stack creation failed
+    kThreadStartFailed,    // scheduler-side start failed
+    kStackTooLarge,        // requested stack > caller-provided storage
+    kAlreadyInitialized,   // initialize() after start/stop
+    kAlreadyStarted,       // start after start, or after stop (no restart)
+};
+
 // Semaphore/mutex/condvar/thread handles: the concrete TYPE is defined by
 // each PAL header (pal_posix.hpp / pal_rtthread.hpp) — POSIX embeds pthread
 // objects, RT-Thread embeds static rt_semaphore / rt_mutex / a slot

@@ -80,6 +80,11 @@ On RT-Thread include the same headers, select `coact/pal_rtthread.hpp` and compi
 `src/core/pal_rtthread.cpp` into the BSP — the PAL uses caller-provided static
 resources and never allocates.
 
+On FreeRTOS Kernel V11 select `coact/pal_freertos.hpp` and compile
+`src/core/pal_freertos.cpp`; `FreeRtosResources` owns the dispatcher/worker
+stacks and every kernel object. The port requires a single-core build with
+static allocation enabled; Cortex-M0/M0+ is not supported.
+
 ## Modules
 
 `event` `pool` `queue` `hsm` `ao` `staging` `monitor` `policy` `coro` `pal`, with

@@ -227,18 +227,6 @@ struct RtThreadResources : public RtThreadResourcesBase {
     }
 };
 
-// Explicit init/start status (design §7.5). Any failure returns a definite
-// error - the PAL never falls back to dynamic create/malloc.
-enum class InitError : uint8_t {
-    kOk = 0,
-    kSemInitFailed,        // rt_sem_init failed
-    kThreadInitFailed,     // rt_thread_init failed
-    kThreadStartFailed,    // rt_thread_startup failed
-    kStackTooLarge,        // requested Dispatcher stack > RtThreadResources
-    kAlreadyInitialized,   // initialize() after start/stop
-    kAlreadyStarted,       // start after start, or after stop (no restart)
-};
-
 // ---------------------------------------------------------------------------
 // RtThread PAL.
 //

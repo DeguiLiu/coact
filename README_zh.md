@@ -78,6 +78,10 @@ rt.start();
 `src/core/pal_rtthread.cpp` 编进 BSP——该 PAL 使用调用方提供的静态资源，自身不做
 任何分配。
 
+在 FreeRTOS Kernel V11 上选 `coact/pal_freertos.hpp`，把
+`src/core/pal_freertos.cpp` 编进工程；`FreeRtosResources` 持有 dispatcher /
+worker 栈与全部内核对象。要求单核、静态分配；不支持 Cortex-M0/M0+。
+
 ## 模块
 
 `event` `pool` `queue` `hsm` `ao` `staging` `monitor` `policy` `coro` `pal`，由

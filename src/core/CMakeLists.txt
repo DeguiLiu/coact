@@ -63,7 +63,7 @@ if(COACT_PORTABLE_ONLY)
 foreach(skipped
             test_core test_integration test_pal_sync test_rtt_pal test_stress
             test_config test_timer test_bitfield test_static_lifetime
-            test_static_pal test_softirq test_rtt_smp_gate
+            test_static_pal test_freertos_pal test_softirq test_rtt_smp_gate
             test_rtt_multicore_gate bench_hotpath
             test_admission_adv
             test_coro_registry test_coro_combinators test_coro_posix
@@ -168,6 +168,18 @@ coact_add_test(test_static_pal
 target_link_libraries(test_static_pal PRIVATE Threads::Threads)
 target_compile_definitions(test_static_pal PRIVATE COACT_RTT_STUB)
 target_include_directories(test_static_pal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+# Static FreeRTOS PAL test (docs/design_freertos_pal_zh.md): FreeRtosResources,
+# explicit initialize/InitError, ContextSlot freeze, ISR/task critical-section
+# split, ClockOps extension, dispatcher start/join, Sem/Mutex/Cond, resident
+# workers, SoftIrq and one Runtime assembly. The FreeRTOS API is backed by
+# test/freertos_stub.h (pthreads); no kernel source is required for host CI.
+coact_add_test(test_freertos_pal
+    test_freertos_pal.cpp
+    pal_freertos.cpp)
+target_link_libraries(test_freertos_pal PRIVATE Threads::Threads)
+target_compile_definitions(test_freertos_pal PRIVATE COACT_FREERTOS_STUB)
+target_include_directories(test_freertos_pal PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # SoftIrqOps (signalfd + RT-Thread SPSC ring) test: real POSIX signal path +
 # stub-backed ring path. The RT-Thread side must compile under COACT_RTT_STUB

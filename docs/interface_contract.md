@@ -45,6 +45,7 @@
   - `pal.hpp`：`CriticalSection` / `CriticalSectionGuard` / `pal::CriticalToken` / `pal::ClockOps` / `pal::ThreadEntry` / `make_critical_section` / `SpinCriticalSection` / `make_spin_critical_section`，以及 PAL 方法级契约注释。
   - `pal_posix.hpp`：`pal::Posix`（pthread / condvar / 单调时钟，SMP 语义）。
   - `pal_rtthread.hpp`：`pal::RtThread`（静态资源 RT-Thread PAL，单核语义）。
+  - `pal_freertos.hpp`：`pal::FreeRtos`（静态资源 FreeRTOS Kernel V11 PAL，单核语义；host 测试用 `test/freertos_stub.h`）。
 - **协程子系统（`coro/`）**
   - `coro/coro.hpp`、`coro/task.hpp`（`Task` / `Promise` / `AwaitableRef` / `TaskRegistry`）、`coro/scheduler.hpp`（`TimerFacade`）、`coro/combinators.hpp`、`coro/awaitable.hpp`、`coro/task_id.hpp`、`coro/error.hpp`、`coro/config.hpp`、`coro/version.hpp`、`coro/posix.hpp`（`Coroutine` / `StackfulExecutor`）、`coro/detail/fixed_storage.hpp`、`coro/detail/task_slot.hpp`。
 - **诊断**
@@ -555,6 +556,7 @@ public:
 - `pal::ClockOps`：`read_counter` 静态函数表 + `frequency_hz` + `counter_bits`，用于纳秒换算；RT tick 仍是阻塞等待与长超时的来源。
 - `pal::Posix`：`start_dispatcher` 返回 `void`；`QueueBackend = BoundedMpscQueue`；提供 pthread worker、condvar、`clock_gettime(CLOCK_MONOTONIC)` 及 SemOps/MutexOps/CondOps/ThreadOps/SoftIrqOps 家族。
 - `pal::RtThread`：静态 PAL，`QueueBackend = SingleCoreCriticalRing`，`Profile = RttSingleCoreProfile`。调用方提供 `RtThreadResources<StackBytes, ContextSlots, WorkerSlots>`（静态 TCB / stack / semaphore / ContextSlot 表），构造只保存引用，内核 API 全在 `initialize()`（任务上下文）调用；`initialize()` 与 `start_dispatcher()` 返回 `pal::InitError`（成功 == 枚举 0），二次启动或停机后再启动返回 `kAlreadyStarted`。要求单核（`SMP` 下 `#error`）。
+- `pal::FreeRtos`：静态 PAL，`QueueBackend = SingleCoreCriticalRing`，`Profile = RttSingleCoreProfile`。调用方提供 `FreeRtosResources<DispatcherStackBytes, ContextSlots, WorkerSlots, WorkerStackBytes>`；构造只保存引用，`initialize()` 在任务上下文创建信号量与常驻 worker，`start_dispatcher()` 再创建 dispatcher。临界区按上下文分支：任务 `taskENTER_CRITICAL`，ISR `portSET_INTERRUPT_MASK_FROM_ISR`，token 低位记录路径。ThreadOps 使用常驻 worker，不删除或复用静态 TCB；SoftIrq 使用 SPSC ring + 计数信号量，不使用 POSIX 信号。要求 `configNUMBER_OF_CORES==1`、静态分配、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`；Cortex-M0/M0+ 与 SMP 在编译期拒绝。
 - `kWaitForever == 0xFFFFFFFF` 是 xxxOps take/wait 的显式永久等待常量；dispatcher 的 `wait_dispatcher(0)` 沿用“0 == 永久”的旧约定，两者语义不同、不可混用。
 
 ### 3.10 timer / coro / diag / bitfield（扩展组件）
