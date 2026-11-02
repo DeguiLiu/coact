@@ -41,6 +41,16 @@ option(COACT_PORTABLE_ONLY
        "Register only targets that build on every host (skip POSIX/RT-Thread/coro/timer suites)"
        OFF)
 
+# Link-time optimization for consumers of coact_core. OFF by default so normal
+# test builds keep fast incremental links; the FreeRTOS footprint script
+# measures the same flag on the target image (~620 B text on the default
+# configuration). MSVC uses /GL /LTCG instead and is out of this scope.
+option(COACT_ENABLE_LTO "Enable -flto for coact_core consumers" OFF)
+if(COACT_ENABLE_LTO AND NOT MSVC)
+    target_compile_options(coact_core INTERFACE -flto)
+    target_link_options(coact_core INTERFACE -flto)
+endif()
+
 # Visible-skip helper. Prints only under the Windows CI scope; a no-op on a
 # normal host build so the configure log stays clean.
 function(coact_skip target reason)

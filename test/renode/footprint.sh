@@ -22,13 +22,16 @@ COMMON_FLAGS=(
     -mcpu=cortex-m4 -mthumb -mfloat-abi=soft
     -ffreestanding -fno-unwind-tables -fno-asynchronous-unwind-tables
     -ffunction-sections -fdata-sections
-    -Os -g -Wall -I"$FREERTOS_DIR" -I"$FREERTOS_DIR/include"
+    ${COACT_FOOTPRINT_OPT:--Os} -g -Wall -I"$FREERTOS_DIR" -I"$FREERTOS_DIR/include"
     -I"$FREERTOS_DIR/port" -I"$SCRIPT_DIR" -I"$COACT_INCLUDE_DIR"
 )
 CXX_FLAGS=(
     -std=c++17 -fno-exceptions -fno-rtti -fno-threadsafe-statics
     -fno-use-cxa-atexit -DCOACT_ATOMIC64_SHIM
 )
+if [ -n "${COACT_FOOTPRINT_LTO:-}" ]; then
+    CXX_FLAGS+=(-flto)
+fi
 
 fail() {
     echo "FOOTPRINT HARNESS ERROR: $*" >&2

@@ -107,3 +107,49 @@ test/renode/footprint.sh
 需要更准确的数字时，可以按“极简 C 实现”写一个参考镜像，复用
 `test/renode/footprint.sh` 的同一套内核、启动代码和编译选项实测；上表不应作为
 实测证据引用。
+
+## 8. 优化当前 C++17 实现
+
+结论：已经落地的两项优化（LTO、Config 裁剪）把增量从 +9.1 KiB Flash /
++10.4 KiB RAM 降到 **+8.2 KiB Flash / +6.5 KiB RAM**。其余代码级优化仍是估算，
+没有计入这个结果。
+
+### 8.1 已实测
+
+`COACT_FOOTPRINT_LTO=1 test/renode/footprint.sh` 给 C++ 翻译单元加 `-flto`，
+内核 C 文件保持非 LTO，避免 freestanding 链接丢掉 `memset`。
+
+| 镜像 | text | data | bss | 相对 baseline text |
+|---|---:|---:|---:|---:|
+| coact（默认，LTO） | 15068 | 12 | 13504 | +8444 |
+| coact_small（LTO） | 14780 | 12 | 9792 | +8156 |
+
+| 措施 | 实测 Flash | 实测 RAM | 风险 |
+|---|---:|---:|---|
+| LTO | −620 B（默认）/ −144 B（小配置） | 0 | 低 |
+| Config 容量降到 High 8 / Normal 16 / Low 32 | −764 B | −3712 B | 低 |
+| 两项叠加 | **−908 B** | **−3712 B** | 低 |
+
+优化后仍通过 Renode 运行：baseline、coact、coact_small 都打印 `PASS`，
+Dispatcher 栈高水位保持 976/1024 字。
+
+### 8.2 尚未实施的估算
+
+| 措施 | 预估 Flash | 预估 RAM | 风险 |
+|---|---:|---:|---|
+| 去掉未使用的 Monitor / Breaker 计数 | −0.3–0.8 KiB | −0.1–0.3 KiB | 低，需要配置开关 |
+| 静态 AO 入口替代虚表分派 | −0.2–0.4 KiB | 0 | 中，需改装配方式 |
+| 消除剩余的 64 位除法 | −0.2–0.5 KiB | 0 | 中，需改时间域并验证回绕 |
+
+依据与限制：
+
+- 反汇编中仍有 `__udivmoddi4`（720 B），但至少一部分来自夹具的 64 位十进制
+  输出（`put_u64`），不是 coact 运行时代码；只有产品镜像去掉全部 64 位除法后
+  才可能拿到这部分收益，当前未实测。
+- RAM 的下限主要由 Dispatcher 栈（约 4 KiB）和 Staging 决定。Dispatcher 栈实测
+  高水位 976/1024 字，继续压缩需要先测量具体动作链，不能直接改小。
+- `COACT_ENABLE_LTO=ON` 已加入 CMake，供产品构建复用同一优化；默认关闭，
+  避免拖慢测试构建。
+
+即使全部落地，C++17 版仍会保留静态断言、RAII 回滚、强类型句柄等收益；与 C 的
+体积差距会缩小到约 0.5–2 KiB，而不是数量级差异。
