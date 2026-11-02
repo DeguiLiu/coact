@@ -153,3 +153,21 @@ Dispatcher 栈高水位保持 976/1024 字。
 
 即使全部落地，C++17 版仍会保留静态断言、RAII 回滚、强类型句柄等收益；与 C 的
 体积差距会缩小到约 0.5–2 KiB，而不是数量级差异。
+
+### 8.3 模板实例化与通用装配还能省多少
+
+- 单 Config、单 PAL 的产品镜像里，模板只实例化一次；跨翻译单元的重复已由 LTO
+  合并（默认配置实测 −620 B）。单 TU 固件没有可再合并的重复实例。
+- 多 TU 产品可用 `extern template` / 显式实例化收敛重复实例，预估 −0.2–0.6 KiB；
+  这是一项构建结构调整，当前单 TU 镜像无法验证收益。
+- 冷路径 `noinline` 需要逐函数判断。实测 `-fno-inline-functions-called-once`
+  反而让 coact 增加 244 B，不能作为通用开关。
+- `-fipa-icf` 与现有 `-Os` + LTO 的结果完全相同，说明相同代码折叠已经启用。
+- 去掉未使用的 Monitor/Breaker 是剩下的主要代码项：预估 −0.3–0.8 KiB Flash，
+  RAM 收益随 `kMaxAo` 增大。
+
+C++17 本身并不贵：`constexpr` 表直接进 `.rodata`、无启动初始化；`enum class`
+可指定 `uint8_t`；`std::array`、`Span`、`string_view` 只是指针加长度；
+`static_assert`、`if constexpr` 零运行时；32 位 `std::atomic` 映射到
+LDREX/STREX。真正昂贵的是异常、RTTI、`iostream`、`shared_ptr`、`std::function`
+和热路径虚函数，这些在 coact 中都已禁用或避开。

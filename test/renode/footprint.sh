@@ -32,6 +32,9 @@ CXX_FLAGS=(
 if [ -n "${COACT_FOOTPRINT_LTO:-}" ]; then
     CXX_FLAGS+=(-flto)
 fi
+if [ -n "${COACT_FOOTPRINT_EXTRA_FLAGS:-}" ]; then
+    COMMON_FLAGS+=(${COACT_FOOTPRINT_EXTRA_FLAGS})
+fi
 
 fail() {
     echo "FOOTPRINT HARNESS ERROR: $*" >&2

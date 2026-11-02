@@ -29,6 +29,9 @@
   参数顺序错误和静默失败。
 - **同一工具链**：`arm-none-eabi-g++`、GDB、map 文件、Renode 调试方式不变；
   产物仍是普通 ELF，可继续用 `size`、`nm`、`objdump` 审计。
+- **C++17 本身并不贵**：`constexpr` 表、`enum class`、`std::array`、`Span`、
+  `string_view`、`static_assert` 都是零或近零运行时；贵的是异常、RTTI、
+  `iostream`、`shared_ptr`、`std::function` 和热路径虚函数。
 
 ## 使用边界
 
