@@ -435,6 +435,27 @@ COACT_TEST(staging_low_late_arrival_no_underflow_force_serve) {
   CHECK_EQ(slot.event->signal, 40U);
 }
 
+// The publish clock is stored as its low 32 bits. A Low that arrives shortly
+// before the wrap must age normally after the wrap, not underflow.
+COACT_TEST(staging_low_aging_survives_32bit_wrap) {
+  MpscStaging s(coact::CriticalSection{nullptr, nullptr, nullptr});
+  constexpr uint32_t kNearWrap = 0xFFFFF000U;
+
+  s.enqueue(coact::TargetId(3U), seq_event(60), coact::PriorityClass::Low, kNearWrap);
+  s.enqueue(coact::TargetId(1U), seq_event(61), coact::PriorityClass::High, kNearWrap);
+
+  coact::StagingSlot slot;
+  s.begin_batch();
+  s.tick(static_cast<uint64_t>(kNearWrap) + 500000U);  // wrapped, still < 1 ms
+  CHECK(s.dequeue_one(slot));
+  CHECK_EQ(slot.event->signal, 61U);
+
+  s.begin_batch();
+  s.tick(static_cast<uint64_t>(kNearWrap) + 1500000U);  // wrapped, > 1 ms
+  CHECK(s.dequeue_one(slot));
+  CHECK_EQ(slot.event->signal, 60U);
+}
+
 // A Low producer can publish its slot before Staging::enqueue() records the
 // side-band low_head_arrival_ns_. During that window, aging must use the
 // published slot's enqueue_ns: a newly published Low must not preempt High.

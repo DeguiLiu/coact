@@ -1,8 +1,8 @@
 # coact FreeRTOS 固件与 RAM 占用实测
 
 结论：coact 不会引入堆、异常、RTTI 或隐藏的运行时，但它不是零成本。以本仓库的
-默认配置运行一个 AO，Flash 增加约 8.9 KiB，静态 RAM 增加约 10.1 KiB；把
-`Config` 容量调小后分别降到约 8.1 KiB 和 6.5 KiB。成本有界、可配置，是否可接受
+默认配置运行一个 AO，Flash 增加约 8.8 KiB，静态 RAM 增加约 9.3 KiB；把
+`Config` 容量调小并启用 LTO 后分别降到约 7.9 KiB 和 6.3 KiB。成本有界、可配置，是否可接受
 取决于目标 MCU 的 Flash/RAM 预算，不能用“不会增大固件”来表述。
 
 ## 1. 测量方法
@@ -25,13 +25,13 @@
 | 镜像 | text | data | bss | 合计 |
 |---|---:|---:|---:|---:|
 | baseline | 6624 | 8 | 3128 | 9760 |
-| coact（默认） | 15688 | 12 | 13504 | 29204 |
-| coact_small | 14924 | 12 | 9792 | 24728 |
+| coact（默认） | 15628 | 12 | 12608 | 28248 |
+| coact_small | 14876 | 12 | 9568 | 24456 |
 
 | 相对 baseline | text | data | bss |
 |---|---:|---:|---:|
-| coact（默认） | +9064 | +4 | +10376 |
-| coact_small | +8300 | +4 | +6664 |
+| coact（默认） | +9004 | +4 | +9480 |
+| coact_small | +8252 | +4 | +6440 |
 
 ## 3. 默认配置的 RAM 构成
 
@@ -39,13 +39,13 @@
 |---|---:|---|
 | Dispatcher 栈 | 4096 | `DefaultConfig::kDispatcherStackBytes`，可由板级 Config 覆盖 |
 | Dispatcher TCB / 信号量 / ContextSlot | 316 | `g_res` 中 4096 字节之外的部分 |
-| Staging 队列 | 5312 | High 32 + Normal 64 + Low 128 个槽位 |
+| Staging 队列与 Runtime | 4416 | High 32 + Normal 64 + Low 128 个 12 字节槽位 |
 | EventPool 存储 | 288 | 8 块 × 32 字节，调用方提供 |
 | PAL 实例 | 80 | `FreeRtos` 对象本身 |
 | AO 对象 | 56 | 一个 AO + HSM 表 |
 
-合计约 10.1 KiB，与 `bss` 增量一致。`coact_small` 把 Staging 降到 1600 字节，
-其余固定成本不变，RAM 增量为 6.5 KiB。
+合计约 9.0 KiB，与 `bss` 增量一致。`coact_small` 把 Staging 与 Runtime 降到
+1376 字节，其余固定成本不变，RAM 增量为 6.3 KiB。
 
 ## 4. 栈水位
 
@@ -64,8 +64,8 @@ Dispatcher 在只有一层 HSM 动作时已用到 3.9 KiB。4 KiB 默认栈只�
 
 可以说：
 
-- coact 的 Flash/RAM 成本有界且可配置：默认约 +8.9 KiB Flash、+10.1 KiB RAM，
-  小配置约 +8.1 KiB / +6.5 KiB。
+- coact 的 Flash/RAM 成本有界且可配置：默认约 +8.8 KiB Flash、+9.3 KiB RAM，
+  小配置约 +7.9 KiB / +6.3 KiB。
 - 没有堆、异常、RTTI、动态注册表或隐藏线程；线程、队列、事件池都是静态对象。
 - 关闭准入策略时 `NoAdmission` 编译为空，快照环默认 0 槽，不占诊断存储。
 
@@ -95,7 +95,7 @@ test/renode/footprint.sh
 
 估算依据：
 
-- coact 实测 Flash 增量为 9064 B。等价 C 版可省去模板实例化、通用装配和少量
+- coact 实测 Flash 增量为 9004 B。等价 C 版可省去模板实例化、通用装配和少量
   重复内联，预计省 30–40%，即落在 5–7 KiB。
 - RAM 的主要项是 Dispatcher 栈（4 KiB）和 Staging（默认 5.3 KiB），C 版同样
   需要这些数据结构，预计只省 5–10%。
@@ -110,9 +110,9 @@ test/renode/footprint.sh
 
 ## 8. 优化当前 C++17 实现
 
-结论：已经落地的两项优化（LTO、Config 裁剪）把增量从 +9.1 KiB Flash /
-+10.4 KiB RAM 降到 **+8.2 KiB Flash / +6.5 KiB RAM**。其余代码级优化仍是估算，
-没有计入这个结果。
+结论：已经落地的三项优化（LTO、Config 裁剪、32 位 Staging 时间戳）把增量从
++8.8 KiB Flash / +9.3 KiB RAM 降到 **+7.9 KiB Flash / +6.3 KiB RAM**。其余
+代码级优化仍是估算，没有计入这个结果。
 
 ### 8.1 已实测
 
@@ -121,14 +121,15 @@ test/renode/footprint.sh
 
 | 镜像 | text | data | bss | 相对 baseline text |
 |---|---:|---:|---:|---:|
-| coact（默认，LTO） | 15068 | 12 | 13504 | +8444 |
-| coact_small（LTO） | 14780 | 12 | 9792 | +8156 |
+| coact（默认，LTO） | 15016 | 12 | 12608 | +8392 |
+| coact_small（LTO） | 14760 | 12 | 9568 | +8136 |
 
 | 措施 | 实测 Flash | 实测 RAM | 风险 |
 |---|---:|---:|---|
-| LTO | −620 B（默认）/ −144 B（小配置） | 0 | 低 |
-| Config 容量降到 High 8 / Normal 16 / Low 32 | −764 B | −3712 B | 低 |
-| 两项叠加 | **−908 B** | **−3712 B** | 低 |
+| Staging 时间戳 64 位降到 32 位 | −60 B | −896 B | 低，1 ms 老化精度不变 |
+| Config 容量降到 High 8 / Normal 16 / Low 32 | −752 B | −3040 B | 低 |
+| LTO | −612 B（默认）/ −116 B（小配置） | 0 | 低 |
+| 三项叠加 | **−928 B** | **−3936 B** | 低 |
 
 优化后仍通过 Renode 运行：baseline、coact、coact_small 都打印 `PASS`，
 Dispatcher 栈高水位保持 976/1024 字。

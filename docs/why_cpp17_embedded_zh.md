@@ -10,8 +10,8 @@
 | 镜像 | Flash 增量 | RAM 增量 | 说明 |
 |---|---:|---:|---|
 | 裸 FreeRTOS 基线 | 0 | 0 | 调度器 + 1 任务 + 1 信号量 |
-| coact 默认配置 | +8.9 KiB | +10.1 KiB | Dispatcher 栈 4 KiB、Staging 5.3 KiB |
-| coact 小配置 + LTO | +8.0 KiB | +6.5 KiB | 容量裁剪后，仍通过 Renode 测试 |
+| coact 默认配置 | +8.8 KiB | +9.3 KiB | Dispatcher 栈 4 KiB、Staging 4.4 KiB |
+| coact 小配置 + LTO | +7.9 KiB | +6.3 KiB | 容量裁剪后，仍通过 Renode 测试 |
 
 等价 C 实现的估算为 +5–7 KiB Flash、+6–10 KiB RAM。差距来自模板实例化和通用
 装配，约 1–2 KiB；RAM 主要由栈和队列决定，与语言无关。完整数据见

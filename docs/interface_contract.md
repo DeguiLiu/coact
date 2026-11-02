@@ -463,7 +463,9 @@ constexpr StaticAoEntry make_static_ao_entry(AoT& ao) noexcept;
 enum class Partition : uint8_t { High = 0, Normal = 1, Low = 2 };
 Partition partition_from_class(PriorityClass) noexcept;
 
-struct StagingSlot { TargetId target; Event* event; uint64_t enqueue_ns; };
+struct StagingSlot { TargetId target; Event* event; uint32_t enqueue_ns; };
+// enqueue_ns 保存发布时钟的低 32 位；老化差值按 2^32 取模，要求
+// Config::kLowMaxWaitMs < 2000（低于 signed 32 位纳秒差）。
 
 class BatchSelector {
     bool select(Partition& out, uint16_t high, uint16_t normal, uint16_t low,

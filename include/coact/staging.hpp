@@ -57,7 +57,7 @@ namespace detail {
 struct StagingSlotNoClaim {
   TargetId target;
   Event* event;
-  uint64_t enqueue_ns;
+  uint32_t enqueue_ns;
 };
 
 }  // namespace detail
@@ -84,8 +84,11 @@ struct StagingSlot {
     NormalOrdinary,
     NormalReserved
   } claim = ReservationClaim::None;
-  Event* event;         // transferred owned reference; dispatcher event_gc
-  uint64_t enqueue_ns;  // publish time, used for Low aging
+  Event* event;  // transferred owned reference; dispatcher event_gc
+  /* Low 32 bits of the publish clock. Aging only needs a wrap-safe delta for
+     waits below 2^31 ns; storing 64 bits doubled the slot stride and cost
+     every Config 2.7 KiB of RAM at DefaultConfig capacities. */
+  uint32_t enqueue_ns;
 };
 
 static_assert(sizeof(StagingSlot) == sizeof(detail::StagingSlotNoClaim),
@@ -191,6 +194,7 @@ class Staging {
  public:
   using ConfigType = Config;
 
+  static_assert(Config::kLowMaxWaitMs < 2000U, "coact: kLowMaxWaitMs must stay below the signed 32-bit ns delta");
   static_assert(std::atomic<bool>::is_always_lock_free, "Dispatcher wake latch requires lock-free atomic<bool>");
   static_assert(std::atomic<uint32_t>::is_always_lock_free, "Submission admission requires lock-free atomic<uint32_t>");
   using ReserveConfig = detail::StagingReserveConfig<Config>;
@@ -244,7 +248,7 @@ class Staging {
     if (!try_claim(claim)) {
       return false;
     }
-    StagingSlot slot{target, claim, e, now_ns};
+    StagingSlot slot{target, claim, e, static_cast<uint32_t>(now_ns)};
 
     bool queued = false;
     if (cls == PriorityClass::Low) {
@@ -532,17 +536,16 @@ class Staging {
     if (!now_valid_) {
       return false;
     }
-    const uint64_t wait_ns = static_cast<uint64_t>(Config::kLowMaxWaitMs) * 1000000ULL;
+    const uint32_t wait_ns = static_cast<uint32_t>(Config::kLowMaxWaitMs) * 1000000U;
     StagingSlot head;
     if (!low_q_.front(head)) {
       return false;
     }
-    const uint64_t arrival = head.enqueue_ns;
-    if (now_ns_ < arrival) {
+    const int32_t delta = static_cast<int32_t>(static_cast<uint32_t>(now_ns_) - head.enqueue_ns);
+    if (delta < 0) {
       return false;  // mid-batch arrival: now is stale before the Low came in
     }
-    const uint64_t waited = now_ns_ - arrival;
-    return (waited >= wait_ns);
+    return (static_cast<uint32_t>(delta) >= wait_ns);
   }
 
   HighQueue high_q_;
