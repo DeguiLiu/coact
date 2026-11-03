@@ -560,12 +560,19 @@ coact 核心不提供 `ErrorHook` / `ProtectionHook` / `PanicHook`。需要单�
 
 | 钩子 | 触发点 | 适配方式 |
 |---|---|---|
-| `on_error` | coact API 返回失败 | BSP 包装返回值检查；返回值仍是唯一权威，钩子只做诊断 |
+| `on_error` | coact API 返回失败 | BSP 包装返回值检查；返回值仍是唯一权威，可在此转发产品 FCCU |
 | `on_protection` | `MemManage_Handler` / `HardFault_Handler` | BSP 保存 CFSR/MMFAR 后调用钩子，再执行复位 |
 | `on_panic` | 框架不变量破坏 | 通过 `coact::set_fatal_handler()` 安装；钩子返回后 `fatal_assert()` 仍会 `abort()` |
 
 把三个钩子放在 BSP 而不是 `include/coact`，可以避免热路径多出分支，也不会让中间件
 假装拥有 OS 的保护域语义。
+
+示例在 BSP 侧使用 `FirstFaultLatch` 锁存首故障：第一条错误、保护异常或 panic
+保留原始类型、位置和寄存器/原因码，后续故障不得覆盖。它只服务硬故障临界路径，
+不排队、不分配、不启动消费线程，也不替代 FCCU。普通软件错误由 `on_error` 转发给
+产品 FCCU；保护异常和 panic 不经过 FCCU 消费队列。钩子内部再次触发故障时，
+适配层只增加重入计数并返回最小安全处置路径，不再递归调用同一组钩子。
+首故障锁存和重入状态属于 BSP，不进入 coact 核心。
 
 ## 14. 参考
 
