@@ -366,3 +366,9 @@ rt.stop();
 ```
 
 **移植到 RT-Thread**：同一组头文件，仅两处不同——PAL 换为 `coact/pal_rtthread.hpp`，并把 `src/core/pal_rtthread.cpp` 编进 BSP。`pal::Posix` 替换为 RT-Thread PAL 后，其余装配代码不变；Dispatcher 以普通 RT-Thread 线程运行。
+
+## 编码日志
+
+`log_rtthread_demo.cpp` 演示任务/ISR 提交数值记录、日志线程集中输出。
+选用 `LogRtThread<CompactHexPolicy>` 后，每条输出固定 56 B，不重复打印事件说明。
+格式、事件字典及故障路径约束见 `docs/coact_compact_logging_zh.md`。

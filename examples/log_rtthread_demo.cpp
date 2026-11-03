@@ -33,7 +33,9 @@ enum : uint16_t {
   kEvtBurst = 4U,
 };
 
-coact::diag::LogRtThread<> g_log;
+// Producers store numeric records; only the writer formats the compact line.
+using DemoLog = coact::diag::LogRtThread<coact::diag::CompactHexPolicy>;
+DemoLog g_log;
 
 volatile int g_pass = 0;
 volatile int g_fail = 0;
@@ -54,6 +56,9 @@ void sleep_ms(uint32_t ms) noexcept {
 }  // namespace
 
 int main() {
+  // One catalog header per session; event meanings are not repeated per record.
+  (void)rt_kprintf("[log-demo] format=@hex1 events=1:boot,2:task,3:isr,4:burst clock_hz=%lu\n",
+                   static_cast<unsigned long>(RT_TICK_PER_SECOND));
   /* [1] lifecycle. */
   const LogRtError ie = g_log.initialize();
   check(LogRtError::kOk == ie, "initialize");
@@ -87,7 +92,7 @@ int main() {
   /* Wait for the writer to drain both lanes (bounded poll, test-only). */
   uint32_t waited = 0U;
   while (waited < 4000U) {
-    const coact::diag::LogRtThread<>::LoggerT& lg = g_log.logger();
+    const DemoLog::LoggerT& lg = g_log.logger();
     if ((0U == lg.size(LogLane::kCritical)) && (0U == lg.size(LogLane::kNormal))) {
       break;
     }

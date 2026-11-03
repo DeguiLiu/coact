@@ -11,6 +11,9 @@ target_include_directories(test_expected PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 # C++17 non-owning view (replaces pointer+length pairs in public APIs).
 coact_add_test(test_span test_span.cpp)
 
+# Platform-independent compact log output and deferred-producer contracts.
+coact_add_test(test_log_encoding test_log_encoding.cpp)
+
 # Coordinator wakeup-on-empty optimization test (flame finding): mock PAL counts
 # Dispatcher signals to prove a submit behind a buffered event does not wake it.
 coact_add_test(test_coordinator

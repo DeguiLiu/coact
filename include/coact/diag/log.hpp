@@ -104,6 +104,47 @@ struct LogRenderResult {
 static_assert(std::is_trivially_copyable<LogRenderResult>::value,
               "coact::diag: LogRenderResult must be trivially copyable");
 
+// Optional writer-only encoding. All seven fields are retained, including
+// unknown event ids and zero arguments. The '@' prefix identifies format v1.
+// Fixed hexadecimal widths avoid printf, division, catalogs and allocation.
+struct CompactHexPolicy {
+  static constexpr uint16_t kEncodedLength = 56U;  // includes newline
+  static constexpr uint16_t kBufferSize = kEncodedLength + 1U;
+
+  static LogRenderResult render(const LogRecord& record, char* buffer, uint16_t capacity) noexcept {
+    LogRenderResult result{0U, true, true};
+    if (nullptr != buffer) {
+      if (capacity >= kBufferSize) {
+        uint16_t offset = 0U;
+        buffer[offset++] = '@';
+        append_hex(buffer, offset, record.counter, 8U);
+        append_hex(buffer, offset, record.event_id, 4U);
+        append_hex(buffer, offset, record.source_id, 4U);
+        append_hex(buffer, offset, record.arg0, 8U);
+        append_hex(buffer, offset, record.arg1, 8U);
+        append_hex(buffer, offset, record.arg2, 8U);
+        append_hex(buffer, offset, record.arg3, 8U);
+        buffer[offset - 1U] = '\n';  // replace the final separator
+        buffer[offset] = '\0';
+        result = LogRenderResult{offset, true, false};
+      } else if (capacity > 0U) {
+        buffer[0U] = '\0';  // never expose a partial record as a complete line
+      }
+    }
+    return result;
+  }
+
+ private:
+  static void append_hex(char* buffer, uint16_t& offset, uint32_t value, uint8_t digits) noexcept {
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    for (uint8_t remaining = digits; remaining > 0U; --remaining) {
+      const uint32_t shift = static_cast<uint32_t>(remaining - 1U) * 4U;
+      buffer[offset++] = kHex[(value >> shift) & 0xFU];
+    }
+    buffer[offset++] = ':';
+  }
+};
+
 // ---------------------------------------------------------------------------
 // DiagRing - fixed-capacity raw ring used as the lane storage. It carries NO
 // internal lock: every access must happen inside the Logger's single injected

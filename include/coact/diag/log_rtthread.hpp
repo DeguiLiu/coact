@@ -233,6 +233,7 @@ class LogRtThreadBase {
 // machinery is in LogRtThreadBase). Policy must provide
 //   static LogRenderResult render(const LogRecord&, char*, uint16_t) noexcept;
 // The default RawHexPolicy reproduces the historical raw-hex output.
+// CompactHexPolicy opts into lossless 56-byte numeric lines without printf.
 // ---------------------------------------------------------------------------
 template <typename Policy = RawHexPolicy>
 class LogRtThread : public LogRtThreadBase {
