@@ -58,7 +58,12 @@ jobs:
       - name: Install arm-none-eabi-g++
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gcc-arm-none-eabi
+          # gcc-arm-none-eabi does not pull the C++ standard-library headers on
+          # current Ubuntu runners. Install the matching newlib package; the
+          # compile gate uses arm-none-eabi-g++ and would otherwise fail on
+          # the first <cstdint> include.
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libstdc++-arm-none-eabi-newlib
 
       - name: Compile target translation units
         run: |
