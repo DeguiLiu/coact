@@ -69,8 +69,9 @@ class Hsm {
   int8_t enter_initial_descendants(Context& ctx, int8_t state) noexcept;
 
   const StateDef<Context>* states_;
-  uint16_t num_states_;
   const TransitionDef<Context>* transitions_;
+  // Group pointers before scalar fields to avoid per-instance alignment gaps.
+  uint16_t num_states_;
   uint16_t num_transitions_;
   int8_t initial_state_;
   uint8_t max_depth_;
@@ -85,8 +86,8 @@ template <typename Context>
 Hsm<Context>::Hsm(const StateDef<Context>* states, uint16_t num_states, const TransitionDef<Context>* transitions,
                   uint16_t num_transitions, int8_t initial_state, uint8_t max_depth) noexcept
     : states_(states),
-      num_states_(num_states),
       transitions_(transitions),
+      num_states_(num_states),
       num_transitions_(num_transitions),
       initial_state_(initial_state),
       max_depth_(max_depth),

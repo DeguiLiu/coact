@@ -363,8 +363,9 @@ class Ao : public AoBase {
   Context context_;
   HsmT hsm_;
   ExecutionLease lease_;
-  PendingCounter pending_;
+  // Keep byte-sized state together without packing or changing atomic alignment.
   bool initialized_{false};
+  PendingCounter pending_;
   std::atomic<uint32_t> unhandled_events_{0U};
 };
 

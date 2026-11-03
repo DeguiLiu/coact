@@ -82,6 +82,31 @@ static coact::EventPool<kBlk, kCap> g_pool;
 
 namespace {
 
+COACT_TEST(compact_ao_state_remains_independent) {
+  StaticAo first(kStStates, 2U, kStTrans, 1U, 1, 4U);
+  StaticAo second(kStStates, 2U, kStTrans, 1U, 1, 4U);
+  first.pending().increment();
+  first.init_default();
+  second.init_default();
+
+  CHECK_EQ(first.pending().load(), uint16_t(1U));
+  CHECK_EQ(second.pending().load(), uint16_t(0U));
+  CHECK(first.lease().state() == coact::AoRunState::Idle);
+  CHECK(second.lease().state() == coact::AoRunState::Idle);
+
+  const coact::Event unhandled{99U, 0U, 0U};
+  CHECK(first.dispatch_direct(unhandled));
+  CHECK_EQ(first.unhandled_events(), uint32_t(1U));
+  CHECK_EQ(second.unhandled_events(), uint32_t(0U));
+  first.init_default();
+  CHECK_EQ(first.pending().load(), uint16_t(1U));
+  CHECK_EQ(first.unhandled_events(), uint32_t(1U));
+  CHECK_EQ(first.hsm_current_state(), int8_t(1));
+  CHECK_EQ(second.hsm_current_state(), int8_t(1));
+  first.pending().decrement();
+  CHECK_EQ(first.pending().load(), uint16_t(0U));
+}
+
 /* =========================================================================
  * End-to-end through the static Runtime, plus Config->PAL stack pass-through.
  * ========================================================================= */

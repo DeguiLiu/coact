@@ -41,6 +41,9 @@ struct TestCtx {
   std::vector<std::string>* trace;
 };
 
+static_assert(sizeof(coact::Hsm<TestCtx>) <= 2U * sizeof(void*) + 8U,
+              "HSM instance must not reintroduce padding between table pointers");
+
 static void record(TestCtx& ctx, const char* label) {
   ctx.trace->push_back(label);
 }

@@ -15,6 +15,7 @@
 #include "coact/pool.hpp"
 #include "coact/runtime.hpp"
 
+#include <atomic>
 #include <new>
 
 namespace {
@@ -80,6 +81,11 @@ struct Traits {
 };
 
 using Ao = coact::Ao<Ctx, coact::Hsm<Ctx>, Traits>;
+
+// Cortex-M4 ABI guards: only padding is removed; capacities stay unchanged.
+static_assert(sizeof(coact::Hsm<Ctx>) == 16U, "HSM layout regression");
+static_assert(sizeof(Ao) == 48U, "AO layout regression");
+static_assert(alignof(Ao) >= alignof(std::atomic<uint32_t>), "AO atomic alignment regression");
 
 void bootstrap(void*) {
   int failures = 0;
