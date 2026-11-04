@@ -5,14 +5,23 @@
 [![CI](https://github.com/DeguiLiu/coact/actions/workflows/ci.yml/badge.svg)](https://github.com/DeguiLiu/coact/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-coact（**Co**operative **Act**ive-object framework）是一个面向 **RT-Thread /
-FreeRTOS 单核 MCU** 的 header-first **C++17** 事件框架：生产者从任务或 ISR 上下文
-提交事件，由单一线程派发给 **主动对象（AO）**，AO 行为由 **层次状态机（HSM）**
-描述。事件代替线程；单一线程派发；转移表是静态的。
+coact（**Co**operative **Act**ive-object framework）是一个 header-first
+**C++17** 事件框架：目标平台是运行 **RT-Thread** 或 **FreeRTOS** 的单核 MCU，同一
+套头文件也能通过 Posix / Windows PAL 在 **Linux** 与 **Windows** 主机上编译运行
+（主机侧是测试参考，不是产品目标）。生产者从任务或 ISR 提交事件，由单一线程派发
+给行为由**层次状态机（HSM）**描述的**主动对象（AO）**；事件代替线程，转移表是
+`constexpr`，运行期不做分配。
 
-coact 的核心价值在于把执行顺序、失败路径和恢复状态从调用者的自觉变成框架结构：
-单 Dispatcher、静态 HSM 和定容事件池把一次请求从“函数调用”变成“有状态的生命
-周期”，分级 AO 与显式阶段枚举让有界、可检测、可恢复成为结构属性。
+下面三件事是结构属性，不是承诺：
+
+| 性质 | 在代码里的落点 | 怎么验证 |
+|---|---|---|
+| 有界 | 队列、事件池、批大小全是编译期常量；无堆、无 `new/delete`、无动态注册 | 最坏占用与最长批在链接时固定（`test/renode/footprint.sh`） |
+| 可检测 | `SubmitResult` 结果码、`Monitor` 计数、`Breaker::level()`、`fatal_assert` 处理函数 | 失效在发生点可见，并能定位到所属 AO 与分区 |
+| 可恢复 | 每个 AO 一份熔断状态机（Normal、BrokenL1、BrokenL2、Safe、Recovering），状态由静态 HSM 描述 | 恢复条件明确：冷却到期、水位持续低、受控探测成功、连续健康窗口（`examples/safety_supervisor_demo.cpp`） |
+
+机制在库里，证据在板级：分区水位、看门狗进度和预留耗尽由 BSP 采集后调用
+`BreakerBank` 的入口，示例见 `examples/safety_supervisor_demo.cpp`。
 
 ## 为什么选 coact
 
@@ -33,6 +42,10 @@ coact 的核心价值在于把执行顺序、失败路径和恢复状态从调�
   `try_submit_from_isr` 永不阻塞。
 - **背压而非静默丢弃。** 过载时熔断器降级；低优先级分区老化出队而非饿死。
 - **自带协程**（`coact/coro/`）：栈式协程、`CoroSem`、栈守卫与水位诊断。
+
+## 为什么用 C++17
+
+C 能实现 coact 的全部功能，差别在约束由谁执行：C 靠注释、命名前缀和评审清单，C++17 把一部分写进类型系统与编译期断言。coact 只用这个子集：无异常、无 RTTI、无堆、无代码生成器，代价约为 Flash 多 1 至 2 KiB、RAM 持平。详见 [C++17 与 C 的能力差异、成本与使用边界](docs/cpp17_necessity_zh.md)。
 
 ## 拓扑图与层次图
 

@@ -6,16 +6,25 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 coact (**Co**operative **Act**ive-object framework) is a header-first **C++17**
-event framework for **single-core MCUs** running **RT-Thread or FreeRTOS**:
-producers submit from task or ISR context, one dispatcher thread delivers to
-**Active Objects (AO)** backed by **Hierarchical State Machines (HSM)**. Events
-replace threads; one dispatcher thread runs them; transition tables are static.
+event framework. It targets single-core MCUs running **RT-Thread** or
+**FreeRTOS**, and the same headers build and run on **Linux** and **Windows**
+hosts through the Posix and Windows PALs (host is a test reference, not a product
+target). Producers submit events from task or ISR context; one dispatcher thread
+delivers them to **active objects** whose behaviour is a **hierarchical state
+machine**. Events replace threads, transition tables are `constexpr`, and
+nothing allocates at run time.
 
-coact turns execution order, failure paths and recovery state from caller
-discipline into framework structure: one dispatcher, static HSMs and a
-fixed-capacity event pool turn a request from a plain call into a stateful
-lifecycle, and partitioned AOs with explicit phase enums keep it bounded,
-checkable and recoverable by construction.
+Three properties are structural here, not aspirations:
+
+| Property | Where it lives in the tree | How it is checked |
+|---|---|---|
+| Bounded | every queue, pool and batch size is a compile-time constant; no heap, no `new/delete`, no dynamic registration | worst-case flash/RAM and the longest dispatch batch are fixed at link time (`test/renode/footprint.sh`) |
+| Detectable | `SubmitResult` codes, `Monitor` counters, `Breaker::level()`, the `fatal_assert` handler | a failure is visible where it happens, with the AO and partition it belongs to |
+| Recoverable | one breaker state machine per AO (Normal, BrokenL1, BrokenL2, Safe, Recovering) over static HSMs | recovery has explicit conditions: cooldown, sustained low watermark, successful probe, consecutive healthy windows (`examples/safety_supervisor_demo.cpp`) |
+
+coact supplies the mechanisms; the board supplies the evidence. Partition
+watermarks, watchdog progress and reserve exhaustion are sampled by BSP code
+that calls the `BreakerBank` inputs, as the supervisor example shows.
 
 ## Why coact
 
@@ -38,6 +47,18 @@ checkable and recoverable by construction.
   low-priority partition ages out instead of starving.
 - **Coroutines included** (`coact/coro/`): stackful coroutines, `CoroSem`, and
   stack guard/watermark diagnostics.
+
+## Why C++17
+
+C can implement everything coact does. The difference is who enforces the
+constraints: in C, capacity relationships, resource ownership, handle types and
+cleanup pairing live in comments, naming prefixes and review checklists; in
+C++17, part of them lives in the type system and in compile-time assertions.
+coact uses only that subset: no exceptions, no RTTI, no heap, no code generator.
+Against an equivalent C implementation the cost is about 1 to 2 KiB more flash
+and roughly the same RAM. The measurements, the cases where C wins and the
+limits of the approach are in
+[C++17 与 C 的能力差异、成本与使用边界](docs/cpp17_necessity_zh.md) (Chinese).
 
 ## Topology and layering
 
