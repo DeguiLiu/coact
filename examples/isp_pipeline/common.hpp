@@ -383,7 +383,16 @@ constexpr size_t kPayloadAlign = 64U;
 using Layout = coact::EventBlockLayout<IoMeta, sizeof(Payload), kPayloadAlign>;
 
 using PoolT = coact::EventPool<static_cast<uint16_t>(sizeof(Layout)), 128U, coact::HostSmpProfile, kPayloadAlign>;
-using Rt = coact::Runtime<coact::DefaultConfig, DemoPal>;
+
+// The demo already binds 14 AOs, leaving only two spare TargetIds in the
+// framework default of 16. Board extensions that add their own AOs (the RS500
+// FFC / burn-proof / defrost set lives in the product tree and is never part of
+// this repository) raise the budget here rather than in coact core: capacity is
+// still a compile-time constant, and the 14 existing AOs see no behavior change.
+struct DemoConfig : coact::DefaultConfig {
+  enum : uint8_t { kMaxAo = 20U };
+};
+using Rt = coact::Runtime<DemoConfig, DemoPal>;
 
 // ---------------------------------------------------------------------------
 // DDR image region. Mirrors isp_stream_dma (ISP domain) / stream_out_dma
