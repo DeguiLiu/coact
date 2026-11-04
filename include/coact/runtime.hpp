@@ -164,6 +164,13 @@ class Runtime {
   BreakerBankType& breakers() noexcept { return breakers_; }
   BreakerBankType& breaker() noexcept { return breakers_; }
 
+  /* BSP supervisor read: current occupancy of a staging partition in percent
+     (0..100). One number, read-only, so a board can feed Monitor sampling and
+     the breaker watermark input without gaining access to the queues. */
+  uint8_t partition_watermark(PriorityClass cls) const noexcept {
+    return staging_.watermark(partition_from_class(cls));
+  }
+
   // Read-only view of the admission policy, e.g. per-target gate state.
   const AdmissionT& admission_policy() const noexcept { return coordinator_.admission_policy(); }
 

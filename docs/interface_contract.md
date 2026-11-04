@@ -541,6 +541,7 @@ public:
     Monitor<Config>& monitor() noexcept;
     BreakerBank<Config>& breakers() noexcept;
     BreakerBank<Config>& breaker() noexcept;
+    uint8_t partition_watermark(PriorityClass cls) const noexcept; // BSP 只读水位（0..100）
 };
 ```
 
@@ -550,6 +551,7 @@ public:
 - `Dispatcher` 单线程批循环：`begin_batch` -> 逐条 `dequeue_one(now)` -> `try_dispatch_slot` -> 批次结束 `reclaim.flush()`。queued 派发只用 `Ao::try_dispatch_queued()`；lease 忙时保留**一个** deferred slot，不减 pending、不释放事件，随后 `arm -> CAS 重试 -> PAL wait`。全部队列为空且无 deferred 时进入真正的阻塞等待 `wait_dispatcher(0)`（PAL 约定 0 == 永久），其余路径用有界的 `kBatchTimeoutMs` 等待。停机先 `close_admission()`，再在 `drain_queued_on_stop()` 中无派发地排空剩余事件，保证每事件恰好一次 pending 递减与一次引用释放。回收器由 `Profile` 选择：`HostSmpProfile` -> `ReclaimBatcher`（每批池容量 `min(kBatchSizeMax, kMaxEventPools)`），`RttSingleCoreProfile` -> `ImmediateReclaimer`。
 - `Runtime` 三阶段：Phase 1 `bind` / `bind_at`（注册 AO，须在 `initialize` 前）；Phase 2 `initialize`（提交注册表，幂等，并对每个已绑定 AO 调用 `init_default()`；显式 `Ao::init()` 过的 AO 不会被重复初始化）；Phase 3 `start`（启动 Dispatcher 线程，`started_` 仅在 PAL 报告成功后才置位，失败返回 `false`）。`stop()` 请求停止并 join。**不存在 `run_dispatcher()` 公开方法**——Dispatcher 线程由 `start()` 经 PAL 启动（此为对旧契约的更正）。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；coordinator / dispatcher 的默认 `BreakerRouterT` 仍是单个 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。
 - `PalT::template QueueBackend` 决定 staging 后端：`pal::Posix` -> `BoundedMpscQueue`（SMP），`pal::RtThread` -> `SingleCoreCriticalRing`（单核）。`Profile` 决定池与回收策略；RT-Thread 板传 `pal::RtThread::Profile`（即 `RttSingleCoreProfile`），默认 `HostSmpProfile` 保持 batched 回收。
+- `partition_watermark` 是 BSP 监督器唯一的队列视图：只返回某个分区的占用百分比，用于 `Monitor::sample_watermark` 与 `BreakerBank::broadcast_watermark`，不暴露队列本身，也不提供入队/出队通道。
 
 ### 3.9 PAL（平台抽象，L0/平台层）
 
