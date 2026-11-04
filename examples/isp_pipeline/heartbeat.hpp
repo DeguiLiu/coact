@@ -55,14 +55,20 @@ struct Beat {
      what the conventions forbid. The resolution is far below every heartbeat
      timeout, and the 49.7-day wrap is longer than any board uptime between
      resets, so LastUs() keeps its microsecond contract. */
-  std::atomic<uint32_t> last_ms{0};
+  std::atomic<uint32_t> last_us{0};
 
   static_assert(std::atomic<uint32_t>::is_always_lock_free,
                 "coact: the heartbeat timestamp must be lock-free on the target");
 
-  void Hit() noexcept { last_ms.store(static_cast<uint32_t>(detail::now_us() / 1000U), std::memory_order_relaxed); }
+  void Hit() noexcept { last_us.store(static_cast<uint32_t>(detail::now_us()), std::memory_order_relaxed); }
 
-  uint64_t LastUs() const noexcept { return static_cast<uint64_t>(last_ms.load(std::memory_order_relaxed)) * 1000U; }
+  /* Truncated to 32 bits by design: the staleness test is a modular
+     subtraction, which is correct across the 71-minute wrap as long as the
+     timeout stays below one wrap. Keeping the full 64-bit absolute value is
+     what overflowed on hosts with long uptimes. */
+  [[nodiscard]] uint32_t LastUs32() const noexcept { return last_us.load(std::memory_order_relaxed); }
+
+  [[nodiscard]] uint64_t LastUs() const noexcept { return static_cast<uint64_t>(LastUs32()); }
 };
 
 // ---------------------------------------------------------------------------
@@ -142,15 +148,15 @@ class Slots {
      invokes the callback on the rising edge only, so a still-stalled slot
      does not re-report every scan. */
   uint32_t Check() noexcept {
-    const uint64_t now = detail::now_us();
+    const uint32_t now = static_cast<uint32_t>(detail::now_us());
     uint32_t timed_out = 0U;
     for (uint8_t i = 0U; i < kCapacity; ++i) {
       Slot& s = slots_[i];
       if (!s.used) {
         continue;
       }
-      const uint64_t last = s.beat.LastUs();
-      const bool stale = (now > last) && ((now - last) > s.timeout_us);
+      const uint32_t last = s.beat.LastUs32();
+      const bool stale = (now - last) > s.timeout_us;
       if (stale) {
         ++timed_out;
         if (!s.timed_out) {
