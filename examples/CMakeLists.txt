@@ -77,6 +77,34 @@ target_compile_definitions(log_rtthread_demo PRIVATE COACT_RTT_STUB)
 target_include_directories(log_rtthread_demo PRIVATE ${CMAKE_SOURCE_DIR})
 add_test(NAME log_rtthread_demo COMMAND log_rtthread_demo)
 
+# isp_pipeline_demo: the RS500 IRSC -> ISP -> video -> output pipeline example
+# (14 AO + 7 non-AO worker threads, three shared blackboards, the recfg-session
+# transaction, heartbeat skeletons). Multi-file: main.cpp orchestrates the
+# scenario and its self-check assertions; the five module pairs carry the
+# business state machines. Self-verifying: prints "RESULT: ALL PASS (fails=0)"
+# and exits non-zero on failure. -DCOACT_RTT_STUB is required because
+# common.hpp pulls coact/diag/log_rtthread.hpp, whose non-stub path includes
+# rtthread.h; the host stub backs the RT-Thread API with pthreads.
+add_executable(isp_pipeline_demo
+    isp_pipeline/main.cpp
+    isp_pipeline/isp_chain.cpp
+    isp_pipeline/output_itf.cpp
+    isp_pipeline/recfg_session.cpp
+    isp_pipeline/sensor_irsc.cpp
+    isp_pipeline/video_stream.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp
+    ${CMAKE_SOURCE_DIR}/src/diag/log_rtthread.cpp)
+target_include_directories(isp_pipeline_demo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}       # allows #include "isp_pipeline/..."
+    ${CMAKE_SOURCE_DIR})              # allows #include "test/rtthread_stub.h"
+target_compile_definitions(isp_pipeline_demo PRIVATE COACT_RTT_STUB)
+target_link_libraries(isp_pipeline_demo PRIVATE coact_core Threads::Threads)
+add_test(NAME isp_pipeline_demo COMMAND isp_pipeline_demo)
+
+# The heartbeat self-test (test_heartbeat.cpp) is gitignored in this published
+# repository, so it is built from the downstream product tree instead. Only the
+# header it exercises (isp_pipeline/heartbeat.hpp) is tracked here.
+
 # serial_ota_demo: multi-file industrial example (Serial OTA upgrade). It
 # depends on an external, out-of-tree, header-only component library
 # (osp::StateMachine/BehaviorTree/SpscRingbuffer/TimerScheduler/...) for
