@@ -3,8 +3,8 @@
 // See design 11 and implementation contract 4.5.
 //
 // The merge slot state machine (Empty / Published / Merging / Consuming with
-// std::atomic transitions and a single owning Event*) follows QP/C++ QActive
-// event ownership: the cell holds one already-posted reference-counted Event
+// std::atomic transitions and a single owning Event*) borrows the single-owner
+// event idea from QP/C++: the cell holds one already-posted reference-counted Event
 // (coact Event), the producer overwrites its payload under Merging, the
 // dispatcher takes the owning handle under Consuming and event_gc()s it once.
 // CAS failure never blocks: the new event falls through to normal staging.

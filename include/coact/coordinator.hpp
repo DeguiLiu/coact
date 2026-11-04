@@ -1,8 +1,8 @@
 // coact DispatchCoordinator - unified submit pipeline: M4 policy -> M1 C1-C7
 // admission -> direct dispatch | staging. See design 8 and contract 4.8.
 //
-// Adapted from QP/C++ QF submit path (src/qf/qf_act.cpp); re-expressed
-// against the coact API. Project license: MIT.
+// The submit path follows the same idea as the QF post path in QP/C++;
+// the implementation here is independent. Project license: MIT.
 // SPDX-License-Identifier: MIT
 #pragma once
 

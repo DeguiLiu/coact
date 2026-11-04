@@ -2,9 +2,9 @@
 // the Ao<Context, Hsm, Traits> RTC template and the fixed AoRegistry.
 // See design 5 and implementation contract 4.6.
 //
-// Model adapted from QP/C++ (Quantum Leaps) QActive / execution model
-// (src/qf/qf_act.cpp); the coact API is an original, minimal re-expression
-// of the single-execution active object. Project license: MIT.
+// Follows the single-execution active-object idea popularized by QP/C++
+// (Quantum Leaps); the design and implementation here are independent.
+// Project license: MIT.
 // SPDX-License-Identifier: MIT
 #pragma once
 

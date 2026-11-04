@@ -20,8 +20,8 @@
 //
 // The index + CAS algorithm is adapted from newosp include/osp/data_dispatcher.hpp
 // (MIT, Copyright (c) 2024 liudegui, [15:0] index / [31:16] tag packing for
-// 32-bit ARM) and the reference-count semantics follow QP/C++ QF gc()/newRef_
-// (src/qf/qf_dyn.cpp). Project license: MIT.
+// 32-bit ARM). The reference-count idea follows QP/C++ (Quantum Leaps);
+// the implementation here is independent. Project license: MIT.
 // SPDX-License-Identifier: MIT
 #pragma once
 

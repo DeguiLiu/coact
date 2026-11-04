@@ -1,9 +1,8 @@
 // coact Event, global pool registry and pool records - QP-style reference-
 // counted mutable events. See design 6 and implementation contract 4.1.
 //
-// Model adapted from QP/C++ (Quantum Leaps) QEvt / QF event-pool registry
-// (src/qf/qf_dyn.cpp, src/qf/qf_mem.cpp); the coact API is an original,
-// minimal re-expression. Project license: MIT.
+// The pooled, reference-counted event idea follows QP/C++ (Quantum Leaps);
+// the implementation here is independent. Project license: MIT.
 // SPDX-License-Identifier: MIT
 #pragma once
 

@@ -1,8 +1,8 @@
 // coact Dispatcher - single-thread batch dispatch loop over the three-tier
 // staging queues. See design 13 and implementation contract 4.8.
 //
-// Model adapted from QP/C++ QF dispatcher loop (src/qf/qf_act.cpp);
-// the coact API is an original re-expression. Project license: MIT.
+// The dispatch loop follows the same idea as QP/C++; the implementation
+// here is independent. Project license: MIT.
 // SPDX-License-Identifier: MIT
 #pragma once
 
