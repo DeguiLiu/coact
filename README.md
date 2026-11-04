@@ -6,15 +6,15 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 coact (**Co**operative **Act**ive-object framework) is a header-first **C++17**
-event framework. It targets single-core MCUs running **RT-Thread** or
-**FreeRTOS**, and the same headers build and run on **Linux** and **Windows**
-hosts through the Posix and Windows PALs (host is a test reference, not a product
-target). Producers submit events from task or ISR context; one dispatcher thread
-delivers them to **active objects** whose behaviour is a **hierarchical state
-machine**. Events replace threads, transition tables are `constexpr`, and
-nothing allocates at run time. The active-object and hierarchical state machine
-model follows QP/C++ from Quantum Leaps; the submission, staging, admission,
-breaker and PAL layers are coact's own.
+event framework whose active-object and hierarchical state machine model follows
+[QP/C++](https://www.state-machine.com/qpc/) by Quantum Leaps. It targets
+single-core MCUs running **RT-Thread** or **FreeRTOS**, and the same headers
+build and run on **Linux** and **Windows** hosts through the Posix and Windows
+PALs (host is a test reference, not a product target). Producers submit events
+from task or ISR context; one dispatcher thread delivers them to **active
+objects** whose behaviour is a **hierarchical state machine**. Events replace
+threads, transition tables are `constexpr`, and nothing allocates at run time.
+The submission, staging, admission, breaker and PAL layers are coact's own.
 
 Three properties are structural here, not aspirations:
 

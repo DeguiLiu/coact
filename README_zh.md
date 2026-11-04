@@ -6,12 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 coact（**Co**operative **Act**ive-object framework）是一个 header-first
-**C++17** 事件框架：目标平台是运行 **RT-Thread** 或 **FreeRTOS** 的单核 MCU，同一
-套头文件也能通过 Posix / Windows PAL 在 **Linux** 与 **Windows** 主机上编译运行
-（主机侧是测试参考，不是产品目标）。生产者从任务或 ISR 提交事件，由单一线程派发
-给行为由**层次状态机（HSM）**描述的**主动对象（AO）**；事件代替线程，转移表是
-`constexpr`，运行期不做分配。主动对象与层次状态机的模型参考 Quantum Leaps 的
-QP/C++；提交管线、分区暂存、准入、熔断与 PAL 是本项目的实现。
+**C++17** 事件框架，主动对象与层次状态机模型参考 Quantum Leaps 的
+[QP/C++](https://www.state-machine.com/qpc/)。目标平台是运行 **RT-Thread** 或
+**FreeRTOS** 的单核 MCU，同一套头文件也能通过 Posix / Windows PAL 在 **Linux** 与
+**Windows** 主机上编译运行（主机侧是测试参考，不是产品目标）。生产者从任务或 ISR
+提交事件，由单一线程派发给行为由层次状态机描述的主动对象；事件代替线程，转移表是
+`constexpr`，运行期不做分配。提交管线、分区暂存、准入、熔断与 PAL 是本项目自己的
+实现。
 
 下面三件事是结构属性，不是承诺：
 
