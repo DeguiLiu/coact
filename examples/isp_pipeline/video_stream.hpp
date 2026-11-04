@@ -248,9 +248,12 @@ struct VideoFsmNode {
     /* 停流确认：kFmtIdle 是本文件头注释声明的格式通道 idle ack，此前只有
        消费方没有生产方。请求方在 kVideoCmd 的 reply_to 里声明自己，这里按
        真实块 AO 的行为回一帧确认，让调用方不必轮询状态。 */
-    const IoMeta& in = *reinterpret_cast<const IoMeta*>(&evt);
+    // 事件块的首地址是 Layout，meta 是它的第一个成员；直接把 Event 地址
+    // 当 IoMeta 会读到 Event 自己的 signal/pool_id/ref_ctr 字节。
+    const Layout& block = *reinterpret_cast<const Layout*>(&evt);
+    const IoMeta& in = block.meta;
     const bool wants_ack = (0U != (in.flags & kVideoFlagWantIdleAck));
-    if (wants_ack && (nullptr != ctx.pool) && (nullptr != ctx.rt) && (kInvalidTarget != in.reply_to)) {
+    if (wants_ack && (nullptr != ctx.pool) && (nullptr != ctx.rt) && (coact::kInvalidTarget != in.reply_to)) {
       Layout* ack = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kFmtIdle));
       if (nullptr != ack) {
         ack->meta.reply_to = in.reply_to;

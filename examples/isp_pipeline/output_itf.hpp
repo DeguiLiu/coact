@@ -396,6 +396,7 @@ struct WrapeCtx {
   // which a control-plane AO cannot observe.
   TargetId first_frame_notify{};
   bool notify_armed{false};
+  uint32_t notify_frames{0U};
   uint32_t frames_framed{0U};
   uint32_t err_eof_frames{0U};
   uint32_t complete_frames{0U};
@@ -467,10 +468,13 @@ inline void onPicPackedWrape(WrapeCtx& ctx, const Event& evt) {
     ++ctx.complete_frames;
   }
 
-  // 首帧确认：只在被请求方 arm 之后发一次，且只在完整帧上发。
+  // 帧观察：arm 之后首个完整帧发 kFirstFrame，后续帧发 kPicPacked。
+  // 控制面 AO（如 FFC）靠这两个信号判断"起流成功"与"N 帧稳定"，不轮询镜像。
   if (ctx.notify_armed && !v.err_eof && (nullptr != ctx.pool) && (nullptr != ctx.rt) &&
-      (kInvalidTarget != ctx.first_frame_notify)) {
-    Layout* ff = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kFirstFrame));
+      (coact::kInvalidTarget != ctx.first_frame_notify)) {
+    const uint16_t sig =
+        (0U == ctx.notify_frames) ? static_cast<uint16_t>(Sig::kFirstFrame) : static_cast<uint16_t>(Sig::kPicPacked);
+    Layout* ff = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(sig);
     if (nullptr != ff) {
       ff->meta.reply_to = ctx.first_frame_notify;
       ff->meta.frame_id = e.meta.frame_id;
@@ -478,10 +482,10 @@ inline void onPicPackedWrape(WrapeCtx& ctx, const Event& evt) {
       const coact::SubmitResult r =
           ctx.rt->coordinator().submit_from_task(ctx.first_frame_notify, &ff->event, {false, false});
       if (coact::SubmitDisposition::DroppedOverload == r.disposition) {
-        std::printf("[wrape] kFirstFrame dropped (overload)\n");
+        std::printf("[wrape] frame notify dropped (overload)\n");
       }
     }
-    ctx.notify_armed = false;
+    ++ctx.notify_frames;
   }
 
   // Hand the framed payload to the non-AO USB DMA engine; it ships the
