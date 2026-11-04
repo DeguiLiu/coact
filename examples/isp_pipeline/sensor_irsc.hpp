@@ -92,14 +92,18 @@ struct IrscWorker {
   TargetId high_target{};
   std::atomic<bool> running{false};
   uint32_t period_us{33333U};
+  // 0 = 一直产生，直到 stop()。业务仿真需要持续帧流（FFC 停流会消耗掉
+  // 在途帧，固定 30 帧的测试语义在慢速目标上会在业务流程走完之前耗尽）。
+  uint32_t frame_limit{kFrameCount};
   hb::Beat* beat_{nullptr};
 
-  void start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps) {
+  void start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps, uint32_t frames = kFrameCount) {
     pool = p;
     rt = r;
     low_target = low;
     high_target = high;
     period_us = (fps == 0U) ? 33333U : (1000000U / fps);
+    this->frame_limit = (0U == frames) ? 0xFFFFFFFFU : frames;
     running.store(true);
     // Register before thread_create so the slot exists the moment the
     // thread can first beat. The timeout is derived from THIS instance's
@@ -128,7 +132,7 @@ struct IrscWorker {
     // of suppressing the report for its whole duration.
     uint32_t f = 0U;
     hb::BeatLoop(
-        beat_, [&] { return (f < kFrameCount) && running.load(); },
+        beat_, [&] { return (f < frame_limit) && running.load(); },
         [&] {
           // Relative pacing: sleep one full frame period per iteration. A
           // sensor produces frames on its own clock regardless of how far
@@ -160,8 +164,8 @@ struct IrscWorker {
           }
           ++f;  // the for-increment, moved here
         });
-    std::printf("[irsc] emitted %u DN frames @ %u us\n", kFrameCount, period_us);
-    g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(0U, kFrameCount, period_us);
+    std::printf("[irsc] emitted %u DN frames @ %u us (limit=%u)\n", f, period_us, frame_limit);
+    g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(0U, f, period_us);
   }
 };
 
