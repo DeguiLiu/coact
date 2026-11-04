@@ -12,7 +12,9 @@ hosts through the Posix and Windows PALs (host is a test reference, not a produc
 target). Producers submit events from task or ISR context; one dispatcher thread
 delivers them to **active objects** whose behaviour is a **hierarchical state
 machine**. Events replace threads, transition tables are `constexpr`, and
-nothing allocates at run time.
+nothing allocates at run time. The active-object and hierarchical state machine
+model follows QP/C++ from Quantum Leaps; the submission, staging, admission,
+breaker and PAL layers are coact's own.
 
 Three properties are structural here, not aspirations:
 
@@ -128,6 +130,17 @@ CI adds ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread under
 qemu-vexpress-a9 (single core) and on FreeRTOS under Renode (Cortex-M4 running
 the CM3 port), including a fault-injection fixture where IWDG resets a task that
 masks interrupts and spins.
+
+## Credits
+
+The active-object execution model, the pooled-event and reference-count
+semantics, and the dispatcher loop follow
+[QP/C++](https://www.state-machine.com/qpc/) by Quantum Leaps. Quantum Leaps
+ships SafeQP/C++ (commercial) with certification kits for IEC 61508 and
+ISO 26262; coact is not a certified product and carries no certification
+artifacts. coact's own work is the submission pipeline, three-partition staging,
+admission and breaker policies, the PAL abstraction and the single-core
+lock-free queues.
 
 ## License
 

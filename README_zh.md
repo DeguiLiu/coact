@@ -10,7 +10,8 @@ coact（**Co**operative **Act**ive-object framework）是一个 header-first
 套头文件也能通过 Posix / Windows PAL 在 **Linux** 与 **Windows** 主机上编译运行
 （主机侧是测试参考，不是产品目标）。生产者从任务或 ISR 提交事件，由单一线程派发
 给行为由**层次状态机（HSM）**描述的**主动对象（AO）**；事件代替线程，转移表是
-`constexpr`，运行期不做分配。
+`constexpr`，运行期不做分配。主动对象与层次状态机的模型参考 Quantum Leaps 的
+QP/C++；提交管线、分区暂存、准入、熔断与 PAL 是本项目的实现。
 
 下面三件事是结构属性，不是承诺：
 
@@ -113,6 +114,10 @@ host 目标在 `ctest` 下全部通过，池 / Dispatcher 路径 TSan 无竞争�
 ASan/UBSan 与 Windows MSVC job。已在 RT-Thread / qemu-vexpress-a9（单核）完成
 启动验证；FreeRTOS 在 Renode（Cortex-M4，CM3 端口）上跑通 PAL、运行时断言与
 故障注入夹具，其中关中断死循环的任务由 IWDG 复位。
+
+## 来源与致谢
+
+主动对象的执行模型、事件池与引用计数语义、派发循环参考 Quantum Leaps 的 [QP/C++](https://www.state-machine.com/qpc/)。Quantum Leaps 另提供商业版 SafeQP/C++，附带面向 IEC 61508 与 ISO 26262 的认证包；coact 不是认证产品，也不包含认证材料。coact 自己的部分是提交管线、三级分区暂存、准入与熔断策略、PAL 抽象和单核无锁队列。
 
 ## 许可
 
