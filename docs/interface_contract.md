@@ -2,7 +2,7 @@
 
 本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。版本号与顶层构建一致（`CMakeLists.txt` 中 `project(coact VERSION 0.7.1)`）。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
 
-读者可先读 `README.md` 与 `docs/cpp17_coact_usage_zh.md` 建立使用视图，再回到本文核对契约细节。本文中的签名以当前 `include/coact/` 下的实现为准；凡与本机代码不一致之处，以代码为准。
+读者可先读 `README.md` 与 `docs/why_cpp17_embedded_zh.md` 建立使用视图，再回到本文核对契约细节。本文中的签名以当前 `include/coact/` 下的实现为准；凡与本机代码不一致之处，以代码为准。
 
 ## 0. 纪律与代码来源
 
@@ -545,7 +545,7 @@ public:
 };
 ```
 
-- **提交是唯一入口**，禁止绕过 coordinator 直接操作 staging。管线：C1 目标已绑定 -> 获取 submission lease（失败即 `RejectedState`）-> M6 过载闸（`BrokenL2` 及以上且非 critical 时 `DroppedOverload`）-> M4 策略评估（`DroppedPolicy` / `DroppedRateLimit`）-> M1 direct（仅 Task 路径且 `direct_eligible` 且 `direct_allowed` 且 lease 为 Idle）-> staging（满则 `RejectedFull` 并 `on_overflow`）-> `Queued`。
+- **提交是唯一入口**，禁止绕过 coordinator 直接操作 staging。管线：C1 目标已绑定 -> 获取 submission lease（失败即 `RejectedState`）-> M6 过载闸（非 critical 且 `Breaker::drop_non_critical()` 为真 时 `DroppedOverload`）-> M4 策略评估（`DroppedPolicy` / `DroppedRateLimit`）-> M1 direct（仅 Task 路径且 `direct_eligible` 且 `direct_allowed` 且 lease 为 Idle）-> staging（满则 `RejectedFull` 并 `on_overflow`）-> `Queued`。
 - **事件引用所有权**：`submit_from_task` / `try_submit_from_isr` 接管传入引用。staged：allocation reference 转交 staging，dispatcher 派发后 `event_gc`；direct：派发后立即消费；drop / merge：立即消费。调用方在提交返回后**不得**再访问事件。
 - direct 路径由 `Ao::dispatch_direct()` 内部持有 `RunningDirect` lease；派发完成后若 `pending>0`，经 `request_dispatcher_wake()` 决定是否 `signal_dispatcher_from_task`，与 dispatcher 的 arm-then-CAS 重试共同关闭“释放先于等待”窗口。
 - `Dispatcher` 单线程批循环：`begin_batch` -> 逐条 `dequeue_one(now)` -> `try_dispatch_slot` -> 批次结束 `reclaim.flush()`。queued 派发只用 `Ao::try_dispatch_queued()`；lease 忙时保留**一个** deferred slot，不减 pending、不释放事件，随后 `arm -> CAS 重试 -> PAL wait`。全部队列为空且无 deferred 时进入真正的阻塞等待 `wait_dispatcher(0)`（PAL 约定 0 == 永久），其余路径用有界的 `kBatchTimeoutMs` 等待。停机先 `close_admission()`，再在 `drain_queued_on_stop()` 中无派发地排空剩余事件，保证每事件恰好一次 pending 递减与一次引用释放。回收器由 `Profile` 选择：`HostSmpProfile` -> `ReclaimBatcher`（每批池容量 `min(kBatchSizeMax, kMaxEventPools)`），`RttSingleCoreProfile` -> `ImmediateReclaimer`。
@@ -556,7 +556,7 @@ public:
 ### 3.9 PAL（平台抽象，L0/平台层）
 
 - `CriticalSection`：`save` 掩中断/加锁并返回不透明 token，`restore` 复原；`make_critical_section(pal)` 从任意提供 `irq_save()` / `irq_restore()` 的 PAL 构造（RT-Thread 映射 `rt_hw_interrupt_disable/enable`，POSIX 为 no-op）。SMP 上共享池的批回收须改用 `make_spin_critical_section`，见 §3.1。
-- `pal::ThreadEntry = void (*)(void* context)`；PAL 方法名（非虚、编译期解析）包括：`irq_save` / `irq_restore`、`current_context`、`monotonic_ns`、`clock_resolution_ns`、`wait_dispatcher`、`signal_dispatcher_from_task` / `signal_dispatcher_from_isr`、`start_dispatcher`、`join_dispatcher`、`watchdog_progress`、`set_dispatcher_stack_bytes`、`set_clock_ops`。
+- `pal::ThreadEntry = void (*)(void* context)`；PAL 方法名（非虚、编译期解析）包括：`irq_save` / `irq_restore`、`current_context`、`monotonic_ns`、`clock_resolution_ns`、`wait_dispatcher`、`signal_dispatcher_from_task` / `signal_dispatcher_from_isr`、`start_dispatcher`、`join_dispatcher`、`watchdog_progress` / `set_watchdog_ops`、`set_dispatcher_stack_bytes`、`set_clock_ops`。
 - `pal::ClockOps`：`read_counter` 静态函数表 + `frequency_hz` + `counter_bits`，用于纳秒换算；RT tick 仍是阻塞等待与长超时的来源。
 - `pal::Posix`：`start_dispatcher` 返回 `void`；`QueueBackend = BoundedMpscQueue`；提供 pthread worker、condvar、`clock_gettime(CLOCK_MONOTONIC)` 及 SemOps/MutexOps/CondOps/ThreadOps/SoftIrqOps 家族。
 - `pal::RtThread`：静态 PAL，`QueueBackend = SingleCoreCriticalRing`，`Profile = RttSingleCoreProfile`。调用方提供 `RtThreadResources<StackBytes, ContextSlots, WorkerSlots>`（静态 TCB / stack / semaphore / ContextSlot 表），构造只保存引用，内核 API 全在 `initialize()`（任务上下文）调用；`initialize()` 与 `start_dispatcher()` 返回 `pal::InitError`（成功 == 枚举 0），二次启动或停机后再启动返回 `kAlreadyStarted`。要求单核（`SMP` 下 `#error`）。

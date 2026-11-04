@@ -126,7 +126,7 @@ FreeRTOS PAL 与 `pal::RtThread` 最接近：都采用调用方提供的静态�
 | `signal_dispatcher_from_isr()` | ISR | 不适用 | `void`；未初始化不得调用 | 是 | `xSemaphoreGiveFromISR` + `portYIELD_FROM_ISR`；返回 `errQUEUE_FULL` 可忽略，已有 token 保证唤醒 |
 | `start_dispatcher(entry, ctx)` | 任务 | 不适用 | FreeRtos 采用 `InitError`：成功为 0；`kThreadStartFailed`、`kAlreadyStarted` 等。Posix 返回 `void` | 否 | `pal_rtthread.cpp:380`；先保存 entry/context，再 `xTaskCreateStatic` 创建 dispatcher，NULL 视为失败 |
 | `join_dispatcher()` | 任务 | 永久等待 | `void`；未 started 时 no-op | 否 | `pal_rtthread.cpp:404`；`xSemaphoreTake(join, portMAX_DELAY)` |
-| `watchdog_progress(marker)` | 任意 | 不适用 | `void` | 是（可选） | `pal.hpp:151`；当前两后端均为 no-op |
+| `watchdog_progress(marker)` | 任意 | 不适用 | `void` | 是（可选） | `pal.hpp:151`；BSP 用 `set_watchdog_ops()` 装 kick，未装时为 no-op |
 | `set_dispatcher_stack_bytes(bytes)` | 任务，`initialize()` 前 | 不适用 | `void`；超容量在 `initialize()` 返回 `kStackTooLarge` | 否 | `pal.hpp:152`；FreeRTOS 需换算为 `StackType_t` 字数 |
 | `dispatcher_stack_bytes()` | 任意 | 不适用 | `uint32_t` | 是 | `pal_rtthread.hpp:400`；只读 |
 | `enter_direct()` / `leave_direct()` | 任务 | 不适用 | `void`；未注册任务 no-op | 否 | `pal_rtthread.hpp:403-404`；维护每线程 `direct_depth` |
@@ -527,7 +527,7 @@ int main()
 - `test_freertos_pal`：22 组、93 个断言全部通过。
 - Renode（Cortex-M4 模型，真实 FreeRTOS V11.1.0 CM3 端口）：`test/renode/freertos.sh` 32/32 通过；覆盖 SVC/PendSV 调度、SysTick 推进、TIM2 真实中断进入 ISR 分支、Sem/Mutex、常驻 worker、双任务并发 create/join 与 Runtime 端到端。`configCHECK_FOR_STACK_OVERFLOW=2`，dispatcher 栈水位 977/1024 字余量（断言要求 >= 25%）。
 - Renode 故障夹具：`test/renode/freertos_wdg.sh` 8/8 通过。IWDG 在中断关闭、调度器停转的条件下于 **29.862 ms** 复位（窗口 32 ms）；MemManage 记录 `CFSR=0x82`、`MMFAR=0x20020000` 后复位；`configASSERT` 走同一复位路径。
-- `__atomic_compare_exchange_8` 调用点为 0；生产 PAL 的 AUTOSAR/CERT 检查 0 告警，MISRA C++ 范围与偏差见 `docs/misra-cpp-scope.md`。
+- `__atomic_compare_exchange_8` 调用点为 0；生产 PAL 的 AUTOSAR/CERT 检查 0 告警，MISRA C++ 范围与偏差见 `docs/cpp_coding_conventions_zh.md`。
 - 编译门禁：`configNUMBER_OF_CORES==1`、`configSUPPORT_STATIC_ALLOCATION==1`、mutex/counting semaphore、`INCLUDE_vTaskSuspend==1`、`INCLUDE_vTaskDelay==1`、`INCLUDE_xTaskGetSchedulerState==1`、32 位 tick、`configMAX_PRIORITIES>=3` 均为 `#error` 级检查；Cortex-M0/M0+ 与 SMP 直接拒绝。
 
 边界：

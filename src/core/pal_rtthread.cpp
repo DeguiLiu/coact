@@ -376,7 +376,11 @@ void RtThread::join_dispatcher() noexcept {
 }
 
 void RtThread::watchdog_progress(uint32_t /*marker*/) noexcept {
-  /* No-op: watchdog management is handled at the BSP layer. */
+  /* The BSP owns the watchdog; the PAL only offers the progress path one
+     place to kick it. No hook installed means no-op. */
+  if (nullptr != watchdog_.kick) {
+    watchdog_.kick(watchdog_.ctx);
+  }
 }
 
 void RtThread::enter_direct() noexcept {

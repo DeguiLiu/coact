@@ -353,7 +353,16 @@ class RtThread {
      stop. Auto-initializes if initialize() was not called. */
   InitError start_dispatcher(ThreadEntry entry, void* context) noexcept;
   void join_dispatcher() noexcept;
+
+  // Optional independent watchdog hook, same shape as the FreeRTOS PAL: the
+  // BSP owns the watchdog and installs the kick; with no hook installed the
+  // progress call is a no-op.
+  struct WatchdogOps {
+    void (*kick)(void* ctx) = nullptr;
+    void* ctx = nullptr;
+  };
   void watchdog_progress(uint32_t marker) noexcept;
+  void set_watchdog_ops(WatchdogOps ops) noexcept { watchdog_ = ops; }
 
   // Override the Dispatcher thread stack size before initialize()/start().
   // The Runtime pushes Config::kDispatcherStackBytes here; default 4096. A
@@ -477,6 +486,7 @@ class RtThread {
   InitError last_error_;
   uint32_t dispatcher_stack_bytes_; /* default 4096; overridable */
   ClockOps clock_ops_;              /* default: RT tick; §7.5 */
+  WatchdogOps watchdog_{};          /* default: no hook, kick is a no-op */
   uint64_t ns_per_counter_;         /* zero selects exact fallback */
   mutable uint64_t counter_epoch_ = 0U;
   mutable uint64_t last_counter_ = 0U;

@@ -23,7 +23,7 @@ coact 现有的心跳相关钩子盘点：
 | `Monitor::heartbeat()` | `GlobalCounters::watchdog_heartbeats` | 单个全局计数，无 per-实体槽 |
 | `Monitor::ao(TargetId)` → `AoCounters` | per-AO 时长/超时/拒绝/pending | 无心跳字段；worker 不是 AO，无处安放 |
 | `Breaker::on_watchdog()` / `broadcast_watchdog()` | → `Safe` | 全 AO 广播，无按实体粒度 |
-| `pal::watchdog_progress(marker)` | 喂狗钩子位 | 三后端均为空实现 |
+| `pal::watchdog_progress(marker)` | 喂狗钩子位 | host 为空实现；FreeRTOS 与 RT-Thread 提供 kick 钩子，未安装时为空 |
 
 结论是硬缺口：**worker 侧没有槽可挂**。因此例子必须自己持有一个最小槽表，其余
 尽量复用 coact。本设计只做槽表和打点骨架，不碰降级与喂狗（见第 7 节）。

@@ -41,6 +41,15 @@ COACT_TEST(rtthread_pal_irq_save_restore) {
   CHECK(true);
 }
 
+COACT_TEST(rtthread_pal_watchdog_hook) {
+  coact::pal::RtThread pal;
+  int kicks = 0;
+  pal.set_watchdog_ops({[](void* ctx) { ++*static_cast<int*>(ctx); }, &kicks});
+  pal.watchdog_progress(1U);
+  pal.watchdog_progress(2U);
+  CHECK_EQ(kicks, 2);
+}
+
 COACT_TEST(rtthread_pal_monotonic_ns_increases) {
   coact::pal::RtThread pal;
   uint64_t t0 = pal.monotonic_ns();
