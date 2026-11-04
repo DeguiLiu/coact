@@ -308,6 +308,8 @@ class Ao : public AoBase {
   // Application context accessor. Callers configure the AO's context
   // (payload, flags, whatever the HSM actions need) before init().
   Context& context() noexcept { return context_; }
+  // Read-only accessor for const queries such as state snapshots.
+  const Context& context() const noexcept { return context_; }
 
   void dispatch(const Event& event) noexcept override {
     if (!try_dispatch_queued(event)) {
