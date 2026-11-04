@@ -7,11 +7,17 @@ add_executable(hsm_protocol_demo
     hsm_protocol_demo.cpp
     ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp)
 target_link_libraries(hsm_protocol_demo PRIVATE coact_core Threads::Threads)
+# Self-verifying: checks every submit result, the drain, the final HSM state
+# and the pool balance; exits non-zero on failure.
+add_test(NAME hsm_protocol_demo COMMAND hsm_protocol_demo)
 
 add_executable(node_manager_demo
     node_manager_demo.cpp
     ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp)
 target_link_libraries(node_manager_demo PRIVATE coact_core Threads::Threads)
+# Self-verifying: checks submit results, per-node peak misses/disconnects and
+# the pool balance; exits non-zero on failure.
+add_test(NAME node_manager_demo COMMAND node_manager_demo)
 
 # flash_proxy_demo: complex example. Owner AO serializes a NAND device behind
 # a non-AO DMA worker; timed interrupt-callback completion, ref-count fan-out
@@ -30,6 +36,18 @@ add_executable(pal_hooks_demo
     pal_hooks_demo.cpp)
 target_link_libraries(pal_hooks_demo PRIVATE coact_core)
 add_test(NAME pal_hooks_demo COMMAND pal_hooks_demo)
+
+# safety_supervisor_demo: BSP-level supervisor for the three detection inputs
+# coact does not own (partition watermark, worker watchdog, key-reserve
+# exhaustion) plus the safe-restore and controlled-probe recovery drive.
+# Shows that the bounded/detectable/recoverable properties are achieved by
+# board code calling the coact mechanisms, not by hidden core behavior.
+# Self-verifying.
+add_executable(safety_supervisor_demo
+    safety_supervisor_demo.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/pal_posix.cpp)
+target_link_libraries(safety_supervisor_demo PRIVATE coact_core Threads::Threads)
+add_test(NAME safety_supervisor_demo COMMAND safety_supervisor_demo)
 
 # msh_monitor_demo: MSH-style three-layer monitoring queries over a running
 # AO system (design_architecture_zh.md 5.9). A compact self-built runtime:

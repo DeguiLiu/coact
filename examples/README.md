@@ -7,9 +7,12 @@
 | `hsm_protocol_demo.cpp` | 入门：单 AO | 层次状态机父状态事件继承、全事件管线 |
 | `node_manager_demo.cpp` | 进阶：多 AO | 一个 Runtime 下多主动对象、TargetId 路由、表序 guard |
 | `flash_proxy_demo.cpp` | 进阶：拥有者 AO + 硬件代理 | 设备独占串行化、非 AO worker、中断回调计时、引用计数扇出、请求/响应查询 |
+| `safety_supervisor_demo.cpp` | 进阶：功能安全闭环 | 有界、可检测、可恢复的 BSP 侧接线：分区水位、worker 看门狗、预留耗尽上报、安全恢复与受控探测 |
 | `serial_ota/` | 综合：工业级集成 | coact + 外部组件混合架构、串口 OTA、桥接 Ao |
 
-前三者单文件自包含、零外部依赖；`serial_ota/` 是多文件工程，依赖树外头文件，为**可选构建**。
+除 `serial_ota/` 外，其余示例都是单文件、自包含、零外部依赖，并且都注册进
+`ctest` 自校验：每条断言失败即返回非 0，CI 会把它当作用例失败。`serial_ota/` 是
+多文件工程，依赖树外头文件，为**可选构建**。
 
 ---
 
@@ -181,6 +184,36 @@ OTA upgrade completed successfully!
 ```
 
 （`drops=0` 因重传把损坏帧兜住了；若调大 `kDropRate` 可观察到 `retries/drops` 非零。）
+
+---
+
+## safety_supervisor_demo — 安全监督器（BSP 侧接线）
+
+**作用**：coact 提供机制（Breaker 状态机、Monitor 计数、`SubmitResult` 结果码），
+BSP 提供证据。本示例是 BSP 那一半：三类检测输入怎么送进 Breaker，Safe 之后又怎么
+回到 Normal。
+
+| 检测输入 | BSP 取到的证据 | 送给谁 | 结果 |
+|---|---|---|---|
+| 分区水位 | `Runtime::partition_watermark()` 的百分比 | `Monitor::sample_watermark` 与 `BreakerBank::broadcast_watermark` | 连续 3 次高于 80% → L2 |
+| worker 看门狗 | 有待处理事件，但处理计数在超时窗口内不变 | `broadcast_watchdog` | → Safe |
+| 预留耗尽 | critical 提交返回 `RejectedFull`，说明保留单元已用尽 | `broadcast_key_reserve_exhausted` | → Safe |
+
+**恢复路径**：产品的安全恢复信号调用 `broadcast_external_safe_restore`，把 Safe 推到
+Recovering；受控探测事件被正常派发后调用 `on_probe_success`；dispatcher 的派发周期
+把探测成功折成健康窗口，冷却到期且连续三个窗口通过才回到 Normal。
+
+**场景**（自校验，任一断言失败即返回非 0）：
+
+1. 阻塞 worker，让 High 分区涨到 80% 以上，水位上报三次后熔断到 L2；
+2. critical 事件用掉两个保留单元，第三个被拒，BSP 上报预留耗尽，进入 Safe；
+3. 解除阻塞、排空、安全恢复、受控探测，回到 Normal；
+4. 再次让 handler 不返回，看门狗超时上报，进入 Safe；
+5. 重复恢复流程，回到 Normal，并核对事件全部回池。
+
+**移植**：监督器只使用只读水位、`Monitor` 计数和 `BreakerBank` 入口，不触碰内部
+结构。换成 FreeRTOS 或 RT-Thread PAL 时，把 `pal.watchdog_progress()` 接到板级看门狗
+驱动，把示例里的 `usleep` 换成 BSP 延时即可，其余代码不变。
 
 ---
 

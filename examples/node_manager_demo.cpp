@@ -22,6 +22,15 @@
 
 namespace {
 
+int g_failures = 0;
+
+void check(bool condition, const char* what) {
+  std::printf("  [%s] %s\n", condition ? "ok" : "FAIL", what);
+  if (!condition) {
+    ++g_failures;
+  }
+}
+
 /* ---- Node events ------------------------------------------------------- */
 enum Signal : uint16_t { kHeartbeatOk = 1U, kHeartbeatMiss = 2U, kDisconnect = 3U, kReconnect = 4U };
 
@@ -30,6 +39,8 @@ struct NodeContext {
   uint16_t node_id = 0U;
   uint32_t missed_heartbeats = 0U;
   uint32_t total_heartbeats = 0U;
+  uint32_t peak_missed = 0U;
+  uint32_t disconnects = 0U;
   bool connected = false;
 };
 
@@ -51,6 +62,7 @@ void suspect_entry(NodeContext& ctx) {
 
 void disconnected_entry(NodeContext& ctx) {
   ctx.connected = false;
+  ++ctx.disconnects;
   std::printf("[Node %u] -> Disconnected\n", ctx.node_id);
 }
 
@@ -70,6 +82,9 @@ bool below_disconnect(const NodeContext& ctx, const coact::Event&) {
 
 void miss_count(NodeContext& ctx, const coact::Event&) {
   ++ctx.missed_heartbeats;
+  if (ctx.missed_heartbeats > ctx.peak_missed) {
+    ctx.peak_missed = ctx.missed_heartbeats;
+  }
   std::printf("[Node %u] heartbeat MISS (count=%u)\n", ctx.node_id, ctx.missed_heartbeats);
 }
 
@@ -238,26 +253,33 @@ int main() {
   std::printf("=== coact node-manager demo: %d events, 4 node AOs ===\n",
               static_cast<int>(sizeof(script) / sizeof(script[0])));
   coact::EventQos qos{false, false};
+  uint32_t submit_failures = 0U;
   for (const Step& st : script) {
     std::printf(">> node %u <- %s\n", st.target.raw(), signal_name(st.signal));
     coact::Event* e = pool.alloc(st.signal);
     if (nullptr == e) {
-      std::printf("pool exhausted\n");
+      check(false, "event pool has a block for every scripted event");
       break;
     }
-    rt.coordinator().submit_from_task(st.target, e, qos);
+    const coact::SubmitResult result = rt.coordinator().submit_from_task(st.target, e, qos);
+    if (coact::SubmitDisposition::Queued != result.disposition) {
+      ++submit_failures;
+    }
   }
+  check(0U == submit_failures, "every scripted submit was accepted");
 
   /* Drain all four AOs (pending()==0 per AO) via the type-erased base. */
   coact::AoBase* nodes[] = {&node1, &node2, &node3, &node4};
+  bool drained = false;
   for (int w = 0; w < 400; ++w) {
-    bool drained = true;
+    bool idle = true;
     for (coact::AoBase* n : nodes) {
       if (0U != n->pending().load()) {
-        drained = false;
+        idle = false;
       }
     }
-    if (drained) {
+    if (idle) {
+      drained = true;
       break;
     }
     usleep(5000);
@@ -275,5 +297,21 @@ int main() {
     ++ni;
   }
   std::printf("pool.used: %u\n", static_cast<unsigned>(pool.used()));
-  return 0;
+
+  const NodeContext& c1 = node1.context();
+  const NodeContext& c2 = node2.context();
+  const NodeContext& c3 = node3.context();
+  const NodeContext& c4 = node4.context();
+  check(drained, "all four AOs drained");
+  check((4U == c1.total_heartbeats) && (0U == c1.peak_missed) && (0U == c1.disconnects),
+        "node 101: four beats, no suspect, no disconnect");
+  check((3U == c2.total_heartbeats) && (3U == c2.peak_missed) && (0U == c2.disconnects),
+        "node 102: three misses reached Suspect, then recovered");
+  check((2U == c3.total_heartbeats) && (5U == c3.peak_missed) && (1U == c3.disconnects),
+        "node 103: five misses disconnected it, reconnect restored it");
+  check((3U == c4.total_heartbeats) && (1U == c4.disconnects), "node 104: explicit disconnect and reconnect");
+  check(0U == pool.used(), "every event returned to the pool");
+
+  std::printf("\n%s\n", (0 == g_failures) ? "PASS" : "FAIL");
+  return (0 == g_failures) ? 0 : 1;
 }

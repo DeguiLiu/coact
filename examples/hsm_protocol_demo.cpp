@@ -17,10 +17,20 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include <unistd.h>
 
 namespace {
+
+int g_failures = 0;
+
+void check(bool condition, const char* what) {
+  std::printf("  [%s] %s\n", condition ? "ok" : "FAIL", what);
+  if (!condition) {
+    ++g_failures;
+  }
+}
 
 /* ---- Protocol events (coact Event.signal is uint16_t) ------------------ */
 enum Signal : uint16_t {
@@ -201,20 +211,27 @@ int main() {
   std::printf("=== coact protocol HSM demo: submitting %d events ===\n",
               static_cast<int>(sizeof(script) / sizeof(script[0])));
   coact::EventQos qos{false, false};
+  uint32_t submit_failures = 0U;
   for (uint16_t sig : script) {
     std::printf(">> submit %s\n", signal_name(sig));
     coact::Event* e = pool.alloc(sig);
     if (nullptr == e) {
-      std::printf("pool exhausted\n");
+      check(false, "event pool has a block for every scripted event");
       break;
     }
-    rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
+    const coact::SubmitResult result = rt.coordinator().submit_from_task(coact::TargetId(1U), e, qos);
+    if (coact::SubmitDisposition::Queued != result.disposition) {
+      ++submit_failures;
+    }
   }
+  check(0U == submit_failures, "every scripted submit was accepted");
 
   /* Drain: pending()==0 after all submits. The acquire-order counter load
      makes the Dispatcher's context writes visible to this thread. */
+  bool drained = false;
   for (int w = 0; w < 200; ++w) {
     if (0U == ao.pending().load()) {
+      drained = true;
       break;
     }
     usleep(5000);
@@ -231,5 +248,17 @@ int main() {
   std::printf("hsm state:       %s\n", ao.hsm_current_state_name());
   std::printf("drained:         %s\n", (0U == ao.pending().load()) ? "yes" : "NO");
   std::printf("pool.used:       %u\n", static_cast<unsigned>(pool.used()));
-  return 0;
+
+  const char* state = ao.hsm_current_state_name();
+  check(drained, "every queued event was dispatched");
+  check(1 == ao.context().syn_count, "one SYN was sent");
+  check(1 == ao.context().ack_count, "SYN_ACK was handled");
+  check(4 == ao.context().data_sent_count, "four DATA_SENT events were handled");
+  check(1 == ao.context().error_count, "the error transition ran");
+  check(!ao.context().connected, "connection is closed at the end");
+  check((state != nullptr) && (0 == std::strcmp(state, "Disconnected")), "final state is Disconnected");
+  check(0U == pool.used(), "every event returned to the pool");
+
+  std::printf("\n%s\n", (0 == g_failures) ? "PASS" : "FAIL");
+  return (0 == g_failures) ? 0 : 1;
 }
