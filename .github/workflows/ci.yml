@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   pull_request:
     branches: [master, windows]
+  workflow_dispatch:
+  schedule:
+    - cron: '0 18 * * 0'
 
 # A same-repo push to `windows` also fires pull_request when a PR is open, so
 # the same commit can otherwise queue two runs. Cancel the stale one per ref.
@@ -112,3 +115,37 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build-win -C Release --output-on-failure
+
+  # Target-ABI behaviour, not just compilation: the Renode fixtures boot the
+  # admission harness and the FreeRTOS PAL on a Cortex-M4 model. Emulator plus
+  # kernel boot is slow, so this job runs weekly or on demand instead of on
+  # every push; the arm-cross job already gates the compile side on push.
+  renode:
+    name: renode (Cortex-M4 admission + FreeRTOS PAL)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install arm-none-eabi toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi g++-arm-none-eabi
+
+      - name: Install Renode (portable, bundles its runtime)
+        run: |
+          curl -sSL -o /tmp/renode.tar.gz \
+            https://github.com/renode/renode/releases/download/v1.15.3/renode-1.15.3.linux-portable.tar.gz
+          mkdir -p "$HOME/renode"
+          tar -xzf /tmp/renode.tar.gz -C "$HOME/renode" --strip-components=1
+          "$HOME/renode/renode" --version
+
+      - name: Admission harness on Renode
+        run: |
+          export RENODE="$HOME/renode/renode"
+          test/renode/run.sh
+
+      - name: FreeRTOS PAL harness on Renode
+        run: |
+          export RENODE="$HOME/renode/renode"
+          test/renode/freertos.sh

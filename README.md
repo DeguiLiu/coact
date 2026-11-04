@@ -126,7 +126,7 @@ static allocation enabled; Cortex-M0/M0+ is not supported.
 ## Testing
 
 Host targets pass under `ctest` and are TSan-clean on the pool/dispatcher paths;
-CI adds ASan/UBSan and a Windows MSVC job. Brought up on RT-Thread under
+CI adds ASan/UBSan and a Windows MSVC job, and a weekly or on-demand `renode` job runs the Cortex-M4 fixtures below. Brought up on RT-Thread under
 qemu-vexpress-a9 (single core) and on FreeRTOS under Renode (Cortex-M4 running
 the CM3 port), including a fault-injection fixture where IWDG resets a task that
 masks interrupts and spins.

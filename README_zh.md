@@ -112,7 +112,7 @@ worker 栈与全部内核对象。要求单核、静态分配；不支持 Cortex
 ## 测试
 
 host 目标在 `ctest` 下全部通过，池 / Dispatcher 路径 TSan 无竞争；CI 另跑
-ASan/UBSan 与 Windows MSVC job。已在 RT-Thread / qemu-vexpress-a9（单核）完成
+ASan/UBSan 与 Windows MSVC job；Renode 夹具由每周或手动触发的 `renode` job 执行。已在 RT-Thread / qemu-vexpress-a9（单核）完成
 启动验证；FreeRTOS 在 Renode（Cortex-M4，CM3 端口）上跑通 PAL、运行时断言与
 故障注入夹具，其中关中断死循环的任务由 IWDG 复位。
 
