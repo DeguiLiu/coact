@@ -653,9 +653,14 @@ namespace {
 /* Trivially-empty signal handler. rt_signal_install's prototype varies by RT-Thread
    minor version; the (void*) cast neutralises int-vs-signo mismatches on the
    stub's permissive signature without touching the real-target semantics. */
+#ifdef RT_USING_SIGNALS
+/* Wake hint only: the payload lives in the mailbox, never in the handler.
+   Boards built without RT_USING_SIGNALS skip the hint and the consumer's
+   bounded polling in softirq_take() still drains the ring. */
 void softirq_empty_handler(int /*signo*/) noexcept {
   /* Intentionally empty: data lives in the mailbox, not in the handler. */
 }
+#endif
 
 }  // namespace
 
@@ -670,7 +675,9 @@ bool RtThread::softirq_init(SoftIrqHandle& h) noexcept {
   /* The empty handler stays installed for the lifetime of the receiver
      thread. deinit() removes it on the real target so no signal can fire
      into a stale callback (the host stub ignores both install and remove). */
+#ifdef RT_USING_SIGNALS
   (void)rt_signal_install(SIGUSR1, &softirq_empty_handler);
+#endif
   return true;
 }
 
@@ -688,7 +695,9 @@ bool RtThread::softirq_raise(SoftIrqHandle& h, int32_t payload) noexcept {
   h.head.store(head + 1U, std::memory_order_release);
   /* Wake hint: the payload already lives in the ring. A failed wake hint
      does not invalidate the committed payload; take() still polls it. */
+#ifdef RT_USING_SIGNALS
   (void)rt_thread_kill(h.consumer, SIGUSR1);
+#endif
   return true;
 }
 
@@ -730,7 +739,9 @@ void RtThread::softirq_deinit(SoftIrqHandle& h) noexcept {
   /* Drop the empty handler so the receiver thread does not retain a stale
      callback pointer after the handle goes away. The stub silently accepts
      the call (RT_NULL handler == install/remove no-op). */
+#ifdef RT_USING_SIGNALS
   (void)rt_signal_install(SIGUSR1, nullptr);
+#endif
   h.head.store(0U, std::memory_order_relaxed);
   h.tail.store(0U, std::memory_order_relaxed);
   h.consumer = nullptr;

@@ -48,18 +48,21 @@ inline void SetClock(NowFn fn) noexcept {
 // Beat: the liveness timestamp. One relaxed store on the hot path.
 // ---------------------------------------------------------------------------
 struct Beat {
-  std::atomic<uint64_t> last_us{0};
-
   /* Written by a worker thread, read by the main thread (Slots::Check), so
-     this is a cross-thread atomic. On a target where it is not lock-free the
-     operation silently pulls in libatomic -- a hidden lock plus heap, exactly
-     what the conventions forbid -- so the build must fail instead. */
-  static_assert(std::atomic<uint64_t>::is_always_lock_free,
+     this is a cross-thread atomic. 32-bit milliseconds rather than 64-bit
+     microseconds: Cortex-M4 has no lock-free 64-bit atomic, and the wider
+     store would silently pull in libatomic -- a hidden lock plus heap, exactly
+     what the conventions forbid. The resolution is far below every heartbeat
+     timeout, and the 49.7-day wrap is longer than any board uptime between
+     resets, so LastUs() keeps its microsecond contract. */
+  std::atomic<uint32_t> last_ms{0};
+
+  static_assert(std::atomic<uint32_t>::is_always_lock_free,
                 "coact: the heartbeat timestamp must be lock-free on the target");
 
-  void Hit() noexcept { last_us.store(detail::now_us(), std::memory_order_relaxed); }
+  void Hit() noexcept { last_ms.store(static_cast<uint32_t>(detail::now_us() / 1000U), std::memory_order_relaxed); }
 
-  uint64_t LastUs() const noexcept { return last_us.load(std::memory_order_relaxed); }
+  uint64_t LastUs() const noexcept { return static_cast<uint64_t>(last_ms.load(std::memory_order_relaxed)) * 1000U; }
 };
 
 // ---------------------------------------------------------------------------
