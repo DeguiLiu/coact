@@ -95,6 +95,8 @@ struct IrscWorker {
   // 0 = 一直产生，直到 stop()。业务仿真需要持续帧流（FFC 停流会消耗掉
   // 在途帧，固定 30 帧的测试语义在慢速目标上会在业务流程走完之前耗尽）。
   uint32_t frame_limit{kFrameCount};
+  // 已产出的帧号（f）：诊断"生产者停了"还是"链路丢了"时用它对齐。
+  std::atomic<uint32_t> emitted{0U};
   hb::Beat* beat_{nullptr};
 
   void start(PoolT* p, Rt* r, TargetId low, TargetId high, uint32_t fps, uint32_t frames = kFrameCount) {
@@ -163,6 +165,7 @@ struct IrscWorker {
             rt->coordinator().submit_from_task(dst, &e->event, {false, false});
           }
           ++f;  // the for-increment, moved here
+          emitted.store(f, std::memory_order_relaxed);
         });
     std::printf("[irsc] emitted %u DN frames @ %u us (limit=%u)\n", f, period_us, frame_limit);
     g_log.record_from_task<LogLevel::kInfo, kEvtFrameEmitted>(0U, f, period_us);
