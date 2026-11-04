@@ -69,7 +69,7 @@ class Breaker {
   bool healthy_window_passed() const noexcept;
 
   // -- Supplementary graded-action queries (consumed by M4/policy) --
-  bool drop_non_critical() const noexcept;  // L2/Safe: drop non-critical inputs
+  bool drop_non_critical() const noexcept;  // L2/Safe/Recovering: drop non-critical inputs
   bool safe_events_only() const noexcept;   // Safe: only safety events
 
   // -- Default thresholds --
@@ -429,7 +429,11 @@ inline bool Breaker<Config>::healthy_window_passed() const noexcept {
 template <typename Config>
 inline bool Breaker<Config>::drop_non_critical() const noexcept {
   const BreakerLevel current = level();
-  return (BreakerLevel::BrokenL2 == current) || (BreakerLevel::Safe == current);
+  /* Recovering is included: only the controlled probes the BSP sends while
+     pulling the AO back to Normal are admitted, everything else stays out
+     until the recovery finishes. */
+  return (BreakerLevel::BrokenL2 == current) || (BreakerLevel::Safe == current) ||
+         (BreakerLevel::Recovering == current);
 }
 
 template <typename Config>

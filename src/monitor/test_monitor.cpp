@@ -240,6 +240,9 @@ COACT_TEST(breaker_cooldown_not_done_blocks_recovery) {
   b.on_dispatch_cycle();
   b.on_watermark(45U);
   CHECK_EQ(b.level(), BreakerLevel::Recovering);
+  // Recovery admits only the probes the BSP drives; everything else waits.
+  CHECK(b.drop_non_critical());
+  CHECK(!b.safe_events_only());
 }
 
 COACT_TEST(breaker_rtc_ok_clears_timeout_count_but_not_cooldown) {

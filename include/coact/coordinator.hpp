@@ -147,13 +147,12 @@ class DispatchCoordinator {
 
     /* --- M6 overload guard ------------------------------------------ */
     Breaker<typename StagingT::ConfigType>& target_breaker = detail::target_breaker(breaker_, target);
-    const BreakerLevel lvl = target_breaker.level();
-    if (BreakerLevel::BrokenL2 <= lvl) {
-      if (!qos.critical) {
-        monitor_.record_disposition(SubmitDisposition::DroppedOverload);
-        event_gc(e);
-        return {SubmitDisposition::DroppedOverload, 0U};
-      }
+    /* One owner for the "which levels drop non-critical traffic" rule: the
+       breaker. Re-deriving it from level() here let the two drift apart. */
+    if (!qos.critical && target_breaker.drop_non_critical()) {
+      monitor_.record_disposition(SubmitDisposition::DroppedOverload);
+      event_gc(e);
+      return {SubmitDisposition::DroppedOverload, 0U};
     }
 
     /* --- M4 policy evaluation --------------------------------------- */
