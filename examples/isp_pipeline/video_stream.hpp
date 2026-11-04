@@ -66,6 +66,11 @@ namespace isp_demo {
 // ---------------------------------------------------------------------------
 enum VideoFsmState : uint8_t { kVideoIdle = 0U, kVideoReady = 1U, kVideoRunning = 2U };
 enum VideoCmd : uint8_t { kVInit = 0U, kVStart = 1U, kVStop = 2U, kVDeinit = 3U };
+
+// IoMeta::flags bit0 已经是 TEMP 流判别位；bit1 由请求方置位表示
+// "停流完成后请回 kFmtIdle"。默认不置位，现有调用方行为不变。
+constexpr uint16_t kVideoFlagTempStream = 0x0001U;
+constexpr uint16_t kVideoFlagWantIdleAck = 0x0002U;
 enum VideoStreamKind : uint8_t { kPicStream = 0U, kTempStream = 1U };
 
 // Merged Video FSM context: ONE AO, TWO per-path mirrors (PIC + TEMP). The
@@ -232,7 +237,7 @@ struct VideoFsmNode {
   }
 
   // kVStop: RUNNING -> READY (guarded: only from RUNNING).
-  static void on_stop(VideoCtx& ctx, const Event&) {
+  static void on_stop(VideoCtx& ctx, const Event& evt) {
     VideoPathMirror& m = mirror(ctx);
     /* 阻塞记账（原真睡 200us）：video FSM stop 的流控驱动同步耗时。
        无断言依赖，改记账不睡眠（同 on_init 理由） */
@@ -240,6 +245,23 @@ struct VideoFsmNode {
     std::printf("[video/%s] RUNNING -> READY\n", Derived::label());
     HsmTrace::transition("video_fsm", (kPicStream == m.kind) ? "PIC_G" : "TEMP_G",
                          static_cast<uint16_t>(Sig::kVideoCmd), (kPicStream == m.kind) ? "PIC_R" : "TEMP_R");
+    /* 停流确认：kFmtIdle 是本文件头注释声明的格式通道 idle ack，此前只有
+       消费方没有生产方。请求方在 kVideoCmd 的 reply_to 里声明自己，这里按
+       真实块 AO 的行为回一帧确认，让调用方不必轮询状态。 */
+    const IoMeta& in = *reinterpret_cast<const IoMeta*>(&evt);
+    const bool wants_ack = (0U != (in.flags & kVideoFlagWantIdleAck));
+    if (wants_ack && (nullptr != ctx.pool) && (nullptr != ctx.rt) && (kInvalidTarget != in.reply_to)) {
+      Layout* ack = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kFmtIdle));
+      if (nullptr != ack) {
+        ack->meta.reply_to = in.reply_to;
+        ack->meta.cmd_arg = static_cast<uint16_t>(m.kind);
+        ack->meta.result = 0;
+        const coact::SubmitResult r = ctx.rt->coordinator().submit_from_task(in.reply_to, &ack->event, {false, false});
+        if (coact::SubmitDisposition::DroppedOverload == r.disposition) {
+          std::printf("[video/%s] kFmtIdle dropped (overload)\n", Derived::label());
+        }
+      }
+    }
   }
 
   // kVDeinit: READY -> IDLE with the quiesce-confirmation narrative.

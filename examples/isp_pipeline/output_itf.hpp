@@ -390,6 +390,12 @@ struct WrapeCtx {
   Rt* rt{nullptr};
   DdrCtx* ddr{nullptr};               // data-plane byte verification at the input
   UsbDmaWorker* dma_engine{nullptr};  // non-AO USB Bulk engine
+  // First-frame observer hook: a consumer that stopped and restarted the
+  // stream arms this before START and waits for kFirstFrame. Without the
+  // hook the only frame notification is the per-frame kFrameEof to the host,
+  // which a control-plane AO cannot observe.
+  TargetId first_frame_notify{};
+  bool notify_armed{false};
   uint32_t frames_framed{0U};
   uint32_t err_eof_frames{0U};
   uint32_t complete_frames{0U};
@@ -459,6 +465,23 @@ inline void onPicPackedWrape(WrapeCtx& ctx, const Event& evt) {
         e.meta.frame_id, actual, configured, v.payload_bytes, v.payload_bytes * 100U / actual);
   } else {
     ++ctx.complete_frames;
+  }
+
+  // 首帧确认：只在被请求方 arm 之后发一次，且只在完整帧上发。
+  if (ctx.notify_armed && !v.err_eof && (nullptr != ctx.pool) && (nullptr != ctx.rt) &&
+      (kInvalidTarget != ctx.first_frame_notify)) {
+    Layout* ff = ctx.pool->alloc_typed<Layout, Payload, kPayloadAlign>(static_cast<uint16_t>(Sig::kFirstFrame));
+    if (nullptr != ff) {
+      ff->meta.reply_to = ctx.first_frame_notify;
+      ff->meta.frame_id = e.meta.frame_id;
+      ff->meta.result = 0;
+      const coact::SubmitResult r =
+          ctx.rt->coordinator().submit_from_task(ctx.first_frame_notify, &ff->event, {false, false});
+      if (coact::SubmitDisposition::DroppedOverload == r.disposition) {
+        std::printf("[wrape] kFirstFrame dropped (overload)\n");
+      }
+    }
+    ctx.notify_armed = false;
   }
 
   // Hand the framed payload to the non-AO USB DMA engine; it ships the
