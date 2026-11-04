@@ -130,7 +130,7 @@ jobs:
       - name: Install arm-none-eabi toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi g++-arm-none-eabi
+          sudo apt-get install -y gcc-arm-none-eabi g++-arm-none-eabi mono-complete
 
       - name: Install Renode (portable, bundles its runtime)
         run: |
