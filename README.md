@@ -16,17 +16,6 @@ objects** whose behaviour is a **hierarchical state machine**. Events replace
 threads, transition tables are `constexpr`, and nothing allocates at run time.
 The submission, staging, admission, breaker and PAL layers are coact's own.
 
-Three properties are structural here, not aspirations:
-
-| Property | Where it lives in the tree | How it is checked |
-|---|---|---|
-| Bounded | every queue, pool and batch size is a compile-time constant; no heap, no `new/delete`, no dynamic registration | worst-case flash/RAM and the longest dispatch batch are fixed at link time (`test/renode/footprint.sh`) |
-| Detectable | `SubmitResult` codes, `Monitor` counters, `Breaker::level()`, the `fatal_assert` handler | a failure is visible where it happens, with the AO and partition it belongs to |
-| Recoverable | one breaker state machine per AO (Normal, BrokenL1, BrokenL2, Safe, Recovering) over static HSMs | recovery has explicit conditions: cooldown, sustained low watermark, successful probe, consecutive healthy windows (`examples/safety_supervisor_demo.cpp`) |
-
-coact supplies the mechanisms; the board supplies the evidence. Partition
-watermarks, watchdog progress and reserve exhaustion are sampled by BSP code
-that calls the `BreakerBank` inputs, as the supervisor example shows.
 
 ## Why coact
 
