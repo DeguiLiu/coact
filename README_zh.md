@@ -14,16 +14,6 @@ coact（**Co**operative **Act**ive-object framework）是一个 header-first
 `constexpr`，运行期不做分配。提交管线、分区暂存、准入、熔断与 PAL 是本项目自己的
 实现。
 
-下面三件事是结构属性，不是承诺：
-
-| 性质 | 在代码里的落点 | 怎么验证 |
-|---|---|---|
-| 有界 | 队列、事件池、批大小全是编译期常量；无堆、无 `new/delete`、无动态注册 | 最坏占用与最长批在链接时固定（`test/renode/footprint.sh`） |
-| 可检测 | `SubmitResult` 结果码、`Monitor` 计数、`Breaker::level()`、`fatal_assert` 处理函数 | 失效在发生点可见，并能定位到所属 AO 与分区 |
-| 可恢复 | 每个 AO 一份熔断状态机（Normal、BrokenL1、BrokenL2、Safe、Recovering），状态由静态 HSM 描述 | 恢复条件明确：冷却到期、水位持续低、受控探测成功、连续健康窗口（`examples/safety_supervisor_demo.cpp`） |
-
-机制在库里，证据在板级：分区水位、看门狗进度和预留耗尽由 BSP 采集后调用
-`BreakerBank` 的入口，示例见 `examples/safety_supervisor_demo.cpp`。
 
 ## 为什么选 coact
 
