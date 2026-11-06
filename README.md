@@ -27,17 +27,13 @@ The submission, staging, admission, breaker and PAL layers are coact's own.
   reference, not the product target.
 - **Fixed capacity, zero hot-path allocation.** A fixed-size `EventPool` recycled
   by ref-count lets one event fan out safely (`-fno-exceptions -fno-rtti`).
-- **RT-Thread and FreeRTOS are first-class targets, not ports.** Both PALs use
+- **RT-Thread and FreeRTOS.** Both PALs use
   caller-provided static resources and never allocate; Linux and Windows hosts
   build from the same headers through the same PAL boundary.
-- **Critical-High staging reservation** (this branch): `kHighCriticalReserve` keeps
-  High-partition cells free for critical events, plus a `ReservedNormal` lane.
 - **Deterministic wakeups.** The dispatcher wakes only when idle and a drain-check
   closes the missed-wakeup window; `try_submit_from_isr` never blocks.
 - **Back-pressure, not silent drops.** A breaker degrades under overload; the
   low-priority partition ages out instead of starving.
-- **Coroutines included** (`coact/coro/`): stackful coroutines, `CoroSem`, and
-  stack guard/watermark diagnostics.
 
 ## Why C++17
 
