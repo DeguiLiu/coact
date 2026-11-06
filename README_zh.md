@@ -19,21 +19,18 @@ coact（**Co**operative **Act**ive-object framework）是一个 header-first
 
 - **只用 C++17，不需要代码生成器。** 转移就是你翻译单元里的普通 `constexpr`
   表，构建过程里没有建模工具这一环。
-- **单核是设计前提。** `SingleCoreCriticalRing` 配合注入的 `CriticalSection`
+- **单核设计** `SingleCoreCriticalRing` 配合注入的 `CriticalSection`
   （RT-Thread 上关中断，FreeRTOS 上用任务临界区 / ISR 屏蔽），使 ISR 路径既不
   加锁也不依赖 libatomic；host 上的 SMP 只是测试参考，不是产品目标。
 - **容量定死，热路径零分配。** 定容 `EventPool` 以引用计数回收，同一事件可安全
   扇出给多个 AO（`-fno-exceptions -fno-rtti`）。
-- **RT-Thread 与 FreeRTOS 都是一等目标，而不是"移植之一"。** 两个 PAL 都只使用
+- **RT-Thread 与 FreeRTOS ** 两个 PAL 都只使用
   调用方提供的静态资源，自身不做分配；Linux / Windows host 用同一套头文件，仅
   切换 PAL。
-- **关键事件预约**（仅本分支）：`kHighCriticalReserve` 为 High 分区保留单元，使
-  关键事件在普通流量打满时仍能进入，并配一条 `ReservedNormal` 通道。
 - **唤醒确定性。** 仅在 Dispatcher 空闲时才 signal，drain 复查封闭 missed-wakeup
   窗口；`submit_from_task` 可让生产者直接派发（S6 快路径），
   `try_submit_from_isr` 永不阻塞。
 - **背压而非静默丢弃。** 过载时熔断器降级；低优先级分区老化出队而非饿死。
-- **自带协程**（`coact/coro/`）：栈式协程、`CoroSem`、栈守卫与水位诊断。
 
 ## 为什么用 C++17
 
