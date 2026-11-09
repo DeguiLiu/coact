@@ -9,7 +9,9 @@ coact（**Co**operative **Act**ive-object framework）是一个 header-first
 **C++17** 事件框架，主动对象与层次状态机模型参考 Quantum Leaps 的
 [QP/C++](https://www.state-machine.com/qpc/)。目标平台是运行 **RT-Thread** 或
 **FreeRTOS** 的单核 MCU，同一套头文件也能通过 Posix / Windows PAL 在 **Linux** 与
-**Windows** 主机上编译运行（主机侧是测试参考，不是产品目标）。生产者从任务或 ISR
+**Windows** 主机上编译运行（主机侧是测试参考，不是产品目标；Windows 覆盖事件、
+AO/HSM、队列、暂存、策略、熔断与 Windows PAL，`coro/` 与 `timer.hpp` 依赖
+pthread，只在 POSIX 宿主上构建）。生产者从任务或 ISR
 提交事件，由单一线程派发给行为由层次状态机描述的主动对象；事件代替线程，转移表是
 `constexpr`，运行期不做分配。提交管线、分区暂存、准入、熔断与 PAL 是本项目自己的
 实现。
@@ -18,9 +20,9 @@ coact（**Co**operative **Act**ive-object framework）是一个 header-first
 
 | 性质 | 在代码里的落点 | 怎么验证 |
 |---|---|---|
-| 有界 | 队列、事件池、批大小全是编译期常量；无堆、无 `new/delete`、无动态注册 | 最坏占用与最长批在链接时固定（`test/renode/footprint.sh`） |
+| 有界 | 队列、事件池、批大小全是编译期常量；无堆分配（只用 placement new）、无运行期动态注册 | 最坏占用与最长批在链接时固定（`test/renode/footprint.sh`） |
 | 可检测 | `SubmitResult` 结果码、`Monitor` 计数、`Breaker::level()`、`fatal_assert` 处理函数 | 失效在发生点可见，并能定位到所属 AO 与分区 |
-| 可恢复 | 每个 AO 一份熔断状态机（Normal、BrokenL1、BrokenL2、Safe、Recovering），状态由静态 HSM 描述 | 恢复条件明确：冷却到期、水位持续低、受控探测成功、连续健康窗口（`examples/safety_supervisor_demo.cpp`） |
+| 可恢复 | 每个 AO 一份熔断状态机（Normal、BrokenL1、BrokenL2、Safe、Recovering），状态与转移写在一个打包状态字里 | 恢复条件明确：冷却到期、水位持续低、受控探测成功、连续健康窗口（`examples/safety_supervisor_demo.cpp`） |
 
 机制在库里，证据在板级：分区水位、看门狗进度和预留耗尽由 BSP 采集后调用
 `BreakerBank` 的入口，示例见 `examples/safety_supervisor_demo.cpp`。
@@ -36,13 +38,14 @@ coact（**Co**operative **Act**ive-object framework）是一个 header-first
   扇出给多个 AO（`-fno-exceptions -fno-rtti`）。
 - **RT-Thread 与 FreeRTOS 都是一等目标，而不是"移植之一"。** 两个 PAL 都只使用
   调用方提供的静态资源，自身不做分配；Linux / Windows host 用同一套头文件，仅
-  切换 PAL。
+  切换 PAL（`coro/` 与 `timer.hpp` 只在 POSIX 宿主上可用）。
 - **关键事件预约**（仅本分支）：`kHighCriticalReserve` 为 High 分区保留单元，使
   关键事件在普通流量打满时仍能进入，并配一条 `ReservedNormal` 通道。
 - **唤醒确定性。** 仅在 Dispatcher 空闲时才 signal，drain 复查封闭 missed-wakeup
   窗口；`submit_from_task` 可让生产者直接派发（S6 快路径），
   `try_submit_from_isr` 永不阻塞。
-- **背压而非静默丢弃。** 过载时熔断器降级；低优先级分区老化出队而非饿死。
+- **拒绝可见，不静默丢弃。** 过载时熔断器降级，被拒的提交带回
+  `SubmitDisposition` 并计数；低优先级分区老化出队而非饿死。框架不会阻塞生产者。
 - **自带协程**（`coact/coro/`）：栈式协程、`CoroSem`、栈守卫与水位诊断。
 
 ## 为什么用 C++17
@@ -92,6 +95,8 @@ coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);
 rt.bind(&my_ao);          // my_ao : coact::Ao<Ctx, Hsm, Traits>
 rt.initialize();
 rt.start();
+/* ... 运行 ... */
+rt.stop();                // 必须在 rt / pal 离开作用域前 join 派发线程
 ```
 
 在 RT-Thread 上包含同一组头文件，选 `coact/pal_rtthread.hpp`，把
@@ -111,8 +116,9 @@ worker 栈与全部内核对象。要求单核、静态分配；不支持 Cortex
 
 ## 测试
 
-host 目标在 `ctest` 下全部通过，池 / Dispatcher 路径 TSan 无竞争；CI 另跑
-ASan/UBSan 与 Windows MSVC job；Renode 夹具由每周或手动触发的 `renode` job 执行。已在 RT-Thread / qemu-vexpress-a9（单核）完成
+host 目标在 `ctest` 下全部通过；CI 另跑 ASan/UBSan、TSan（每个测试二进制，
+只以数据竞争判定失败）、Windows MSVC job；Renode 夹具由每周或手动触发的
+`renode` job 执行。已在 RT-Thread / qemu-vexpress-a9（单核）完成
 启动验证；FreeRTOS 在 Renode（Cortex-M4，CM3 端口）上跑通 PAL、运行时断言与
 故障注入夹具，其中关中断死循环的任务由 IWDG 复位。
 

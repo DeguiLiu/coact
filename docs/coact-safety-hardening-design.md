@@ -2,7 +2,7 @@
 
 结论：保留 coact 的协作式事件模型，不移植 AUTOSAR 调度器，也不引入完整用户态。以自研、可信业务代码为前提，采用 MPU 防误写、线程栈 guard、代码与常量只读保护、数据不可执行、API 边界、准入监测和 watchdog。异常后局部重启另设条件，不能用“派发前后切 MPU”承诺共享栈损坏后的恢复。
 
-状态：P1 已实现，并在 host 与 Renode Cortex-M4 模型上完成验证；P2 至 P4 仍为提案。评估与实现日期：2026-11-02；设计基线：`73fe452`。P1 落点为 `include/coact/admission.hpp`、`include/coact/coordinator.hpp`、`include/coact/runtime.hpp` 和 `include/coact/monitor.hpp`，实测数据见第 8.1 节与 `test/renode/README.md`。以下源码位置均对应本地快照，不代表参考系统的认证结论。
+状态：P1 已实现，并在 host 与 Renode Cortex-M4 模型上完成验证；P2 至 P4 仍为提案。评估与实现日期：2026-11-02；设计基线：`73fe452`。P1 落点为 `include/coact/admission.hpp`、`include/coact/coordinator.hpp`、`include/coact/runtime.hpp` 和 `include/coact/monitor.hpp`，实测数据见第 8.1 节与 `test/renode/README.md`。下文的 `文件:行号` 以设计基线为准，后续提交会让行号漂移；核对时按同行的符号名检索，不要只看行号。文中结论不代表参考系统的认证结论。
 
 ## 1. 评审结论
 
@@ -235,7 +235,7 @@ P1 的交付物是编译期可选、默认零代码的准入策略，以及按 C
 
 - `ArrivalGate` 在 Cortex-M4 上为 24 字节，仅含普通字段。`Cfg::kMaxAo=2` 时策略对象 88 字节（12 字节临界区钩子、4 字节对齐填充、3 个门），协调器从 32 字节增至 120 字节，ISR 版本同为 120 字节。
 - 主夹具 ELF 的准入提交路径没有 `__atomic_compare_exchange_8` 调用点。框架代码中的 64 位原子调用只出现在显式启用的快照环（`fetch_add_8`、`load_8`、`store_8`），由 `runtime.c` 的关中断 64 位实现承载；其余 `load_8` 来自夹具断言读取 64 位计数器，不属于准入判定。
-- 快照环默认 0 槽：`Monitor<NoSnapCfg>` 为 280 字节，启用 8 槽的 `Monitor<Cfg>` 为 544 字节。关闭策略节省的是提交路径代码与状态，诊断存储按配置单独计价，两者不能合并成“零成本”。环的序号与计数使用 64 位，避免 2^32 条记录后序号回绕成 0；这条诊断路径本来就需要 64 位原子。
+- 快照环默认 0 槽：`Monitor<NoSnapCfg>` 为 280 字节，启用 8 槽的 `Monitor<Cfg>` 为 616 字节（Cortex-M4，与 `test/renode/build/uart.log` 的 `monitor_with_ring=616 monitor_without_ring=280` 一致）。关闭策略节省的是提交路径代码与状态，诊断存储按配置单独计价，两者不能合并成“零成本”。环的序号与计数使用 64 位，避免 2^32 条记录后序号回绕成 0；这条诊断路径本来就需要 64 位原子。
 - host 并发用例对 8 槽环写入 4 万条记录并由单读者循环读取，实测 `mixed=0`。`consistent` 与 `torn` 的比例随调度变化，`mixed=0` 才是 seqlock 的断言目标；`kTorn` 是允许的读失败，不是数据损坏。
 - 回滚语义由持有计数覆盖：多个预约交错、其中部分失败时，窗口只由成功提交推进。变异 `rollback_restores_timestamp` 的首个失败断言是 `S2.gate.last_after_rollback`，S3 与 S10 的窗口断言随后也失败。
 - Runtime 透传准入策略由真实 Runtime（POSIX PAL）端到端用例覆盖；该用例的两次提交在调用线程串行发起，验证的是转发与访问器，不是并发准入。
