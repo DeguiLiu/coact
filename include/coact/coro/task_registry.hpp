@@ -219,7 +219,7 @@ class TaskRegistry final {
     if (slot->has_error) {
       return Expected<T, TaskError>::error(slot->error);
     }
-    if (!slot->has_result) {
+    if (false == slot->has_result) {
       return Expected<T, TaskError>::error(TaskError::kResultTaken);
     }
     T value = *slot->result.ptr();
@@ -325,7 +325,7 @@ class TaskRegistry final {
     const bool delivered = (SubmitDisposition::Direct == result.disposition) ||
                            (SubmitDisposition::Queued == result.disposition) ||
                            (SubmitDisposition::Merged == result.disposition);
-    if (!delivered) {
+    if (false == delivered) {
       submit_failures_++;
       slot.release();
       return Expected<void, TaskError>::error(TaskError::kTargetRejected);

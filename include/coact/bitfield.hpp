@@ -18,7 +18,10 @@ namespace coact {
 template <typename Reg, std::uint32_t Offset, std::uint32_t Width>
 struct BitFieldView {
   static_assert(0U < Width, "BitFieldView width must be at least 1 bit");
-  static_assert(Offset + Width <= 32U, "BitFieldView exceeds the 32-bit register word");
+  // Checked as Offset <= 32 - Width: writing Offset + Width <= 32 wraps when
+  // Offset is near UINT32_MAX, which would let an overflowing field past the
+  // guard and into a shift that is undefined behaviour.
+  static_assert(Width <= 32U && Offset <= 32U - Width, "BitFieldView exceeds the 32-bit register word");
 
   using reg_type = Reg;
 

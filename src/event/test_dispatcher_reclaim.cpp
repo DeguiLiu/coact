@@ -191,7 +191,7 @@ class ObservedPosixPal {
   void signal_dispatcher_from_isr() noexcept { pal_.signal_dispatcher_from_isr(); }
 
   void start_dispatcher(coact::pal::ThreadEntry entry, void* context) noexcept {
-    pal_.start_dispatcher(entry, context);
+    (void)pal_.start_dispatcher(entry, context);
   }
 
   void join_dispatcher() noexcept { pal_.join_dispatcher(); }
@@ -357,7 +357,7 @@ COACT_TEST(dispatcher_normal_dispatch_releases_exactly_once) {
 
   g_pool.init(g_pool_storage, sizeof(g_pool_storage), coact::make_spin_critical_section(g_spin));
 
-  fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
+  CHECK(fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher));
 
   constexpr int kN = 20;  // 2.5 batches of kBatchSizeMax=8
   for (int i = 0; i < kN; ++i) {
@@ -398,7 +398,7 @@ COACT_TEST(dispatcher_lookup_fail_still_releases) {
   const coact::TargetId bogus = coact::TargetId(Config::kMaxAo + 1U);
   REQUIRE(fx.staging.enqueue(bogus, e, coact::PriorityClass::Normal, fx.pal.monotonic_ns()));
 
-  fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
+  CHECK(fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher));
   usleep(20000);  // let the dispatcher drain the (normal-path) batch
 
   fx.dispatcher.request_stop();
@@ -462,7 +462,7 @@ COACT_TEST(dispatcher_thread_identity_is_real_and_non_forgeable) {
   coact::SubmitResult r = fx.coordinator.submit_from_task(tgt, e, qos);
   REQUIRE(r.disposition == coact::SubmitDisposition::Queued);
 
-  fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
+  CHECK(fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher));
   for (int w = 0; w < 400; ++w) {
     if (seen.load(std::memory_order_relaxed)) {
       break;
@@ -506,7 +506,7 @@ COACT_TEST(dispatcher_stop_drains_queued_releases_each_once) {
   // Stop before the dispatcher runs: the shutdown drain must release the
   // whole queue (deterministic under either interleaving).
   fx.dispatcher.request_stop();
-  fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
+  CHECK(fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher));
   fx.pal.join_dispatcher();
 
   CHECK_EQ(g_pool.used(), 0U);        // nothing leaked
@@ -528,7 +528,7 @@ COACT_TEST(dispatcher_stop_rejects_late_submission_without_pool_leak) {
   g_pool.init(g_pool_storage, sizeof(g_pool_storage), coact::make_spin_critical_section(g_spin));
 
   fx.dispatcher.request_stop();
-  fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher);
+  CHECK(fx.pal.start_dispatcher(&trampoline<DispatcherT>, &fx.dispatcher));
   fx.pal.join_dispatcher();
 
   coact::Event* late = g_pool.alloc(1U);
@@ -570,7 +570,7 @@ COACT_TEST(dispatcher_stop_drains_submission_admitted_before_close) {
   }
 
   dispatcher.request_stop();
-  pal.start_dispatcher(&trampoline<DispatcherT>, &dispatcher);
+  CHECK(pal.start_dispatcher(&trampoline<DispatcherT>, &dispatcher));
   std::atomic<bool> joined{false};
   std::thread joiner([&]() {
     pal.join_dispatcher();

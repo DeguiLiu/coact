@@ -42,7 +42,7 @@ inline FatalHandler set_fatal_handler(FatalHandler handler) noexcept {
 
 #define COACT_ASSERT(cond)                       \
   do {                                           \
-    if (!(cond)) {                               \
+    if (false == (cond)) {                       \
       ::coact::fatal_assert(__FILE__, __LINE__); \
     }                                            \
   } while (0)

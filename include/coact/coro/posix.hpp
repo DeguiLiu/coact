@@ -264,7 +264,7 @@ inline bool Coroutine::arm(void* stack, uint32_t stack_bytes, void (*body)(void*
   running_ = false;
   started_ = false;
   armed_ = getcontext(&ctx_) == 0;
-  if (!armed_) {
+  if (false == armed_) {
     return false;
   }
   ctx_.uc_stack.ss_sp = stack;
@@ -278,7 +278,7 @@ inline bool Coroutine::arm(void* stack, uint32_t stack_bytes, void (*body)(void*
 }
 
 inline YieldRequest Coroutine::resume(ResumeArg arg) noexcept {
-  if (!armed_ || !running_) {
+  if (false == armed_ || false == running_) {
     return YieldRequest{WaitReason::kDone, 0U, 0U};
   }
   active_ = this;
@@ -295,7 +295,7 @@ inline YieldRequest Coroutine::resume(ResumeArg arg) noexcept {
 // The trampoline sets running_ = true itself before calling the body; this
 // helper only needs to bypass the not-yet-running guard once.
 inline YieldRequest Coroutine::start(ResumeArg arg) noexcept {
-  if (!armed_ || running_) {
+  if (false == armed_ || running_) {
     return YieldRequest{WaitReason::kDone, 0U, 0U};
   }
   running_ = true;
@@ -364,7 +364,7 @@ class StackfulExecutor final {
     for (uint16_t i = 0U; i < kCapacity; ++i) {
       if (SlotState::kFree == slots_[i].state) {
         Coroutine& co = slots_[i].co;
-        if (!co.arm(stacks_[i].bytes.data(), StackBytes, body, user, initial_arg)) {
+        if (false == co.arm(stacks_[i].bytes.data(), StackBytes, body, user, initial_arg)) {
           return nullptr;
         }
         /* STACK GUARD: mark both ends of this coroutine stack so

@@ -29,9 +29,12 @@
 //          absolute sleep (clock_nanosleep on POSIX hosts; RT-Thread builds
 //          fall back to a coarse rt_thread_mdelay tick delay).
 //        - ManualTickSource: instance-owned virtual clock for deterministic
-//          tests and ISR/board-thread-driven embedded use. advance() the
+//          tests and board-thread-driven embedded use. advance() the
 //          ticks, then call poll(); no background thread is needed (and
 //          start() with a ManualTickSource would hot-spin - do not).
+//          An ISR may only advance the tick source: poll() takes the
+//          internal std::mutex and submits through the task-context
+//          coordinator path, so it must run in a thread, never in an ISR.
 //
 // Design points: compile-time MaxTasks capacity, zero heap,
 // collect-release-execute lock discipline (expired-task submissions run
@@ -121,10 +124,11 @@ struct SteadyTickSource {
   }
 };
 
-// Instance-owned virtual clock: the test driver (or a hardware timer ISR /
-// board thread) advances ticks and calls TimerScheduler::poll(). The counters
-// live in the instance, so several schedulers in one test binary never share
-// clock state.
+// Instance-owned virtual clock: the test driver (or a board thread) advances
+// ticks and calls TimerScheduler::poll(). A hardware timer ISR may call
+// advance() (it only touches the counter), but poll() must stay in a thread.
+// The counters live in the instance, so several schedulers in one test binary
+// never share clock state.
 class ManualTickSource {
  public:
   explicit ManualTickSource(uint64_t tick_period_ns = 1000000ULL) noexcept : tick_period_ns_(tick_period_ns) {}
@@ -167,8 +171,10 @@ class ManualTickSource {
 // Two drive modes:
 //   - Threaded: start() spawns a bare pthread running the collect-release-
 //     execute loop; stop() joins it. Idempotent-safe from any thread.
-//   - Polled: call poll() directly (ManualTickSource tests, ISR-driven or
-//     board-thread-driven embedded use). One poll() is one loop pass.
+//   - Polled: call poll() directly (ManualTickSource tests, or a board thread
+//     driving the schedule). One poll() is one loop pass. poll() takes the
+//     internal mutex and submits through the task path, so it is never
+//     callable from an ISR; an ISR only advances the tick source.
 //
 // Expiration action (always): pool alloc signal Event -> coordinator
 // submit_from_task(target, e, qos). The coordinator consumes the reference
@@ -232,7 +238,8 @@ class TimerScheduler final {
   Expected<void, TimerError> start() noexcept {
     std::lock_guard<std::mutex> lock(lifecycle_mutex_);
     bool expected = false;
-    if (!running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+    if (false ==
+        running_.compare_exchange_strong(expected, true, std::memory_order_acq_rel, std::memory_order_relaxed)) {
       return Expected<void, TimerError>::error(TimerError::kAlreadyRunning);
     }
     if (0 != pthread_create(&thread_, nullptr, &TimerScheduler::trampoline, this)) {
@@ -293,7 +300,7 @@ class TimerScheduler final {
     uint64_t min_remaining = UINT64_MAX;
     const uint64_t now = tick_.now_ns();
     for (uint32_t i = 0U; i < MaxTasks; ++i) {
-      if (!slots_[i].active) {
+      if (false == slots_[i].active) {
         continue;
       }
       if (slots_[i].next_fire_ns <= now) {
@@ -342,7 +349,7 @@ class TimerScheduler final {
     }
     std::lock_guard<std::mutex> lock(mutex_);
     for (uint32_t i = 0U; i < MaxTasks; ++i) {
-      if (!slots_[i].active) {
+      if (false == slots_[i].active) {
         const uint64_t interval_ns = static_cast<uint64_t>(interval_ms) * kNsPerMs;
         slots_[i].target = target;
         slots_[i].signal = signal;
@@ -369,7 +376,7 @@ class TimerScheduler final {
       std::lock_guard<std::mutex> lock(mutex_);
       const uint64_t now = tick_.now_ns();
       for (uint32_t i = 0U; i < MaxTasks; ++i) {
-        if (!slots_[i].active) {
+        if (false == slots_[i].active) {
           continue;
         }
         if (now < slots_[i].next_fire_ns) {

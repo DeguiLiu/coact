@@ -266,7 +266,7 @@ COACT_TEST(dispatcher_stop_exits_run) {
     BankDispatcherT* d;
   };
   Wrap w{&dispatcher};
-  pal.start_dispatcher([](void* c) { static_cast<Wrap*>(c)->d->run(); }, &w);
+  CHECK(pal.start_dispatcher([](void* c) { static_cast<Wrap*>(c)->d->run(); }, &w));
 
   dispatcher.request_stop();
   pal.join_dispatcher();

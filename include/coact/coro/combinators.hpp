@@ -129,7 +129,7 @@ class TaskGroup final {
 
   // Release the aggregate slot (after the waiter consumed the result).
   Expected<void, TaskError> release(RegistryT& registry) noexcept {
-    if (!is_valid()) {
+    if (false == is_valid()) {
       return Expected<void, TaskError>::error(TaskError::kInvalidId);
     }
     const Expected<void, TaskError> result = registry.release_task(group_id_);
@@ -150,7 +150,7 @@ class TaskGroup final {
   // event to the group waiter; the group registry's result type is T
   // (GroupStatus for the group registries used with combinators).
   Expected<bool, TaskError> settle(RegistryT& /*registry*/) noexcept {
-    if (settled_ || !static_cast<bool>(group_id_) || !promise_.is_valid()) {
+    if (settled_ || false == static_cast<bool>(group_id_) || false == promise_.is_valid()) {
       return Expected<bool, TaskError>::success(false);
     }
     settled_ = true;
@@ -159,7 +159,7 @@ class TaskGroup final {
        A waiter that must react to failure reads first_error != kOk. */
     GroupStatus snapshot = status();
     const Expected<void, TaskError> done = promise_.complete(snapshot);
-    if (!done) {
+    if (false == static_cast<bool>(done)) {
       return Expected<bool, TaskError>::error(done.error());
     }
     return Expected<bool, TaskError>::success(true);
@@ -201,7 +201,7 @@ class GroupBuilder final {
       return Expected<Group, GroupError>::error(GroupError::kTooManyInputs);
     }
     auto created = registry.create(waiter, signal, EventQos{false, false});
-    if (!created) {
+    if (false == static_cast<bool>(created)) {
       return Expected<Group, GroupError>::error(GroupError::kRegistryFull);
     }
     Group group;
@@ -223,7 +223,7 @@ class GroupBuilder final {
   // with one event); after settlement further calls are idempotent.
   static Expected<bool, GroupError> evaluate(RegistryT& registry, InputRegistryT& input_registry, Group& group,
                                              GroupMode mode, uint16_t threshold) noexcept {
-    if (!group.is_valid()) {
+    if (false == group.is_valid()) {
       return Expected<bool, GroupError>::error(GroupError::kInvalidTask);
     }
     if (group.settled_) {
@@ -234,7 +234,7 @@ class GroupBuilder final {
       if (0U != (group.completed_mask_ & bit)) {
         continue;
       }
-      if (!input_registry.is_ready(group.inputs_[i])) {
+      if (false == input_registry.is_ready(group.inputs_[i])) {
         continue;
       }
       group.completed_mask_ |= bit;
@@ -266,7 +266,7 @@ class GroupBuilder final {
 
     if (satisfied) {
       const Expected<bool, TaskError> settled = group.settle(registry);
-      if (!settled) {
+      if (false == static_cast<bool>(settled)) {
         return Expected<bool, GroupError>::error(GroupError::kRegistryFull);
       }
       return Expected<bool, GroupError>::success(true);

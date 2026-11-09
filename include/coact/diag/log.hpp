@@ -373,7 +373,7 @@ class Logger {
   // Lane drain order (up to 4 Critical per 1 Normal, design §5.4) is the
   // caller's loop policy, not enforced here. No-op (false) before bind().
   bool pop_from_lane(LogLane lane, LogRecord& out) noexcept {
-    if (!bound()) {
+    if (false == bound()) {
       return false;
     }
     const CriticalSection::Token token = cs_.save(cs_.ctx);
@@ -396,7 +396,7 @@ class Logger {
   }
 
   uint16_t size(LogLane lane) const noexcept {
-    if (!bound()) {
+    if (false == bound()) {
       return 0U;
     }
     const CriticalSection::Token token = cs_.save(cs_.ctx);
@@ -420,7 +420,7 @@ class Logger {
   // bumped under the same CS so snapshot() reads a consistent view. No-op
   // before bind() (cs_ is a null hook then).
   void note_formatter_truncated() noexcept {
-    if (!bound()) {
+    if (false == bound()) {
       return;
     }
     const CriticalSection::Token token = cs_.save(cs_.ctx);
@@ -428,7 +428,7 @@ class Logger {
     cs_.restore(cs_.ctx, token);
   }
   void note_sink_failed() noexcept {
-    if (!bound()) {
+    if (false == bound()) {
       return;
     }
     const CriticalSection::Token token = cs_.save(cs_.ctx);
@@ -436,7 +436,7 @@ class Logger {
     cs_.restore(cs_.ctx, token);
   }
   void note_catalog_miss() noexcept {
-    if (!bound()) {
+    if (false == bound()) {
       return;
     }
     const CriticalSection::Token token = cs_.save(cs_.ctx);
@@ -446,7 +446,7 @@ class Logger {
 
   // Reset for tests / init-failure path. Requires quiescent producers.
   void reset() noexcept {
-    if (!bound()) {
+    if (false == bound()) {
       return;
     }
     const CriticalSection::Token token = cs_.save(cs_.ctx);
@@ -487,7 +487,7 @@ class Logger {
   template <LogLevel Level, uint16_t EventId>
   void record_impl(bool isr, uint16_t source_id, uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3) noexcept {
     static_assert(EventId != 0U, "coact::diag: event id 0 is reserved");
-    if (!bound()) {
+    if (false == bound()) {
       return;  // recording before bind() is a config error: drop silently
     }
 

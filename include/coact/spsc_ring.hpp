@@ -58,10 +58,10 @@ struct alignas(alignof(T)) SpscSlotStorage {
 // the (rejected) class.
 template <typename T, uint16_t Capacity>
 struct is_spsc_ring_config {
-  static constexpr bool value = std::atomic<uint16_t>::is_always_lock_free &&
-                                std::is_nothrow_move_assignable<T>::value &&
-                                std::is_nothrow_default_constructible<T>::value && (Capacity >= 2U) &&
-                                ((Capacity & (Capacity - 1U)) == 0U) && (Capacity <= 0x7FFFU);
+  static constexpr bool value =
+      std::atomic<uint16_t>::is_always_lock_free && std::is_nothrow_move_assignable<T>::value &&
+      std::is_nothrow_move_constructible<T>::value && std::is_nothrow_default_constructible<T>::value &&
+      (Capacity >= 2U) && ((Capacity & (Capacity - 1U)) == 0U) && (Capacity <= 0x7FFFU);
 };
 
 template <typename T, uint16_t Capacity>
@@ -70,11 +70,22 @@ class SpscRing final {
   static_assert(is_spsc_ring_config<T, Capacity>::value,
                 "coact: SpscRing requires lock-free uint16 atomics, a "
                 "power-of-two capacity in [2, 0x7FFF], and a payload that is "
-                "nothrow-move-assignable and nothrow-default-constructible");
+                "nothrow-move-assignable, nothrow-move-constructible and "
+                "nothrow-default-constructible");
 
   SpscRing() noexcept = default;
   SpscRing(const SpscRing&) = delete;
   SpscRing& operator=(const SpscRing&) = delete;
+
+  // try_pop() is the only place that ends a payload's lifetime, so a ring
+  // destroyed while non-empty would leave live objects in raw storage. End
+  // them explicitly between tail and head.
+  ~SpscRing() noexcept {
+    const uint16_t head = head_.load(std::memory_order_relaxed);
+    for (uint16_t seq = tail_.load(std::memory_order_relaxed); seq != head; ++seq) {
+      slot_at(seq)->~T();
+    }
+  }
 
   // T is a fixed class-template parameter, so T&& is an rvalue reference and
   // NOT a forwarding reference: without a const T& overload an lvalue payload
@@ -178,7 +189,10 @@ class SpscRing final {
  private:
   T* slot_at(uint16_t seq) noexcept {
     const uint16_t idx = static_cast<uint16_t>(seq & (Capacity - 1U));
-    return static_cast<T*>(static_cast<void*>(&cells_[idx]));
+    // launder: the T in this storage was created by placement new after the
+    // storage object was formed, so the pointer must be taken through
+    // std::launder (same rule queue.hpp already follows).
+    return std::launder(reinterpret_cast<T*>(cells_[idx].bytes));
   }
 
   // Producer-owned head and consumer-owned tail live on separate cache

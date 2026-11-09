@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "coact/assert.hpp"
 #include "coact/bitfield.hpp"
 
 #include <cstdint>
@@ -40,10 +41,11 @@ struct PeriphRegCache {
 
   // Runtime first-line guard: mode combinations that make no sense are
   // rejected at the setter, not in code review.
-  [[nodiscard]] bool modes_legal() const noexcept { return !(cache_only && cache_bypass); }
+  [[nodiscard]] bool modes_legal() const noexcept { return false == (cache_only && cache_bypass); }
 
   // Write-through single entry: both copies update in one call.
   void write(std::uint16_t reg, std::uint32_t val) noexcept {
+    COACT_ASSERT(reg < kPeriphRegCount);
     if (cache_bypass) {
       // Controlled bypass: hardware only; resync on guard exit.
       st.hardware[reg] = val;
@@ -70,6 +72,7 @@ struct PeriphRegCache {
   // the whole 32-bit value and would clobber its neighbors.
   template <typename Field>
   void write_field(std::uint16_t reg, std::uint32_t val) noexcept {
+    COACT_ASSERT(reg < kPeriphRegCount);
     if (cache_bypass) {
       Field::write(st.hardware[reg], val);
       ++bypass_writes;
@@ -88,6 +91,7 @@ struct PeriphRegCache {
   // Field read from the shadow copy (the authority).
   template <typename Field>
   [[nodiscard]] std::uint32_t read_field(std::uint16_t reg) const noexcept {
+    COACT_ASSERT(reg < kPeriphRegCount);
     return Field::read(st.shadow[reg]);
   }
 

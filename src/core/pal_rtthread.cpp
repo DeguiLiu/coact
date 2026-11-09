@@ -564,7 +564,7 @@ bool RtThread::thread_create(ThreadHandle& t, ThreadEntry entry, void* context) 
   WorkerThreadSlot* slot = nullptr;
   uint16_t slot_idx = 0U;
   for (uint16_t i = 0U; i < res_->worker_slot_count; ++i) {
-    if (!res_->worker_slots[i].in_use) {
+    if (false == res_->worker_slots[i].in_use) {
       slot = &res_->worker_slots[i];
       slot_idx = i;
       break;
@@ -613,7 +613,7 @@ bool RtThread::thread_create(ThreadHandle& t, ThreadEntry entry, void* context) 
 }
 
 void RtThread::thread_join(ThreadHandle& t) noexcept {
-  if (!t.valid) {
+  if (false == t.valid) {
     return;
   }
   WorkerThreadSlot* slot = &res_->worker_slots[t.slot_idx];
@@ -721,7 +721,7 @@ int32_t RtThread::softirq_take(SoftIrqHandle& h, uint32_t timeout_ms) noexcept {
       h.tail.store(tail + 1U, std::memory_order_release);
       return payload;
     }
-    if (!forever) {
+    if (false == forever) {
       /* Unsigned subtraction handles rt_tick_t wrap-around naturally. */
       const rt_tick_t elapsed = rt_tick_get() - start_tick;
       if (elapsed >= budget_ticks) {

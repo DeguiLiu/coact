@@ -6,9 +6,11 @@
 # Usage: .ai/run-tsan.sh [build-dir] [binary] [args...]
 #   binary  Path of the test binary RELATIVE to the build dir
 #           (default: src/core/test_pal_sync, the sync-primitive suite).
-# Note: GCC 11 libtsan falsely flags condvar-based semaphores ("double lock",
-# data race at the count++ under the mutex) and exits 66; the clang TSan gate
-# in CI is authoritative for pass/fail.
+# Note: GCC 11 libtsan can falsely flag condvar-based semaphores ("double
+# lock", data race at the count++ under the mutex) and exits 66. The CI job
+# `thread-sanitizer` (.github/workflows/ci.yml) is authoritative: it runs every
+# test binary with report_thread_leaks=0 and fails only on a ThreadSanitizer
+# data-race report.
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

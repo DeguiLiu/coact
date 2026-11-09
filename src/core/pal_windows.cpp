@@ -453,7 +453,7 @@ bool Windows::thread_create(ThreadHandle& t, ThreadEntry entry, void* context) n
 }
 
 void Windows::thread_join(ThreadHandle& t) noexcept {
-  if (!t.valid) {
+  if (false == t.valid) {
     return;
   }
   (void)WaitForSingleObject(t.thread, INFINITE);

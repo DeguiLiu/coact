@@ -39,6 +39,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # ASan cannot map its shadow under kernel 6.5+ high-entropy ASLR
+      # (vm.mmap_rnd_bits=32); the default runner image hits this and every
+      # sanitized binary dies with DEADLYSIGNAL before main().
+      - name: Reduce ASLR entropy for sanitizers
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
       - name: Configure (ASan/UBSan)
         run: cmake -B build-san -S . -DCMAKE_BUILD_TYPE=Debug \
                -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
@@ -46,7 +51,55 @@ jobs:
       - name: Build
         run: cmake --build build-san -j 4
       - name: Test
+        # UBSan recovers by default: it prints "runtime error" and exits 0, so
+        # ctest would report a pass. halt_on_error turns any UB into a failure.
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: ctest --test-dir build-san --output-on-failure
+
+  # ThreadSanitizer gate. The lock-free paths (pool SMP free list, staging
+  # publication, dispatcher lease, admission snapshot) only show up as races
+  # under TSan; ASan/UBSan cannot see them. setarch -R disables ASLR because
+  # GCC libtsan cannot map its shadow ranges under kernel 6.5+ high-entropy
+  # ASLR. Thread leaks are suppressed: the FreeRTOS/RT-Thread host stubs back
+  # their tasks with pthreads that outlive the test on purpose.
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (TSan)
+        run: cmake -B build-tsan -S . -DCMAKE_BUILD_TYPE=Debug \
+               -DCMAKE_CXX_FLAGS="-fsanitize=thread -g -fno-omit-frame-pointer" \
+               -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+
+      - name: Build
+        run: cmake --build build-tsan -j 4
+
+      # Each binary is judged only on ThreadSanitizer output. Assertion
+      # failures and leaks are the host-test job's business; this job fails
+      # exactly when a data race is reported.
+      - name: Run every test binary under TSan
+        env:
+          TSAN_OPTIONS: report_thread_leaks=0:halt_on_error=0
+        run: |
+          set -u
+          fails=0
+          total=0
+          for b in $(find build-tsan -name 'test_*' -type f -executable | sort); do
+            total=$((total+1))
+            out=$(setarch "$(uname -m)" -R "$b" 2>&1) || true
+            if printf '%s\n' "$out" | grep -q "WARNING: ThreadSanitizer"; then
+              echo "=== RACE in $b"
+              printf '%s\n' "$out" | grep -A25 "WARNING: ThreadSanitizer" | head -50
+              fails=$((fails+1))
+            fi
+          done
+          if [ "$fails" -ne 0 ]; then
+            echo "TSan: $fails of $total binaries reported a race"
+            exit 1
+          fi
+          echo "TSan: $total binaries clean"
 
   # Target-ABI compile gate. The Renode scripts compile these translation
   # units on the bench; without this job a FreeRTOS-only break (missing

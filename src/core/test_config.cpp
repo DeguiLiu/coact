@@ -67,7 +67,7 @@ COACT_TEST(config_staging_and_dispatcher_config_type) {
     DispatcherT* d;
   };
   Wrap w{&dispatcher};
-  pal.start_dispatcher([](void* c) { static_cast<Wrap*>(c)->d->run(); }, &w);
+  CHECK(pal.start_dispatcher([](void* c) { static_cast<Wrap*>(c)->d->run(); }, &w));
   dispatcher.request_stop();
   pal.join_dispatcher();
   CHECK(true);

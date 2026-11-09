@@ -295,7 +295,10 @@ COACT_TEST(stackful_guard_clean_run) {
 COACT_TEST(stackful_notify_wakes_sleeping_coroutine_early) {
   Exec exec;
   struct Obs {
-    volatile bool token = false;  // set by the "producer" side
+    /* Written by the producer thread and read by the coroutine: atomic, not
+       volatile. volatile gives no ordering and TSan reports the pair as a
+       data race. */
+    std::atomic<bool> token{false};
     uint64_t woke_at_ns = 0U;
     bool saw_token = false;
   } obs;

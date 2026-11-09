@@ -48,6 +48,11 @@ class Dispatcher {
   using MonitorT = Monitor<typename StagingT::ConfigType>;
   using BatchCfg = typename StagingT::ConfigType;
 
+  // The deferred-retry and stop-drain paths pass kBatchTimeoutMs straight to
+  // the PAL, whose convention is 0 == wait forever. A zero here would turn a
+  // bounded stop into a hang, so reject it at compile time.
+  static_assert(BatchCfg::kBatchTimeoutMs > 0U, "coact: kBatchTimeoutMs must be > 0 (PAL treats 0 as wait forever)");
+
   // ReclaimBatcher per-batch distinct-pool capacity (design §7.4):
   // min(kBatchSizeMax, kMaxEventPools). A batch dequeues at most
   // kBatchSizeMax events and only kMaxEventPools pools exist, so this bounds
@@ -74,7 +79,7 @@ class Dispatcher {
   void run() noexcept {
     StagingSlot deferred;
     bool has_deferred = false;
-    while (!stop_.load(std::memory_order_acquire)) {
+    while (false == stop_.load(std::memory_order_acquire)) {
       /* Open a new batch; the Low aging clock is refreshed per dequeue
          below so mid-batch arrivals are judged against current time.
          The set wake latch coalesces producer signals while active. */
@@ -98,7 +103,7 @@ class Dispatcher {
           continue;
         }
       }
-      while (!stop_.load(std::memory_order_acquire) && staging_.batch_used() < BatchCfg::kBatchSizeMax) {
+      while (false == stop_.load(std::memory_order_acquire) && staging_.batch_used() < BatchCfg::kBatchSizeMax) {
         StagingSlot slot;
         /* Refresh now on every dequeue (not once per batch): Low events
            enqueued mid-batch carry a later arrival than the batch-start
@@ -106,11 +111,11 @@ class Dispatcher {
            or mis-judge them. Using the current time lets only
            genuinely-aged Low heads force-serve. */
         const uint64_t now_ns = pal_.monotonic_ns();
-        if (!staging_.dequeue_one(slot, now_ns)) {
+        if (false == staging_.dequeue_one(slot, now_ns)) {
           break;
         }
         any = true;
-        if (!try_dispatch_slot(slot, reclaim)) {
+        if (false == try_dispatch_slot(slot, reclaim)) {
           deferred = slot;
           has_deferred = true;
           break;
@@ -136,7 +141,7 @@ class Dispatcher {
         pal_.wait_dispatcher(BatchCfg::kBatchTimeoutMs);
         continue;
       }
-      if (!any) {
+      if (false == any) {
         /* Feed watchdog on idle cycles so the breaker cooldown
            does not stall when there is no traffic. */
         detail::breaker_idle_cycle(breaker_);
@@ -192,7 +197,7 @@ class Dispatcher {
     if (ao != nullptr) {
       Breaker<typename StagingT::ConfigType>& target_breaker = detail::target_breaker(breaker_, slot.target);
       const uint64_t t0 = pal_.monotonic_ns();
-      if (!ao->try_dispatch_queued(*slot.event)) {
+      if (false == ao->try_dispatch_queued(*slot.event)) {
         return false;
       }
       const uint64_t elapsed = pal_.monotonic_ns() - t0;
@@ -217,13 +222,13 @@ class Dispatcher {
   // so every pool returns to used()==0 and every AO pending() to 0.
   void drain_queued_on_stop() noexcept {
     const uint64_t now_ns = pal_.monotonic_ns();
-    while (staging_.any_buffered() || !staging_.submissions_idle()) {
+    while (staging_.any_buffered() || false == staging_.submissions_idle()) {
       staging_.begin_batch();
       ReclaimerT reclaim;
       bool released = false;
       while (staging_.batch_used() < BatchCfg::kBatchSizeMax) {
         StagingSlot slot;
-        if (!staging_.dequeue_one(slot, now_ns)) {
+        if (false == staging_.dequeue_one(slot, now_ns)) {
           break;
         }
         AoBase* ao = registry_.lookup(slot.target);
@@ -235,7 +240,7 @@ class Dispatcher {
         released = true;
       }
       reclaim.flush();
-      if (!released && (staging_.any_buffered() || !staging_.submissions_idle())) {
+      if (false == released && (staging_.any_buffered() || false == staging_.submissions_idle())) {
         pal_.wait_dispatcher(BatchCfg::kBatchTimeoutMs);
       }
     }
