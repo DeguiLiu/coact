@@ -183,7 +183,13 @@ jobs:
       - name: Install arm-none-eabi toolchain
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-arm-none-eabi g++-arm-none-eabi mono-complete
+          # Same package set as the arm-cross job: Ubuntu has no
+          # g++-arm-none-eabi package, the C++ compiler ships in
+          # gcc-arm-none-eabi and the standard-library headers come from
+          # libstdc++-arm-none-eabi-newlib. mono-complete is the Renode
+          # runtime.
+          sudo apt-get install -y --no-install-recommends \
+            gcc-arm-none-eabi libstdc++-arm-none-eabi-newlib mono-complete
 
       - name: Install Renode (portable, bundles its runtime)
         run: |
