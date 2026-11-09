@@ -299,12 +299,12 @@ class LogRtThread : public LogRtThreadBase {
       len = rendered.length;
       truncated = rendered.truncated;
       handled = true;
-    } else if (!rendered.handled) {
+    } else if (false == rendered.handled) {
       logger_.note_catalog_miss();
     } else {
       truncated = true;
     }
-    if (!handled) {
+    if (false == handled) {
       const LogRenderResult raw = RawHexPolicy::render(r, buf, kLineBufferSize);
       len = raw.length;
       truncated = truncated || raw.truncated;

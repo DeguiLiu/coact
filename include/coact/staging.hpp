@@ -84,7 +84,7 @@ struct StagingSlot {
     NormalOrdinary,
     NormalReserved
   } claim = ReservationClaim::None;
-  Event* event;  // transferred owned reference; dispatcher event_gc
+  Event* event = nullptr;  // transferred owned reference; dispatcher event_gc
   /* Low 32 bits of the publish clock. Aging only needs a wrap-safe delta for
      waits below 2^31 ns; storing 64 bits doubled the slot stride and cost
      every Config 2.7 KiB of RAM at DefaultConfig capacities. */
@@ -194,6 +194,12 @@ class Staging {
  public:
   using ConfigType = Config;
 
+  // A zero batch size makes BatchSelector::select() always decline while the
+  // dispatcher loop condition (batch_used < kBatchSizeMax) is never entered:
+  // the run loop then spins on any_ready() and the stop drain never dequeues.
+  // Above 255 the uint8_t batch counter wraps and the latency bound is lost.
+  static_assert(Config::kBatchSizeMax > 0U, "coact: kBatchSizeMax must be at least 1");
+  static_assert(Config::kBatchSizeMax <= 0xFFU, "coact: kBatchSizeMax must fit the uint8_t batch counter");
   static_assert(Config::kLowMaxWaitMs < 2000U, "coact: kLowMaxWaitMs must stay below the signed 32-bit ns delta");
   static_assert(std::atomic<bool>::is_always_lock_free, "Dispatcher wake latch requires lock-free atomic<bool>");
   static_assert(std::atomic<uint32_t>::is_always_lock_free, "Submission admission requires lock-free atomic<uint32_t>");
@@ -240,12 +246,12 @@ class Staging {
   // try_push fails, so it always tracks a slot that is actually resident.
   bool enqueue(TargetId target, Event* e, PriorityClass cls, uint64_t now_ns, bool critical,
                StagingAdmission admission) noexcept {
-    if (!admission_valid(cls, admission)) {
+    if (false == admission_valid(cls, admission)) {
       return false;
     }
 
     const StagingSlot::ReservationClaim claim = classify_claim(cls, critical, admission);
-    if (!try_claim(claim)) {
+    if (false == try_claim(claim)) {
       return false;
     }
     StagingSlot slot{target, claim, e, static_cast<uint32_t>(now_ns)};
@@ -259,7 +265,7 @@ class Staging {
       queued = high_q_.try_push(std::move(slot));
     }
 
-    if (!queued) {
+    if (false == queued) {
       release_claim(claim);
     }
     return queued;
@@ -280,14 +286,14 @@ class Staging {
        publishes its payload, so `size() > 0` does not imply try_pop()
        succeeds. Refuse a dequeue early unless some partition has a Ready
        cell, otherwise the caller would loop while every cell is Writing. */
-    if (!any_ready()) {
+    if (false == any_ready()) {
       return false;
     }
 
     Partition part;
     const uint16_t bmax = static_cast<uint16_t>(Config::kBatchSizeMax);
-    if (!selector_.select(part, ready_count(Partition::High), ready_count(Partition::Normal),
-                          ready_count(Partition::Low), aging_expired(), batch_used_, bmax)) {
+    if (false == selector_.select(part, ready_count(Partition::High), ready_count(Partition::Normal),
+                                  ready_count(Partition::Low), aging_expired(), batch_used_, bmax)) {
       return false;
     }
 
@@ -344,7 +350,7 @@ class Staging {
      observes the publication before deciding whether to sleep. */
   void arm_dispatcher_wait() noexcept { wake_pending_.exchange(false, std::memory_order_acq_rel); }
 
-  bool request_dispatcher_wake() noexcept { return !wake_pending_.exchange(true, std::memory_order_acq_rel); }
+  bool request_dispatcher_wake() noexcept { return false == wake_pending_.exchange(true, std::memory_order_acq_rel); }
 
   // A submission lease linearizes Coordinator ingress with shutdown. Closing
   // admission rejects new submissions, while already admitted producers keep
@@ -384,9 +390,10 @@ class Staging {
 
   bool any_ready() const noexcept { return high_q_.has_ready() || normal_q_.has_ready() || low_q_.has_ready(); }
 
-  // Usage as a 0-100 percentage: used / capacity * 100. The dispatcher maps
-  // this to the 50/80/95 watermark bands (design 10.5): <50 normal batch,
-  // 50-80 enlarge batch, 80-95 wake immediately, >95 hard-throttle.
+  // Usage as a 0-100 percentage: used / capacity * 100. Read-only view: the
+  // dispatcher does not size batches from it (the batch limit is always
+  // kBatchSizeMax). A BSP supervisor samples it and feeds
+  // Monitor::sample_watermark() and BreakerBank::broadcast_watermark().
   uint8_t watermark(Partition p) const noexcept {
     uint16_t used = 0U;
     uint16_t cap = 1U;
@@ -480,7 +487,7 @@ class Staging {
     if (cls == PriorityClass::Normal && ReserveConfig::kNormalReserved != 0U) {
       return StagingSlot::ReservationClaim::NormalOrdinary;
     }
-    if (cls == PriorityClass::High && !critical && ReserveConfig::kHighCritical != 0U) {
+    if (cls == PriorityClass::High && false == critical && ReserveConfig::kHighCritical != 0U) {
       return StagingSlot::ReservationClaim::HighOrdinary;
     }
     return StagingSlot::ReservationClaim::None;
@@ -533,12 +540,12 @@ class Staging {
   // subtraction with now >= arrival so a mid-batch arrival counts as not yet
   // aged (regression: coact dispatcher underflow gap).
   bool aging_expired() const noexcept {
-    if (!now_valid_) {
+    if (false == now_valid_) {
       return false;
     }
     const uint32_t wait_ns = static_cast<uint32_t>(Config::kLowMaxWaitMs) * 1000000U;
     StagingSlot head;
-    if (!low_q_.front(head)) {
+    if (false == low_q_.front(head)) {
       return false;
     }
     const int32_t delta = static_cast<int32_t>(static_cast<uint32_t>(now_ns_) - head.enqueue_ns);

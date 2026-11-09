@@ -193,6 +193,13 @@ inline void pool_reclaim_chain(PoolRecord* rec, uint32_t first, uint32_t last, u
 // Default no-op critical section for host-only tests. Production pools bind the
 // RT-Thread irq mask (or POSIX CAS) hook; single-threaded unit tests inject the
 // no-op so the pool still works without a real interrupt gate.
+//
+// The no-op is only valid when alloc and reclaim never run concurrently: the
+// HostSmpProfile free list re-uses block storage for its `next` link, so two
+// unsynchronised threads reading and writing one block is a data race even
+// though the tagged CAS keeps the list itself consistent (TSan reports it).
+// Any multi-producer pool must pass make_spin_critical_section() or the
+// platform irq-mask hook.
 inline CriticalSection noop_cs() noexcept {
   CriticalSection cs;
   cs.save = [](void*) -> CriticalSection::Token { return 0U; };
@@ -288,9 +295,20 @@ inline void event_ref_inc(Event* e) noexcept {
     PoolRecord* const record = pool_record(e->pool_id);
     COACT_ASSERT(record != nullptr);
     const CriticalSection::Token token = record->cs.save(record->cs.ctx);
-    COACT_ASSERT(e->ref_ctr < 0xFFU);
-    ++e->ref_ctr;
+    // Symmetric with event_gc(): an event whose count already reached zero
+    // has been (or is being) returned to its pool. Incrementing from zero
+    // would resurrect a handle that another producer may already own, so it
+    // is a protocol violation rather than a no-op.
+    const uint8_t prior = e->ref_ctr;
+    if ((0U < prior) && (prior < 0xFFU)) {
+      ++e->ref_ctr;
+    }
     record->cs.restore(record->cs.ctx, token);
+    // Check the count outside the critical section, like event_gc(): a product
+    // fatal handler must be able to drive outputs to a safe state with
+    // interrupts unmasked.
+    COACT_ASSERT(0U < prior);
+    COACT_ASSERT(prior < 0xFFU);
   }
 }
 
@@ -340,7 +358,7 @@ class EventPool {
  public:
   static_assert(std::is_same<Profile, RttSingleCoreProfile>::value || std::is_same<Profile, HostSmpProfile>::value,
                 "coact: unknown pool synchronization profile (design 7.4)");
-  static_assert(!std::is_same<Profile, HostSmpProfile>::value || std::atomic<uint32_t>::is_always_lock_free,
+  static_assert(false == std::is_same<Profile, HostSmpProfile>::value || std::atomic<uint32_t>::is_always_lock_free,
                 "coact: HostSmpProfile requires a lock-free 32-bit CAS "
                 "(design 13.1)");
   static_assert(Capacity > 0U, "EventPool requires a non-zero capacity");
@@ -376,6 +394,10 @@ class EventPool {
   // the platform critical-section hook, and register this pool. The injected
   // CriticalSection is the same hook the single-core queue backend uses:
   // RT-Thread maps it to irq mask, POSIX tests inject no-ops.
+  //
+  // The default argument is the no-op hook, which is safe only for a
+  // single-threaded caller. A HostSmpProfile pool shared by several producers
+  // must pass make_spin_critical_section() (or the board's irq-mask hook).
   bool init(void* storage, size_t bytes, CriticalSection cs = detail::noop_cs()) noexcept {
     if (pool_id_ != 0U || storage == nullptr || cs.save == nullptr || cs.restore == nullptr) {
       return false;
@@ -515,7 +537,7 @@ class EventPool {
       if (detail::pool_index_invalid != claimed) {
         uint16_t h = record_.high_watermark.load(std::memory_order_relaxed);
         while (used_after_claim > h &&
-               !record_.high_watermark.compare_exchange_weak(h, used_after_claim, std::memory_order_relaxed)) {}
+               false == record_.high_watermark.compare_exchange_weak(h, used_after_claim, std::memory_order_relaxed)) {}
       }
     }
 
@@ -742,7 +764,7 @@ class ReclaimBatcher {
       --e->ref_ctr;
       reclaim = (e->ref_ctr == 0U);
     }
-    if (!reclaim) {
+    if (false == reclaim) {
       rec->cs.restore(rec->cs.ctx, tok);
       return;
     }

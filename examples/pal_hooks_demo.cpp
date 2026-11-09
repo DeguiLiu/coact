@@ -166,7 +166,8 @@ void on_panic(void* ctx, const char* file, int32_t line) {
   // 'P' proves both that the hook ran and that the inner fault was suppressed.
   const char marker = (1U == state->reentry_blocked) ? 'P' : 'F';
   if (g_panic_pipe >= 0) {
-    (void)::write(g_panic_pipe, &marker, 1U);
+    const ssize_t written = ::write(g_panic_pipe, &marker, 1U);
+    (void)written; /* the pipe reader only counts markers */
   }
 }
 

@@ -128,8 +128,8 @@ class BoundedMpscQueue {
       const uint16_t index = static_cast<uint16_t>((start + static_cast<uint32_t>(offset)) % Capacity);
       detail::MpscCell<T>& cell = cells_[index];
       uint32_t expected = kFree;
-      if (!cell.state.compare_exchange_strong(expected, kWriting, std::memory_order_acq_rel,
-                                              std::memory_order_relaxed)) {
+      if (false == cell.state.compare_exchange_strong(expected, kWriting, std::memory_order_acq_rel,
+                                                      std::memory_order_relaxed)) {
         continue;
       }
 

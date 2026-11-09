@@ -134,10 +134,12 @@ using ThreadEntry = void (*)(void* context);
 //   void wait_dispatcher(uint32_t timeout_ms) noexcept;
 //   void signal_dispatcher_from_task() noexcept;
 //   void signal_dispatcher_from_isr() noexcept;
-//   void start_dispatcher(ThreadEntry entry, void* context) noexcept;
-//       // RtThread additionally returns pal::InitError (design §7.5): kOk only
-//       // after rt_thread_startup()==RT_EOK; kAlreadyStarted after a second
-//       // start or after stop. Posix keeps void.
+//   bool start_dispatcher(ThreadEntry entry, void* context) noexcept;
+//       // Posix and Windows return false when a Dispatcher is already running
+//       // or the thread could not be created. RtThread returns pal::InitError
+//       // instead (design §7.5): kOk only after rt_thread_startup()==RT_EOK;
+//       // kAlreadyStarted after a second start or after stop. Runtime accepts
+//       // all three shapes through detail::pal_start_dispatcher().
 //   void join_dispatcher() noexcept;
 //   void watchdog_progress(uint32_t marker) noexcept;
 //   void set_dispatcher_stack_bytes(uint32_t bytes) noexcept;   // may be no-op

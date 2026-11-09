@@ -1,6 +1,6 @@
-# coact 实现契约（Interface Contract）v0.7.1
+# coact 实现契约（Interface Contract）v0.8.0
 
-本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。版本号与顶层构建一致（`CMakeLists.txt` 中 `project(coact VERSION 0.7.1)`）。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
+本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。文档版本与 `CMakeLists.txt` 中的 `project(coact VERSION 0.8.0)` 以及 `v0.8.0` tag 一致；`coact::coro` 子系统另有自己的 `coro/version.hpp`。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
 
 读者可先读 `README.md` 与 `docs/why_cpp17_embedded_zh.md` 建立使用视图，再回到本文核对契约细节。本文中的签名以当前 `include/coact/` 下的实现为准；凡与本机代码不一致之处，以代码为准。
 
@@ -46,6 +46,7 @@
   - `pal_posix.hpp`：`pal::Posix`（pthread / condvar / 单调时钟，SMP 语义）。
   - `pal_rtthread.hpp`：`pal::RtThread`（静态资源 RT-Thread PAL，单核语义）。
   - `pal_freertos.hpp`：`pal::FreeRtos`（静态资源 FreeRTOS Kernel V11 PAL，单核语义；host 测试用 `test/freertos_stub.h`）。
+  - `pal_windows.hpp`：`pal::Windows`（Win32 事件 / 线程 / 临界区，SMP 语义；只在 MSVC 下参与构建）。
 - **协程子系统（`coro/`）**
   - `coro/coro.hpp`、`coro/task.hpp`（`Task` / `Promise` / `AwaitableRef` / `TaskRegistry`）、`coro/scheduler.hpp`（`TimerFacade`）、`coro/combinators.hpp`、`coro/awaitable.hpp`、`coro/task_id.hpp`、`coro/error.hpp`、`coro/config.hpp`、`coro/version.hpp`、`coro/posix.hpp`（`Coroutine` / `StackfulExecutor`）、`coro/detail/fixed_storage.hpp`、`coro/detail/task_slot.hpp`。
 - **诊断**
@@ -55,7 +56,7 @@
 ### 1.2 源与测试（`src/`、`test/`、`examples/`、`tools/`）
 
 - `src/<module>/`：每个模块一个目录，模块自身的头文件放 `include/coact/`，目录内是模块测试与 `CMakeLists.txt`。现有模块目录：`event`、`hsm`、`queue`、`ao`、`staging`、`policy`、`monitor`、`core`、`diag`。
-- `src/core/`：装配与集成所在，含 `pal_posix.cpp`、`pal_rtthread.cpp`、`coordinator` / `integration` / `stress` / `static_lifetime` / `bitfield` / `config` / `expected` / `timer` / `softirq` / `pal_sync` / `rtt_pal` 等测试，以及协程测试（`test_coro_*.cpp`）与热点基准（`bench_hotpath.cpp`）。
+- `src/core/`：装配与集成所在，含 `pal_posix.cpp`、`pal_rtthread.cpp`、`pal_freertos.cpp`、`pal_windows.cpp`、`coordinator` / `integration` / `stress` / `static_lifetime` / `bitfield` / `config` / `expected` / `timer` / `softirq` / `pal_sync` / `rtt_pal` 等测试，以及协程测试（`test_coro_*.cpp`）与热点基准（`bench_hotpath.cpp`）。
 - `test/`：`test_harness.hpp` 测试框架；RT-Thread 主机桩（`rtthread_stub.h`、`rtthread_gate_smp/`、`rtthread_gate_multicore/`）；`tsan_classify.sh` / `asan_classify.sh` / `elf_audit.sh` 卫生脚本。
 - `examples/`：主机示例（`serial_ota/`、协程 demo、`flash_proxy_demo`、`hsm_protocol_demo`、`node_manager_demo` 等），见 `examples/README.md`。
 - `tools/`：开发辅助脚本（`flamegraph_svg.py`）。
@@ -320,7 +321,7 @@ public:
     BreakerLevel level() const noexcept;
     bool direct_allowed(TargetId ao) const noexcept;
     bool healthy_window_passed() const noexcept;
-    bool drop_non_critical() const noexcept;    // L2 / Safe
+    bool drop_non_critical() const noexcept;    // L2 / Safe / Recovering
     bool safe_events_only() const noexcept;     // Safe
     // 阈值常量：kDirectTimeoutThreshold/kRtcTimeoutThreshold=3，kWatermarkViolationPct=80，
     //           kLowWatermarkPct=50，kHighWatermarkPersist/kLowWatermarkPersist/kHealthyWindowsRequired=3
@@ -354,7 +355,9 @@ public:
 - 降级链：L1（撤销该 AO direct）-> L2（隔离慢 AO）-> Safe（关键容量或 watchdog 耗尽）；L1/L2 在冷却完成且水位持续低于 50% 后进入 Recovering；Safe 需外部恢复。回到 Normal 还需连续合格健康窗口与成功探针，单次成功派发不够。
 - `BreakerBank` 对 `kInvalidTarget` 或超出 `Config::kMaxAo` 的目标采用 fail-safe：写操作忽略，`level()` 返回 `Safe`，`direct_allowed()` 返回 `false`，`drop_non_critical()` / `safe_events_only()` 返回 `true`，不越界访问内部数组。
 
-`Monitor<Config>` 为固定计数器集合：per-AO `AoCounters`（direct/dispatcher 时长、超时、C1–C7 拒绝、lease 竞争、pending 及峰值）与 `GlobalCounters`（分区水位、overflow、disposition 计数、watchdog 心跳、平台故障、pending 峰值）。热路径只写 relaxed 计数，不格式化、不阻塞；SMP 可每 CPU 一份，上层汇总。
+`Monitor<Config>` 为固定计数器集合：per-AO `AoCounters`（direct/dispatcher 时长、超时、C1–C9 拒绝、lease 竞争、pending 及峰值）与 `GlobalCounters`（分区水位、overflow、disposition 计数、watchdog 心跳、平台故障、pending 峰值）。热路径只写 relaxed 计数，不格式化、不阻塞；SMP 可每 CPU 一份，上层汇总。
+
+拒绝原因目前是粗粒度映射：M4 策略拒绝时，任何非零 `PolicyReason` 都记到 `RejectReason::kC7Context` 并把 disposition 记为 `DroppedRateLimit`（`reason == 0` 才是 `DroppedPolicy`）。C8/C9 由准入模块单独记录。若板级需要按原因细分，需要先在 coordinator 的 M4 分支补映射。
 
 ### 3.5 policy（准入策略与合并单元，L2）
 
@@ -463,7 +466,13 @@ constexpr StaticAoEntry make_static_ao_entry(AoT& ao) noexcept;
 enum class Partition : uint8_t { High = 0, Normal = 1, Low = 2 };
 Partition partition_from_class(PriorityClass) noexcept;
 
-struct StagingSlot { TargetId target; Event* event; uint32_t enqueue_ns; };
+struct StagingSlot {
+    TargetId target;
+    enum class ReservationClaim : uint8_t { None, HighOrdinary, NormalOrdinary, NormalReserved } claim;
+    Event* event;              // 转移过来的拥有引用，dispatcher 负责 event_gc
+    uint32_t enqueue_ns;       // 发布时钟低 32 位
+};
+// claim 记录该槽占用的预约通道，随槽一起在出队时归还；不占额外字长。
 // enqueue_ns 保存发布时钟的低 32 位；老化差值按 2^32 取模，要求
 // Config::kLowMaxWaitMs < 2000（低于 signed 32 位纳秒差）。
 
@@ -502,20 +511,24 @@ class Staging {
 - 批序：Low 头事件等待超过 `Config::kLowMaxWaitMs` 时强制先服务（唯一显式例外），否则 High -> Normal -> Low；`batch_used >= kBatchSizeMax` 时返回 `false`。Low 老化用无符号回绕安全比较，且当 `now < enqueue_ns`（批中途到达）时判为未老化，避免下溢误老化。
 - 唤醒用合并 latch：dispatcher 睡前 `arm_dispatcher_wait()`（acq_rel 清位）后复查 `any_ready()`；生产者先发布再 `request_dispatcher_wake()`，仅 false→true 的首个生产者持有 PAL 唤醒信号，关闭丢失唤醒窗口。
 - 提交准入用 `admission_` 计数 + 关闭位：`close_admission()` 后 `acquire_submission()` 拒绝新提交，已获准的生产者保留 lease 至 direct 派发或入队完成；`release_submission()` 在关闭后返回真表示这是最后一个已接受的提交，可唤醒停机排空。
-- `watermark()` 返回 0–100 使用率，dispatcher 据此映射 50/80/95 档位（<50 正常批次，50–80 扩大批次，80–95 立即唤醒，>95 硬限流）。
+- `watermark()` 返回 0–100 使用率，只作为只读视图供 BSP 采样后调用 `Monitor::sample_watermark` 与 `BreakerBank::broadcast_watermark`。调度器本身不读水位：批次上限恒为 `kBatchSizeMax`，唤醒仍由合并 latch 与 Low 老化决定。
 - 容量预约（本分支）：`Config` 可声明 `kHighCriticalReserve` 与 `kNormalReservedCapacity`，在所属分区内为关键 / 预约通道保留若干单元；`StagingAdmission::{Ordinary, ReservedNormal}` 区分普通提交与预约通道提交；未开启该通道的 Config 对预约通道提交直接拒绝而非静默降级。声明为零时零成本关闭，热路径不退化。
 
 ### 3.8 coordinator / dispatcher / runtime（集成装配，L4）
 
 ```cpp
 template <typename StagingT, typename PalT,
-          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>>
+          typename BreakerRouterT = Breaker<typename StagingT::ConfigType>,
+          typename AdmissionT = NoAdmission>
 class DispatchCoordinator {
 public:
     DispatchCoordinator(StagingT&, RegistryT&, MonitorT&, BreakerRouterT&, PalT&,
                         const PolicyOps* = nullptr, void* policy_ctx = nullptr) noexcept;
-    SubmitResult submit_from_task(TargetId, Event* e, const EventQos&) noexcept;
-    SubmitResult try_submit_from_isr(TargetId, Event* e, const EventQos&) noexcept;
+    SubmitResult submit_from_task(TargetId, Event* e, const EventQos&,
+                                  StagingAdmission = StagingAdmission::Ordinary) noexcept;
+    SubmitResult try_submit_from_isr(TargetId, Event* e, const EventQos&,
+                                     StagingAdmission = StagingAdmission::Ordinary) noexcept;
+    const AdmissionT& admission_policy() const noexcept;   // 只读准入视图
 };
 
 template <typename StagingT, typename PalT,
@@ -527,7 +540,8 @@ class Dispatcher {
     void request_stop() noexcept;
 };
 
-template <typename Config, typename PalT, typename Profile = coact::HostSmpProfile>
+template <typename Config, typename PalT, typename Profile = coact::HostSmpProfile,
+          typename AdmissionT = NoAdmission>
 class Runtime {
 public:
     using StagingType = Staging<Config, PalT::template QueueBackend>;
@@ -542,6 +556,7 @@ public:
     BreakerBank<Config>& breakers() noexcept;
     BreakerBank<Config>& breaker() noexcept;
     uint8_t partition_watermark(PriorityClass cls) const noexcept; // BSP 只读水位（0..100）
+    const AdmissionT& admission_policy() const noexcept;
 };
 ```
 

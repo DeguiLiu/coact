@@ -298,7 +298,7 @@ class Ao : public AoBase {
   // Idempotent default initialization used by Runtime::initialize(). An
   // explicit init() call marks the AO initialized, so this becomes a no-op.
   void init_default() noexcept override {
-    if (!initialized_) {
+    if (false == initialized_) {
       init(Event{0U, 0U, 0U});
     }
   }
@@ -312,7 +312,7 @@ class Ao : public AoBase {
   const Context& context() const noexcept { return context_; }
 
   void dispatch(const Event& event) noexcept override {
-    if (!try_dispatch_queued(event)) {
+    if (false == try_dispatch_queued(event)) {
       // Re-entry while the AO is already running: upper-layer violation.
       COACT_ASSERT(0 == 1);
     }
@@ -322,7 +322,7 @@ class Ao : public AoBase {
     const AoRunState held = AoRunState::RunningDispatcher;
     const bool taken = lease_.try_acquire(held);
     if (taken) {
-      if (!hsm_.dispatch(context_, event)) {
+      if (false == hsm_.dispatch(context_, event)) {
         unhandled_events_.fetch_add(1U, std::memory_order_relaxed);
       }
       lease_.release(held);
@@ -333,7 +333,7 @@ class Ao : public AoBase {
   bool dispatch_direct(const Event& event) noexcept override {
     const AoRunState held = AoRunState::RunningDirect;
     if (lease_.try_acquire(held)) {
-      if (!hsm_.dispatch(context_, event)) {
+      if (false == hsm_.dispatch(context_, event)) {
         unhandled_events_.fetch_add(1U, std::memory_order_relaxed);
       }
       lease_.release(held);

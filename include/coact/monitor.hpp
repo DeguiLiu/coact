@@ -169,7 +169,7 @@ template <typename Transition>
 inline void Breaker<Config>::update(const Transition& transition) noexcept {
   uint32_t observed = state_.load(std::memory_order_relaxed);
   bool complete = false;
-  while (!complete) {
+  while (false == complete) {
     State next = unpack(observed);
     transition(next);
     const uint32_t desired = pack(next);
@@ -513,10 +513,12 @@ class BreakerBank {
   }
 
   bool drop_non_critical(TargetId target) const noexcept {
-    return !valid(target) || breaker(target).drop_non_critical();
+    return false == valid(target) || breaker(target).drop_non_critical();
   }
 
-  bool safe_events_only(TargetId target) const noexcept { return !valid(target) || breaker(target).safe_events_only(); }
+  bool safe_events_only(TargetId target) const noexcept {
+    return false == valid(target) || breaker(target).safe_events_only();
+  }
 
   void broadcast_watermark_violation() noexcept {
     for_each([](Breaker<Config>& item) { item.on_watermark_violation(); });

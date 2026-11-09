@@ -95,7 +95,7 @@ class [[nodiscard]] Expected final {
   }
 
   E error() const noexcept {
-    COACT_ASSERT(!has_value_);
+    COACT_ASSERT(false == has_value_);
     return err_;
   }
 
@@ -139,7 +139,7 @@ class [[nodiscard]] Expected<void, E> final {
   explicit operator bool() const noexcept { return has_value_; }
 
   E error() const noexcept {
-    COACT_ASSERT(!has_value_);
+    COACT_ASSERT(false == has_value_);
     return err_;
   }
 

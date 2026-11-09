@@ -112,7 +112,10 @@ class Posix {
   // strict non-blocking ISR paths.
   void signal_dispatcher_from_isr() noexcept;
 
-  void start_dispatcher(ThreadEntry entry, void* context) noexcept;
+  // Returns false when a Dispatcher is already running or pthread_create
+  // failed. A swallowed failure would let Runtime report a successful start
+  // with no thread draining the queue.
+  [[nodiscard]] bool start_dispatcher(ThreadEntry entry, void* context) noexcept;
   void join_dispatcher() noexcept;
   void watchdog_progress(uint32_t marker) noexcept;
 

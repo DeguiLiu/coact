@@ -117,6 +117,11 @@ enum class InitError : uint8_t { kPalFailed, kConfigMismatch, kDuplicatePrio, kC
 // Default configuration. See design 14.1.
 // ---------------------------------------------------------------------------
 struct DefaultConfig {
+  /* kMaxStateDepth, kMaxDirectDepth and kDirectBudgetNs are part of the board
+     Config contract but are not read by the framework yet: the HSM depth
+     limit comes from the Hsm template argument and the direct-dispatch
+     budget from Traits::kRtcBudgetNs. Changing these three has no effect
+     today; they stay so existing Configs keep compiling. */
   enum : uint8_t { kMaxAo = 16U, kMaxStateDepth = 6U, kMaxDirectDepth = 4U, kBatchSizeMax = 8U };
 
   enum : uint16_t {

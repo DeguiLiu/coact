@@ -70,7 +70,7 @@ class TokenBucketRateLimiter {
   // Consume one token if available after refilling up to `now`.
   // Returns true (admitted) and deducts a token, or false (limited).
   bool acquire(uint64_t now) noexcept {
-    if (!rule_.enabled) {
+    if (false == rule_.enabled) {
       return true;
     }
     refill(now);
@@ -145,7 +145,7 @@ class MergeCell {
       return false;
     }
     MergeCellState expected = MergeCellState::Empty;
-    if (!state_.compare_exchange_strong(expected, MergeCellState::Publishing, std::memory_order_acq_rel)) {
+    if (false == state_.compare_exchange_strong(expected, MergeCellState::Publishing, std::memory_order_acq_rel)) {
       return false;
     }
     event_ = e;
@@ -157,7 +157,7 @@ class MergeCell {
   // may mutate *queued via the merge fn, must then call release_merge().
   bool try_acquire_merge(Event*& queued) noexcept {
     MergeCellState expected = MergeCellState::Published;
-    if (!state_.compare_exchange_strong(expected, MergeCellState::Merging, std::memory_order_acq_rel)) {
+    if (false == state_.compare_exchange_strong(expected, MergeCellState::Merging, std::memory_order_acq_rel)) {
       return false;
     }
     queued = event_;
@@ -174,7 +174,7 @@ class MergeCell {
   // caller owns *queued; call release_empty() after event_gc() once.
   bool take_owning(Event*& out) noexcept {
     MergeCellState expected = MergeCellState::Published;
-    if (!state_.compare_exchange_strong(expected, MergeCellState::Consuming, std::memory_order_acq_rel)) {
+    if (false == state_.compare_exchange_strong(expected, MergeCellState::Consuming, std::memory_order_acq_rel)) {
       return false;
     }
     out = event_;

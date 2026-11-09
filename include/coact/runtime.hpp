@@ -28,9 +28,9 @@ void dispatcher_trampoline(void* ctx) noexcept {
   static_cast<DispatcherT*>(ctx)->run();
 }
 
-/* Starts the PAL dispatcher thread, propagating a status when the PAL reports
-   one (RtThread returns pal::InitError, design §7.5). Posix keeps void: the
-   if-constexpr discards the status branch so Posix still compiles. */
+/* Starts the PAL dispatcher thread and normalises the three shapes the PALs
+   report: Posix and Windows return bool, RtThread returns pal::InitError
+   (design §7.5), and a test double may still return void. */
 template <typename PalT>
 inline bool pal_start_dispatcher(PalT& pal, pal::ThreadEntry entry, void* ctx) noexcept {
   using StatusT = decltype(pal.start_dispatcher(entry, ctx));
@@ -97,6 +97,13 @@ class Runtime {
         initialized_(false),
         started_(false) {}
 
+  // Stop the Dispatcher before any member is destroyed. Without this, a
+  // Runtime that leaves scope while started leaves the Dispatcher thread
+  // running against freed members (staging_, monitor_, breakers_, pal_) -
+  // a use-after-free that the PAL cannot detect on its own. stop() is
+  // idempotent, so an explicit stop() before destruction still composes.
+  ~Runtime() noexcept { stop(); }
+
   /* Phase 1: register an AO. Returns false if registry is full or prio
      conflicts; must be called before initialize(). */
   bool bind(AoBase* ao) noexcept {
@@ -144,7 +151,7 @@ class Runtime {
     }
     pal_.set_dispatcher_stack_bytes(Config::kDispatcherStackBytes);
     const bool ok = detail::pal_start_dispatcher(pal_, &detail::dispatcher_trampoline<DispatcherType>, &dispatcher_);
-    if (!ok) {
+    if (false == ok) {
       return false;
     }
     started_ = true;

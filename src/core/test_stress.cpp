@@ -94,6 +94,9 @@ using StressAo = coact::Ao<StressCtx, StressHsm, StressTraits>;
 static constexpr uint16_t kBlk = 16U;
 static constexpr uint16_t kCap = 128U;
 alignas(16) static unsigned char g_storage[kBlk * (kCap + 1U)];
+/* Multi-producer pool traffic needs a real serialising hook, exactly as every
+   production example injects one. The no-op default is single-thread-only. */
+alignas(64) static coact::SpinCriticalSection g_pool_spin;
 
 /* =========================================================================
  * Test: multi-producer concurrent correctness (qpc multithread intent).
@@ -115,7 +118,7 @@ COACT_TEST(stress_multiproducer_concurrent) {
   ao.init(init_e);
 
   coact::EventPool<kBlk, kCap> pool;
-  pool.init(g_storage, sizeof(g_storage));
+  pool.init(g_storage, sizeof(g_storage), coact::make_spin_critical_section(g_pool_spin));
 
   coact::pal::Posix pal;
   coact::Runtime<coact::DefaultConfig, coact::pal::Posix> rt(pal);

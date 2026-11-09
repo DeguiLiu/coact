@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(coact VERSION 0.7.1
+project(coact VERSION 0.8.0
         DESCRIPTION "Bounded, detectable, recoverable active-object framework: RT-Thread, FreeRTOS, Linux hosts"
         LANGUAGES CXX)
 

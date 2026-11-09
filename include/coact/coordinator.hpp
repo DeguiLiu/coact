@@ -132,14 +132,14 @@ class DispatchCoordinator {
        and silently degrading it to ordinary traffic would let a caller
        believe it holds a reservation it does not have. */
     const PriorityClass priority_class = ao->priority_class();
-    if (!staging_.admission_valid(priority_class, admission)) {
+    if (false == staging_.admission_valid(priority_class, admission)) {
       event_gc(e);
       monitor_.record_disposition(SubmitDisposition::RejectedState);
       return {SubmitDisposition::RejectedState, 0U};
     }
 
     SubmissionLease lease(staging_, pal_, from_isr);
-    if (!lease.admitted()) {
+    if (false == lease.admitted()) {
       event_gc(e);
       monitor_.record_disposition(SubmitDisposition::RejectedState);
       return {SubmitDisposition::RejectedState, 0U};
@@ -149,7 +149,7 @@ class DispatchCoordinator {
     Breaker<typename StagingT::ConfigType>& target_breaker = detail::target_breaker(breaker_, target);
     /* One owner for the "which levels drop non-critical traffic" rule: the
        breaker. Re-deriving it from level() here let the two drift apart. */
-    if (!qos.critical && target_breaker.drop_non_critical()) {
+    if (false == qos.critical && target_breaker.drop_non_critical()) {
       monitor_.record_disposition(SubmitDisposition::DroppedOverload);
       event_gc(e);
       return {SubmitDisposition::DroppedOverload, 0U};
@@ -157,12 +157,12 @@ class DispatchCoordinator {
 
     /* --- M4 policy evaluation --------------------------------------- */
     if (policy_ops_ != nullptr) {
-      if (!now_init) {
+      if (false == now_init) {
         now_ns = pal_.monotonic_ns();
         now_init = true;
       }
       PolicyResult pr = policy_ops_->evaluate(policy_ctx_, target, *e, qos, now_ns);
-      if (!pr.accept) {
+      if (false == pr.accept) {
         const SubmitDisposition disp =
             (0U != pr.reason) ? SubmitDisposition::DroppedRateLimit : SubmitDisposition::DroppedPolicy;
         monitor_.record_rejection(target, RejectReason::kC7Context);
@@ -181,11 +181,11 @@ class DispatchCoordinator {
        and ISR producers share one CAS; nothing is held across the HSM. */
     if constexpr (AdmissionT::kEnabled) {
       if (0U != admission_.limits_for(target).min_arrival.value) {
-        if (!now_init) {
+        if (false == now_init) {
           now_ns = pal_.monotonic_ns();
           now_init = true;
         }
-        if (!admission_.reserve(target, now_ns, arrival)) {
+        if (false == admission_.reserve(target, now_ns, arrival)) {
           event_gc(e);
           monitor_.record_rejection(target, RejectReason::kC8ArrivalInterval);
           monitor_.record_disposition(SubmitDisposition::DroppedRateLimit);
@@ -199,7 +199,7 @@ class DispatchCoordinator {
     /* --- M1 direct dispatch (Task path only) ------------------------ */
     /* The allocation reference transfers directly to the successful
        dispatch or, after a lost race, to the staging path below. */
-    if (!from_isr && ao->direct_eligible() && target_breaker.direct_allowed(target)) {
+    if (false == from_isr && ao->direct_eligible() && target_breaker.direct_allowed(target)) {
       /* dispatch_direct() owns the acquire internally with a RunningDirect
          state (distinct from RunningDispatcher, so C5 monitoring can tell
          the two paths apart). */
@@ -242,7 +242,7 @@ class DispatchCoordinator {
     }
 
     /* --- staging (queued) ------------------------------------------- */
-    if (!now_init && (PriorityClass::Low == priority_class)) {
+    if (false == now_init && (PriorityClass::Low == priority_class)) {
       now_ns = pal_.monotonic_ns();
       now_init = true;
     }
@@ -250,7 +250,7 @@ class DispatchCoordinator {
     if constexpr (AdmissionT::kEnabled) {
       /* A capped submission needs a timestamp for its snapshot even
          when it is neither Low nor policy-evaluated. */
-      if (!now_init && (0U != admission_.backlog_cap(target))) {
+      if (false == now_init && (0U != admission_.backlog_cap(target))) {
         now_ns = pal_.monotonic_ns();
         now_init = true;
       }
@@ -259,7 +259,7 @@ class DispatchCoordinator {
          hands the window back, so a cap rejection consumes neither
          capacity nor interval. qos.critical does not exempt a target
          from its own backlog cap. */
-      if (!pending.try_increment(admission_.backlog_cap(target))) {
+      if (false == pending.try_increment(admission_.backlog_cap(target))) {
         event_gc(e);
         monitor_.record_rejection(target, RejectReason::kC9BacklogCap);
         monitor_.record_disposition(SubmitDisposition::RejectedFull);
@@ -270,7 +270,7 @@ class DispatchCoordinator {
     } else {
       pending.increment();
     }
-    if (!staging_.enqueue(target, e, priority_class, now_ns, qos.critical, admission)) {
+    if (false == staging_.enqueue(target, e, priority_class, now_ns, qos.critical, admission)) {
       pending.decrement();
       /* The event is dropped: consume the allocation reference. */
       event_gc(e);
@@ -296,7 +296,7 @@ class DispatchCoordinator {
        this acq_rel exchange; once the Dispatcher arms its wait, exactly the
        first producer owns the PAL signal. */
     if (staging_.request_dispatcher_wake()) {
-      if (!from_isr) {
+      if (false == from_isr) {
         pal_.signal_dispatcher_from_task();
       } else {
         pal_.signal_dispatcher_from_isr();

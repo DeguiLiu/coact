@@ -446,7 +446,7 @@ class StaticAdmission {
       return true;
     }
     ArrivalGate& gate = gate_for(target);
-    if (!gate.try_reserve(sync_.cs, now_ns, MinArrivalNs{min_ns})) {
+    if (false == gate.try_reserve(sync_.cs, now_ns, MinArrivalNs{min_ns})) {
       /* A rejected reserve must not leave a stale handle behind: the
          caller may roll back or destroy it on the failure path. */
       out = ArrivalReservation{};

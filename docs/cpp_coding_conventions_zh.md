@@ -51,6 +51,8 @@
   - 落点：`static_cast<uint16_t>(frame_id % kDdrSlots)`（`dn_slot_of`）；`static_cast<uint16_t>(Sig::kFrameIrscOut)` 等全文件一致使用。
 - 常量左侧（Yoda 比较）：`0 == x` / `nullptr == p`。
   - 落点：`if (nullptr == ack) { return; }`（`onIrscDmaDone`）、`if (nullptr != done)`（`CmdDmaWorker::execute`）、`(SessionState::kInit == s)`（`irsc_session_open`）。
+- 布尔取反写显式比较：`false == x`，不用 `!x`。操作数不是 `bool` 而是依赖上下文转换的类型（`Expected` 等）时，先写 `false == static_cast<bool>(x)`。
+  - 落点：`if (false == staging_.dequeue_one(slot, now_ns))`（dispatcher.hpp）、`if (false == static_cast<bool>(created))`（coro/combinators.hpp）。
 
 ### 2.2 健壮性基础（源自 MISRA 精神的现代等价物）
 

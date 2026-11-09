@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 #include "coact/pal_posix.hpp"
 
+#include "coact/assert.hpp"
+
 #include <cstring>
 #include <ctime>
 
@@ -19,6 +21,28 @@ namespace pal {
 
 /* SoftIrqSignal is declared in pal_posix.hpp as Posix::SoftIrqSignal — keep
    the value in one place so header users and the .cpp cannot drift. */
+
+namespace {
+
+/* Every condition variable in this PAL is clocked with CLOCK_MONOTONIC, so a
+   system-time jump (NTP step, manual date change) can neither stretch nor
+   shorten a wait. Returns false when the platform refuses the attribute;
+   callers then fail their init or abort the constructor, so no cond is ever
+   waited on with a deadline taken from a different clock. */
+bool cond_init_monotonic(pthread_cond_t* cond) noexcept {
+  pthread_condattr_t attr;
+  if (0 != pthread_condattr_init(&attr)) {
+    return false;
+  }
+  int rc = pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+  if (0 == rc) {
+    rc = pthread_cond_init(cond, &attr);
+  }
+  pthread_condattr_destroy(&attr);
+  return 0 == rc;
+}
+
+}  // namespace
 
 /* pthread void*(void*) -> ThreadEntry void(void*) adapter. Reads entry and
    context from the ThreadHandle the create call passed as arg. */
@@ -39,7 +63,12 @@ Posix::Posix() noexcept
       tick_hz_(0U),
       ns_per_tick_(0U) {
   pthread_mutex_init(&mutex_, nullptr);
-  pthread_cond_init(&cond_, nullptr);
+  /* A constructor has no failure return: leaving cond_ uninitialised would make
+     the first wait_dispatcher() undefined behaviour, so treat a platform that
+     refuses the monotonic attribute as a fatal configuration error. */
+  if (false == cond_init_monotonic(&cond_)) {
+    ::coact::fatal_assert(__FILE__, __LINE__);
+  }
 }
 
 void Posix::set_tick_hz(uint32_t hz) noexcept {
@@ -103,12 +132,12 @@ uint64_t Posix::clock_resolution_ns() const noexcept {
 
 void Posix::wait_dispatcher(uint32_t timeout_ms) noexcept {
   pthread_mutex_lock(&mutex_);
-  if (!wake_) {
+  if (false == wake_) {
     if (0U == timeout_ms) {
       pthread_cond_wait(&cond_, &mutex_);
     } else {
       struct timespec deadline;
-      clock_gettime(CLOCK_REALTIME, &deadline);
+      clock_gettime(CLOCK_MONOTONIC, &deadline);
       deadline.tv_sec += static_cast<time_t>(timeout_ms / 1000U);
       deadline.tv_nsec += static_cast<long>((timeout_ms % 1000U) * 1000000UL);
       if (deadline.tv_nsec >= 1000000000L) {
@@ -150,10 +179,14 @@ void* Posix::dispatcher_entry(void* arg) noexcept {
   return nullptr;
 }
 
-void Posix::start_dispatcher(ThreadEntry entry, void* context) noexcept {
+bool Posix::start_dispatcher(ThreadEntry entry, void* context) noexcept {
+  if (thread_valid_ || nullptr == entry) {
+    return false; /* already running, or nothing to run */
+  }
   user_entry_ = entry;
   user_ctx_ = context;
   thread_valid_ = (0 == pthread_create(&thread_, nullptr, &Posix::dispatcher_entry, this));
+  return thread_valid_;
 }
 
 void Posix::join_dispatcher() noexcept {
@@ -179,7 +212,7 @@ void Posix::leave_direct() noexcept {
 
 /* ---------------------------------------------------------------------------
  * SemOps family: counting semaphore over mutex + cond (no sem_t — the
- * mutex+cond form is exception-free, clocked with CLOCK_REALTIME deadlines
+ * mutex+cond form is exception-free, clocked with CLOCK_MONOTONIC deadlines
  * exactly like wait_dispatcher, and shares the CondOps machinery).
  * ------------------------------------------------------------------------- */
 
@@ -187,7 +220,7 @@ bool Posix::sem_init(SemHandle& sem, uint32_t initial) noexcept {
   if (0U != pthread_mutex_init(&sem.mtx, nullptr)) {
     return false;
   }
-  if (0U != pthread_cond_init(&sem.cond, nullptr)) {
+  if (false == cond_init_monotonic(&sem.cond)) {
     pthread_mutex_destroy(&sem.mtx);
     return false;
   }
@@ -216,7 +249,7 @@ bool Posix::sem_take(SemHandle& sem, uint32_t timeout_ms) noexcept {
     return true;
   }
   struct timespec deadline;
-  clock_gettime(CLOCK_REALTIME, &deadline);
+  clock_gettime(CLOCK_MONOTONIC, &deadline);
   deadline.tv_sec += static_cast<time_t>(timeout_ms / 1000U);
   deadline.tv_nsec += static_cast<long>((timeout_ms % 1000U) * 1000000UL);
   if (deadline.tv_nsec >= 1000000000L) {
@@ -286,7 +319,7 @@ void Posix::mutex_deinit(MutexHandle& m) noexcept {
  * ------------------------------------------------------------------------- */
 
 bool Posix::cond_init(CondHandle& c) noexcept {
-  if (0U != pthread_cond_init(&c.cond, nullptr)) {
+  if (false == cond_init_monotonic(&c.cond)) {
     return false;
   }
   c.pal = this;
@@ -299,7 +332,7 @@ void Posix::cond_wait(CondHandle& c, MutexHandle& m, uint32_t timeout_ms) noexce
     return;
   }
   struct timespec deadline;
-  clock_gettime(CLOCK_REALTIME, &deadline);
+  clock_gettime(CLOCK_MONOTONIC, &deadline);
   deadline.tv_sec += static_cast<time_t>(timeout_ms / 1000U);
   deadline.tv_nsec += static_cast<long>((timeout_ms % 1000U) * 1000000UL);
   if (deadline.tv_nsec >= 1000000000L) {
