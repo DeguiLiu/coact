@@ -1,6 +1,6 @@
-# coact 实现契约（Interface Contract）v0.8.0
+# coact 实现契约（Interface Contract）v0.8.1
 
-本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。文档版本与 `CMakeLists.txt` 中的 `project(coact VERSION 0.8.0)` 以及 `v0.8.0` tag 一致；`coact::coro` 子系统另有自己的 `coro/version.hpp`。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
+本文档是 coact 的接口契约，描述模块边界、公开签名、语义、不变量与所有权规则。文档版本与 `CMakeLists.txt` 中的 `project(coact VERSION 0.8.1)` 以及 `v0.8.1` tag 一致；`coact::coro` 子系统另有自己的 `coro/version.hpp`。文中所有路径均为**仓库相对路径**；示例与测试命令在任意检出上均可执行。
 
 读者可先读 `README.md` 与 `docs/why_cpp17_embedded_zh.md` 建立使用视图，再回到本文核对契约细节。本文中的签名以当前 `include/coact/` 下的实现为准；凡与本机代码不一致之处，以代码为准。
 
