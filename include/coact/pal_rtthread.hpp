@@ -485,6 +485,7 @@ class RtThread {
   Lifecycle state_;
   InitError last_error_;
   uint32_t dispatcher_stack_bytes_; /* default 4096; overridable */
+  uint8_t dispatcher_direct_depth_ = 0U; /* dispatcher-thread direct nesting */
   ClockOps clock_ops_;              /* default: RT tick; §7.5 */
   WatchdogOps watchdog_{};          /* default: no hook, kick is a no-op */
   uint64_t ns_per_counter_;         /* zero selects exact fallback */

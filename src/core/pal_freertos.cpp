@@ -287,6 +287,7 @@ ExecutionContext FreeRtos::current_context() const noexcept {
   }
   if (in_dispatcher_thread()) {
     ctx.kind = ContextKind::Dispatcher;
+    ctx.direct_depth = dispatcher_direct_depth_;
     return ctx;
   }
   ExecutionContext* stored = tls_ctx();
@@ -395,6 +396,7 @@ void FreeRtos::signal_dispatcher_from_isr() noexcept {
 void FreeRtos::dispatcher_thread_entry(void* param) noexcept {
   FreeRtos* self = static_cast<FreeRtos*>(param);
   self->dispatcher_handle_ = xTaskGetCurrentTaskHandle();
+  self->dispatcher_direct_depth_ = 0U;
 
   if (nullptr != self->user_entry_) {
     self->user_entry_(self->user_ctx_);
@@ -483,6 +485,10 @@ uint32_t FreeRtos::dispatcher_stack_bytes() const noexcept {
 }
 
 void FreeRtos::enter_direct() noexcept {
+  if (in_dispatcher_thread()) {
+    ++dispatcher_direct_depth_;
+    return;
+  }
   ExecutionContext* ctx = tls_ctx();
   if (nullptr != ctx) {
     ++ctx->direct_depth;
@@ -490,6 +496,12 @@ void FreeRtos::enter_direct() noexcept {
 }
 
 void FreeRtos::leave_direct() noexcept {
+  if (in_dispatcher_thread()) {
+    if (dispatcher_direct_depth_ > 0U) {
+      --dispatcher_direct_depth_;
+    }
+    return;
+  }
   ExecutionContext* ctx = tls_ctx();
   if ((nullptr != ctx) && (ctx->direct_depth > 0U)) {
     --ctx->direct_depth;

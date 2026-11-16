@@ -199,7 +199,11 @@ class DispatchCoordinator {
     /* --- M1 direct dispatch (Task path only) ------------------------ */
     /* The allocation reference transfers directly to the successful
        dispatch or, after a lost race, to the staging path below. */
-    if (false == from_isr && ao->direct_eligible() && target_breaker.direct_allowed(target)) {
+    /* Bound direct-dispatch nesting: each nested direct dispatch adds a
+       frame to the producer stack, so Config::kMaxDirectDepth is the
+       declared ceiling. Past it the event takes the staged path. */
+    if (false == from_isr && ao->direct_eligible() && target_breaker.direct_allowed(target) &&
+        pal_.current_context().direct_depth < static_cast<uint8_t>(StagingT::ConfigType::kMaxDirectDepth)) {
       /* dispatch_direct() owns the acquire internally with a RunningDirect
          state (distinct from RunningDispatcher, so C5 monitoring can tell
          the two paths apart). */

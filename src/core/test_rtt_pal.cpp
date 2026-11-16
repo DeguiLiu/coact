@@ -137,6 +137,32 @@ COACT_TEST(rtthread_pal_start_join_dispatcher) {
   CHECK_EQ(1, flag.done.load(std::memory_order_relaxed));
 }
 
+struct DirectDepthProbe {
+  coact::pal::RtThread* pal;
+  std::atomic<int> first{0};
+  std::atomic<int> second{0};
+};
+
+void rtthread_direct_depth_entry(void* ctx) noexcept {
+  auto* probe = static_cast<DirectDepthProbe*>(ctx);
+  probe->pal->enter_direct();
+  probe->first.store(static_cast<int>(probe->pal->current_context().direct_depth), std::memory_order_relaxed);
+  probe->pal->enter_direct();
+  probe->second.store(static_cast<int>(probe->pal->current_context().direct_depth), std::memory_order_relaxed);
+  probe->pal->leave_direct();
+  probe->pal->leave_direct();
+}
+
+COACT_TEST(rtthread_pal_dispatcher_tracks_direct_depth) {
+  coact::pal::RtThread pal;
+  DirectDepthProbe probe{&pal};
+  CHECK_EQ(static_cast<int>(coact::pal::InitError::kOk),
+           static_cast<int>(pal.start_dispatcher(&rtthread_direct_depth_entry, &probe)));
+  pal.join_dispatcher();
+  CHECK_EQ(1, probe.first.load(std::memory_order_relaxed));
+  CHECK_EQ(2, probe.second.load(std::memory_order_relaxed));
+}
+
 /* ---- End-to-end with RT-Thread PAL ---------------------------------------- */
 
 static std::atomic<int> g_rtt_counter{0};

@@ -83,6 +83,7 @@ struct ManualClockPal {
   void signal_dispatcher_from_isr() noexcept { ++signals; }
   void enter_direct() noexcept {}
   void leave_direct() noexcept {}
+  coact::ExecutionContext current_context() const noexcept { return coact::ExecutionContext{}; }
 };
 
 struct Ctx {

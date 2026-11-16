@@ -72,6 +72,7 @@ struct ProbePal {
     void signal_dispatcher_from_isr() {}
     void enter_direct() {}
     void leave_direct() {}
+    coact::ExecutionContext current_context() const { return coact::ExecutionContext{}; }
 };
 
 struct ProbeRules {

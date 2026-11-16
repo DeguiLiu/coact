@@ -144,6 +144,7 @@ struct VirtualClock {
   void signal_dispatcher_from_isr() noexcept { ++tls_signals; }
   void enter_direct() noexcept {}
   void leave_direct() noexcept {}
+  coact::ExecutionContext current_context() const noexcept { return coact::ExecutionContext{}; }
 };
 
 thread_local uint64_t VirtualClock::tls_now = 0U;

@@ -149,6 +149,26 @@ COACT_TEST(timer_periodic_catchup_no_burst) {
   CHECK_EQ(1U, rig.sched.fired_count());
 }
 
+/* Very long stall: catch-up must advance the next fire time without a loop
+   proportional to the elapsed periods, and keep the original phase. */
+COACT_TEST(timer_periodic_long_stall_stays_aligned) {
+  Rig rig;
+  coact::EventQos qos{false, false};
+  auto id = rig.sched.schedule_periodic(coact::TargetId(1U), 1U, 10U, qos);
+  REQUIRE(static_cast<bool>(id));
+
+  rig.clock.advance(3600005U); /* 1 h + 5 ms: one fire, next at ...010 */
+  rig.sched.poll();
+  rig.clock.advance(4U);
+  rig.sched.poll();
+  rig.clock.advance(1U);
+  rig.sched.poll();
+  drain(2, rig.rt);
+
+  CHECK_EQ(2, g_timer_fired.load());
+  CHECK_EQ(2U, rig.sched.fired_count());
+}
+
 /* One-shot: fires exactly once after the delay, then auto-frees its slot
    and a later cancel() reports kNotFound. */
 COACT_TEST(timer_once_single_fire) {

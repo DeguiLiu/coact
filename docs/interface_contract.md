@@ -563,10 +563,18 @@ public:
 - **提交是唯一入口**，禁止绕过 coordinator 直接操作 staging。管线：C1 目标已绑定 -> 获取 submission lease（失败即 `RejectedState`）-> M6 过载闸（非 critical 且 `Breaker::drop_non_critical()` 为真 时 `DroppedOverload`）-> M4 策略评估（`DroppedPolicy` / `DroppedRateLimit`）-> M1 direct（仅 Task 路径且 `direct_eligible` 且 `direct_allowed` 且 lease 为 Idle）-> staging（满则 `RejectedFull` 并 `on_overflow`）-> `Queued`。
 - **事件引用所有权**：`submit_from_task` / `try_submit_from_isr` 接管传入引用。staged：allocation reference 转交 staging，dispatcher 派发后 `event_gc`；direct：派发后立即消费；drop / merge：立即消费。调用方在提交返回后**不得**再访问事件。
 - direct 路径由 `Ao::dispatch_direct()` 内部持有 `RunningDirect` lease；派发完成后若 `pending>0`，经 `request_dispatcher_wake()` 决定是否 `signal_dispatcher_from_task`，与 dispatcher 的 arm-then-CAS 重试共同关闭“释放先于等待”窗口。
-- `Dispatcher` 单线程批循环：`begin_batch` -> 逐条 `dequeue_one(now)` -> `try_dispatch_slot` -> 批次结束 `reclaim.flush()`。queued 派发只用 `Ao::try_dispatch_queued()`；lease 忙时保留**一个** deferred slot，不减 pending、不释放事件，随后 `arm -> CAS 重试 -> PAL wait`。全部队列为空且无 deferred 时进入真正的阻塞等待 `wait_dispatcher(0)`（PAL 约定 0 == 永久），其余路径用有界的 `kBatchTimeoutMs` 等待。停机先 `close_admission()`，再在 `drain_queued_on_stop()` 中无派发地排空剩余事件，保证每事件恰好一次 pending 递减与一次引用释放。回收器由 `Profile` 选择：`HostSmpProfile` -> `ReclaimBatcher`（每批池容量 `min(kBatchSizeMax, kMaxEventPools)`），`RttSingleCoreProfile` -> `ImmediateReclaimer`。
+- `Dispatcher` 单线程批循环：`begin_batch` -> 逐条 `dequeue_one(now)` -> `try_dispatch_slot` -> 批次结束 `reclaim.flush()`。queued 派发只用 `Ao::try_dispatch_queued()`；lease 忙时保留**一个** deferred slot，不减 pending、不释放事件，随后 `arm -> CAS 重试 -> PAL wait`。全部队列为空且无 deferred 时进入真正的阻塞等待 `wait_dispatcher(0)`（PAL 约定 0 == 永久），其余路径用有界的 `kBatchTimeoutMs` 等待。停机先 `close_admission()`，再在 `drain_queued_on_stop()` 中无派发地排空剩余事件，保证每事件恰好一次 pending 递减与一次引用释放；默认等待在途提交结束，Board Config 可定义 `kShutdownDrainTimeoutMs > 0`，超时后走 `fatal_assert`。回收器由 `Profile` 选择：`HostSmpProfile` -> `ReclaimBatcher`（每批池容量 `min(kBatchSizeMax, kMaxEventPools)`），`RttSingleCoreProfile` -> `ImmediateReclaimer`。
 - `Runtime` 三阶段：Phase 1 `bind` / `bind_at`（注册 AO，须在 `initialize` 前）；Phase 2 `initialize`（提交注册表，幂等，并对每个已绑定 AO 调用 `init_default()`；显式 `Ao::init()` 过的 AO 不会被重复初始化）；Phase 3 `start`（启动 Dispatcher 线程，`started_` 仅在 PAL 报告成功后才置位，失败返回 `false`）。`stop()` 请求停止并 join。**不存在 `run_dispatcher()` 公开方法**——Dispatcher 线程由 `start()` 经 PAL 启动（此为对旧契约的更正）。`Runtime` 显式使用 per-AO `BreakerBank<Config>`；coordinator / dispatcher 的默认 `BreakerRouterT` 仍是单个 `Breaker<Config>`，需要 per-AO 隔离时显式传入 Bank。
 - `PalT::template QueueBackend` 决定 staging 后端：`pal::Posix` -> `BoundedMpscQueue`（SMP），`pal::RtThread` -> `SingleCoreCriticalRing`（单核）。`Profile` 决定池与回收策略；RT-Thread 板传 `pal::RtThread::Profile`（即 `RttSingleCoreProfile`），默认 `HostSmpProfile` 保持 batched 回收。
 - `partition_watermark` 是 BSP 监督器唯一的队列视图：只返回某个分区的占用百分比，用于 `Monitor::sample_watermark` 与 `BreakerBank::broadcast_watermark`，不暴露队列本身，也不提供入队/出队通道。
+
+责任边界（进程内投递，不是传输层 E2E）：
+
+1. 已入队（`Queued`）的事件，框架内不得静默丢失、静默重复、静默乱序。
+2. 未入队的拒绝必须可见，调用方根据 `SubmitDisposition` 判断：`DroppedPolicy`、`DroppedRateLimit`、`DroppedOverload`、`RejectedFull`、`RejectedState`、`Merged`。
+3. coact 不保证事件新鲜度，也不提供传输层 E2E。业务需要新鲜度时，在事件载荷中携带时间戳并在 handler 内判断。
+4. `DefaultConfig` 中 `kHighCriticalReserve` 与 `kNormalReservedCapacity` 默认为 0。保留容量是板级可选项，不是默认已启用。
+5. 跨设备通信的完整性由 newosp 传输层或业务层负责。
 
 ### 3.9 PAL（平台抽象，L0/平台层）
 

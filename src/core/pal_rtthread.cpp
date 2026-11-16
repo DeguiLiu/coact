@@ -250,7 +250,7 @@ ExecutionContext RtThread::current_context() const noexcept {
     ctx.kind = ContextKind::Dispatcher;
     ctx.logical_prio = 0U;
     ctx.prio_valid = false;
-    ctx.direct_depth = 0U;
+    ctx.direct_depth = dispatcher_direct_depth_;
     return ctx;
   }
   ExecutionContext* stored = tls_ctx();
@@ -331,6 +331,7 @@ void RtThread::dispatcher_thread_entry(void* param) noexcept {
   /* Capture this thread's TCB: the non-forgeable Dispatcher identity that
      in_dispatcher_thread() reads (TCB comparison, no TLS required). */
   g_dispatcher_tcb = rt_thread_self();
+  self->dispatcher_direct_depth_ = 0U;
 
   /* Run the user-supplied entry (Dispatcher::run). The Dispatcher context is
      identified by current_context() via the static TCB comparison, so no
@@ -384,6 +385,10 @@ void RtThread::watchdog_progress(uint32_t /*marker*/) noexcept {
 }
 
 void RtThread::enter_direct() noexcept {
+  if (in_dispatcher_thread()) {
+    ++dispatcher_direct_depth_;
+    return;
+  }
   ExecutionContext* ctx = tls_ctx();
   if (nullptr != ctx) {
     ++ctx->direct_depth;
@@ -391,6 +396,12 @@ void RtThread::enter_direct() noexcept {
 }
 
 void RtThread::leave_direct() noexcept {
+  if (in_dispatcher_thread()) {
+    if (dispatcher_direct_depth_ > 0U) {
+      --dispatcher_direct_depth_;
+    }
+    return;
+  }
   ExecutionContext* ctx = tls_ctx();
   if (nullptr != ctx && ctx->direct_depth > 0U) {
     --ctx->direct_depth;

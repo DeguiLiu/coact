@@ -40,6 +40,22 @@ namespace coact {
 // failure path still releases, and a stop drains the remaining queue exactly
 // once each.
 // ---------------------------------------------------------------------------
+namespace detail {
+
+/* Optional Config::kShutdownDrainTimeoutMs; absent means wait for in-flight
+   submissions without a deadline (the historical behavior). */
+template <typename Config, typename = void>
+struct shutdown_drain_timeout_ms {
+  static constexpr uint32_t value = 0U;
+};
+
+template <typename Config>
+struct shutdown_drain_timeout_ms<Config, std::void_t<decltype(Config::kShutdownDrainTimeoutMs)>> {
+  static constexpr uint32_t value = static_cast<uint32_t>(Config::kShutdownDrainTimeoutMs);
+};
+
+}  // namespace detail
+
 template <typename StagingT, typename PalT, typename Profile = coact::HostSmpProfile,
           typename BreakerRouterT = Breaker<typename StagingT::ConfigType>>
 class Dispatcher {
@@ -221,8 +237,18 @@ class Dispatcher {
   // once, matching the coordinator's pending().increment() with a decrement
   // so every pool returns to used()==0 and every AO pending() to 0.
   void drain_queued_on_stop() noexcept {
-    const uint64_t now_ns = pal_.monotonic_ns();
+    /* A producer that never returns from its direct dispatch still holds a
+       submission lease, so submissions_idle() would never become true.
+       Default 0 waits for it; a board may set kShutdownDrainTimeoutMs to
+       escalate that condition to the product fatal handler instead. */
+    static constexpr uint32_t kDrainTimeoutMs = detail::shutdown_drain_timeout_ms<BatchCfg>::value;
+    const uint64_t drain_start_ns = pal_.monotonic_ns();
+    const uint64_t drain_deadline_ns = drain_start_ns + static_cast<uint64_t>(kDrainTimeoutMs) * 1000000ULL;
+    const uint64_t now_ns = drain_start_ns;
     while (staging_.any_buffered() || false == staging_.submissions_idle()) {
+      if constexpr (0U != kDrainTimeoutMs) {
+        COACT_ASSERT(pal_.monotonic_ns() < drain_deadline_ns);
+      }
       staging_.begin_batch();
       ReclaimerT reclaim;
       bool released = false;

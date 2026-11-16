@@ -58,6 +58,7 @@ struct CountingPal {
   void signal_dispatcher_from_isr() noexcept { ++signals; }
   void enter_direct() noexcept {}
   void leave_direct() noexcept {}
+  coact::ExecutionContext current_context() const noexcept { return coact::ExecutionContext{}; }
 };
 
 /* Minimal staged-only AO (never direct, so the coordinator always enqueues). */
@@ -191,6 +192,24 @@ struct OverBudgetPal {
   void signal_dispatcher_from_isr() noexcept { ++signals; }
   void enter_direct() noexcept {}
   void leave_direct() noexcept {}
+  coact::ExecutionContext current_context() const noexcept { return coact::ExecutionContext{}; }
+};
+
+/* PAL whose direct-dispatch depth is test-controlled, so the coordinator's
+   kMaxDirectDepth gate can be exercised without an actual recursive HSM. */
+struct DepthPal {
+  coact::ExecutionContext ctx{};
+  int signals = 0;
+  uint64_t monotonic_ns() const noexcept { return 0ULL; }
+  void signal_dispatcher_from_task() noexcept { ++signals; }
+  void signal_dispatcher_from_isr() noexcept { ++signals; }
+  void enter_direct() noexcept { ++ctx.direct_depth; }
+  void leave_direct() noexcept {
+    if (ctx.direct_depth > 0U) {
+      --ctx.direct_depth;
+    }
+  }
+  coact::ExecutionContext current_context() const noexcept { return ctx; }
 };
 
 COACT_TEST(coordinator_direct_over_budget_trips_breaker) {
@@ -221,6 +240,41 @@ COACT_TEST(coordinator_direct_over_budget_trips_breaker) {
     CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct), static_cast<int>(r.disposition));
   }
   CHECK_EQ(static_cast<int>(coact::BreakerLevel::BrokenL1), static_cast<int>(breaker.level()));
+}
+
+COACT_TEST(coordinator_direct_depth_cap_falls_back_to_staging) {
+  coact::Event init_e{};
+  init_e.signal = 0U;
+  init_e.pool_id = 0U;
+  init_e.ref_ctr = 0U;
+  DirectAo ao(kStates, 2U, kTrans, 1U, 1, 4U);
+  ao.init(init_e);
+
+  StageT staging = make_staging();
+  coact::AoRegistry<SmallCfg> registry;
+  coact::Monitor<SmallCfg> monitor;
+  SmallCfg cfg{};
+  coact::Breaker<SmallCfg> breaker(cfg);
+  DepthPal pal;
+  coact::DispatchCoordinator<StageT, DepthPal, coact::Breaker<SmallCfg>> coord(staging, registry, monitor, breaker,
+                                                                               pal);
+  CHECK(registry.bind(&ao, ao.logical_prio()));
+
+  for (uint8_t i = 0U; i < SmallCfg::kMaxDirectDepth; ++i) {
+    pal.enter_direct();
+  }
+
+  const coact::EventQos qos{false, false};
+  coact::Event capped_event{};
+  capped_event.signal = 1U;
+  const coact::SubmitResult capped = coord.submit_from_task(coact::TargetId(1U), &capped_event, qos);
+  CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Queued), static_cast<int>(capped.disposition));
+
+  pal.ctx.direct_depth = 0U;
+  coact::Event direct_event{};
+  direct_event.signal = 1U;
+  const coact::SubmitResult direct = coord.submit_from_task(coact::TargetId(1U), &direct_event, qos);
+  CHECK_EQ(static_cast<int>(coact::SubmitDisposition::Direct), static_cast<int>(direct.disposition));
 }
 
 COACT_TEST(coordinator_target_breaker_does_not_block_other_ao) {
@@ -447,6 +501,7 @@ struct BlockingPal {
   void signal_dispatcher_from_isr() noexcept { wake(); }
   void enter_direct() noexcept {}
   void leave_direct() noexcept {}
+  coact::ExecutionContext current_context() const noexcept { return coact::ExecutionContext{}; }
 
   void wait_dispatcher(uint32_t timeout_ms) noexcept {
     std::unique_lock<std::mutex> lock(mtx);

@@ -117,11 +117,11 @@ enum class InitError : uint8_t { kPalFailed, kConfigMismatch, kDuplicatePrio, kC
 // Default configuration. See design 14.1.
 // ---------------------------------------------------------------------------
 struct DefaultConfig {
-  /* kMaxStateDepth, kMaxDirectDepth and kDirectBudgetNs are part of the board
-     Config contract but are not read by the framework yet: the HSM depth
-     limit comes from the Hsm template argument and the direct-dispatch
-     budget from Traits::kRtcBudgetNs. Changing these three has no effect
-     today; they stay so existing Configs keep compiling. */
+  /* kMaxStateDepth and kDirectBudgetNs are part of the board Config contract
+     but are not read by the framework yet: the HSM depth limit comes from the
+     Hsm template argument and the direct budget from Traits::kRtcBudgetNs.
+     kMaxDirectDepth is enforced by DispatchCoordinator: nested direct
+     dispatches past this depth take the staged path. */
   enum : uint8_t { kMaxAo = 16U, kMaxStateDepth = 6U, kMaxDirectDepth = 4U, kBatchSizeMax = 8U };
 
   enum : uint16_t {
@@ -143,6 +143,9 @@ struct DefaultConfig {
   enum : uint32_t {
     kBatchTimeoutMs = 5U,
     kLowMaxWaitMs = 100U,
+    /* Optional shutdown bound: 0 waits for in-flight submissions; a positive
+       value escalates a stuck producer to the fatal handler instead. */
+    kShutdownDrainTimeoutMs = 0U,
     /* Dispatcher thread stack size. Board Configs override this to match
        the deepest HSM action chain (measure first, then tune). */
     kDispatcherStackBytes = 4096U

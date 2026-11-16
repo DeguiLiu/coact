@@ -390,12 +390,11 @@ class TimerScheduler final {
         if (slots_[i].one_shot) {
           slots_[i].active = false;
         } else {
-          /* Catch-up: advance past every missed period so a late
-             poll fires exactly once, never a burst. */
-          slots_[i].next_fire_ns += slots_[i].period_ns;
-          while (slots_[i].next_fire_ns <= now) {
-            slots_[i].next_fire_ns += slots_[i].period_ns;
-          }
+          /* Catch-up in O(1): advance past every missed period so a late
+             poll fires exactly once, never a burst. A loop here would take
+             time proportional to the stall length. */
+          const uint64_t missed = (now - slots_[i].next_fire_ns) / slots_[i].period_ns + 1U;
+          slots_[i].next_fire_ns += missed * slots_[i].period_ns;
         }
       }
     }

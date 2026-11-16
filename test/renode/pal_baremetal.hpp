@@ -32,6 +32,7 @@ inline void advance_time_ns(uint64_t step) noexcept {
 struct BarePal {
   int task_signals = 0;
   int isr_signals = 0;
+  uint8_t direct_depth = 0U;
 
   uint64_t monotonic_ns() noexcept { return virtual_clock_ns(); }
 
@@ -52,8 +53,17 @@ struct BarePal {
 
   void signal_dispatcher_from_task() noexcept { ++task_signals; }
   void signal_dispatcher_from_isr() noexcept { ++isr_signals; }
-  void enter_direct() noexcept {}
-  void leave_direct() noexcept {}
+  void enter_direct() noexcept { ++direct_depth; }
+  void leave_direct() noexcept {
+    if (direct_depth > 0U) {
+      --direct_depth;
+    }
+  }
+  coact::ExecutionContext current_context() const noexcept {
+    coact::ExecutionContext ctx{};
+    ctx.direct_depth = direct_depth;
+    return ctx;
+  }
 };
 
 }  // namespace harness

@@ -67,7 +67,7 @@ endforeach()
 # whole block by name instead of pretending these suites passed.
 if(COACT_PORTABLE_ONLY)
 foreach(skipped
-            test_core test_integration test_pal_sync test_rtt_pal test_stress
+            test_core test_integration test_dispatch_latency test_pal_sync test_rtt_pal test_stress
             test_config test_timer test_bitfield test_static_lifetime
             test_static_pal test_freertos_pal test_softirq test_rtt_smp_gate
             test_rtt_multicore_gate bench_hotpath
@@ -91,6 +91,12 @@ coact_add_test(test_integration
     pal_posix.cpp)
 target_link_libraries(test_integration PRIVATE Threads::Threads)
 target_include_directories(test_integration PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+
+coact_add_test(test_dispatch_latency
+    test_dispatch_latency.cpp
+    pal_posix.cpp)
+target_link_libraries(test_dispatch_latency PRIVATE Threads::Threads)
+target_include_directories(test_dispatch_latency PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 
 # RT-Thread PAL host test: RT-Thread API backed by pthreads via stub header.
 coact_add_test(test_pal_sync

@@ -200,6 +200,8 @@ class ObservedPosixPal {
 
   void leave_direct() noexcept { pal_.leave_direct(); }
 
+  coact::ExecutionContext current_context() const noexcept { return pal_.current_context(); }
+
   uint32_t wait_calls() const noexcept { return wait_calls_.load(std::memory_order_acquire); }
 
  private:

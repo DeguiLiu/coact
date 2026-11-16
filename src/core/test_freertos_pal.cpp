@@ -175,6 +175,35 @@ COACT_TEST(freertos_dispatcher_starts_once_and_joins) {
   pal.join_dispatcher();
 }
 
+struct FreeRtosDepthProbe {
+  coact::pal::FreeRtos* pal;
+  std::atomic<int> first{0};
+  std::atomic<int> second{0};
+};
+
+void freertos_direct_depth_entry(void* ctx) noexcept {
+  auto* probe = static_cast<FreeRtosDepthProbe*>(ctx);
+  probe->pal->enter_direct();
+  probe->first.store(static_cast<int>(probe->pal->current_context().direct_depth), std::memory_order_relaxed);
+  probe->pal->enter_direct();
+  probe->second.store(static_cast<int>(probe->pal->current_context().direct_depth), std::memory_order_relaxed);
+  probe->pal->leave_direct();
+  probe->pal->leave_direct();
+}
+
+COACT_TEST(freertos_dispatcher_tracks_direct_depth) {
+  stub_freertos_reset_faults();
+  static ResStandard res;
+  coact::pal::FreeRtos pal(res);
+  FreeRtosDepthProbe probe{&pal};
+
+  CHECK_EQ(static_cast<int>(coact::pal::InitError::kOk),
+           static_cast<int>(pal.start_dispatcher(&freertos_direct_depth_entry, &probe)));
+  pal.join_dispatcher();
+  CHECK_EQ(1, probe.first.load(std::memory_order_relaxed));
+  CHECK_EQ(2, probe.second.load(std::memory_order_relaxed));
+}
+
 COACT_TEST(freertos_start_requires_running_scheduler) {
   stub_freertos_reset_faults();
   static ResStandard res;

@@ -474,7 +474,7 @@ class FreeRtos {
      start. Diagnostics only (stack watermark, debugging). */
   TaskHandle_t dispatcher_task_handle() const noexcept { return dispatcher_handle_; }
 
-  /* ---- Direct dispatch depth (per registered task) ------------------ */
+  /* ---- Direct dispatch depth (registered task or dispatcher) -------- */
   void enter_direct() noexcept;
   void leave_direct() noexcept;
 
@@ -551,6 +551,7 @@ class FreeRtos {
   mutable bool counter_seen_ = false;
   std::atomic_flag init_guard_ = ATOMIC_FLAG_INIT;
   TaskHandle_t dispatcher_handle_ = nullptr;
+  uint8_t dispatcher_direct_depth_ = 0U;
   WatchdogOps watchdog_{};
 };
 
